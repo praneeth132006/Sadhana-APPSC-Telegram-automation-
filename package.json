@@ -1,0 +1,21 @@
+{
+  "name": "sadhana-appsc-telegram-automation",
+  "version": "1.0.0",
+  "description": "Simple Excel-based automation to post APPSC quiz questions to Telegram forum topics",
+  "main": "send.js",
+  "scripts": {
+    "send": "node send.js",
+    "setup": "node setup.js",
+    "schedule": "node schedule.js",
+    "create-sample": "node create-sample.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3",
+    "node-telegram-bot-api": "^0.66.0",
+    "xlsx": "^0.18.5"
+  },
+  "keywords": ["appsc", "telegram", "quiz", "automation", "excel"],
+  "author": "praneeth132006",
+  "license": "ISC"
+}

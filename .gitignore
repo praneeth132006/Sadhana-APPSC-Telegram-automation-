@@ -1,0 +1,17 @@
+# Dependencies — installed via npm install
+node_modules/
+
+# Environment variables file — contains secret bot token
+.env
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE / editor files
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
