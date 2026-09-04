@@ -76,7 +76,11 @@ function sleep(ms) {
  * @param {number} questionsCount — How many questions to send
  */
 async function sendQuestionsForSubject(subjectConfig, questionsCount) {
-  console.log(`\n📚 Subject: ${subjectConfig.emoji} ${subjectConfig.subject}`);
+  // Format subject display string: prepend emoji only if configured, otherwise use clean name
+  const displayTitle = subjectConfig.emoji ? `${subjectConfig.emoji} ${subjectConfig.subject}` : subjectConfig.subject;
+  // Print active subject header to console
+  console.log(`\n📚 Subject: ${displayTitle}`);
+  // Log assigned topic thread ID or warning if not yet assigned
   console.log(`   Topic Thread ID: ${subjectConfig.topic_thread_id || '❌ Not set'}`);
 
   // Check if this subject has a Telegram topic configured
@@ -168,12 +172,13 @@ async function showStatsOnly() {
 
   // Print each subject's stats in a formatted row
   for (const s of stats) {
-    // Find matching configuration to get the emoji icon
+    // Find matching configuration to get the optional emoji icon
     const cfg = config.find(c => c.subject === s.subject);
-    const emoji = cfg ? cfg.emoji : '📚';
+    // Include emoji prefix only if explicitly provided in configuration
+    const emojiPrefix = cfg && cfg.emoji ? `${cfg.emoji} ` : '';
 
-    // Print formatted summary line
-    console.log(`  ${emoji} ${s.subject.padEnd(20)} │ Total: ${String(s.total).padStart(4)} │ Posted: ${String(s.posted).padStart(4)} │ Pending: ${String(s.pending).padStart(4)}`);
+    // Print formatted summary line with aligned columns
+    console.log(`  ${emojiPrefix}${s.subject.padEnd(25)} │ Total: ${String(s.total).padStart(4)} │ Posted: ${String(s.posted).padStart(4)} │ Pending: ${String(s.pending).padStart(4)}`);
 
     // Add to running totals
     totalAll += s.total;

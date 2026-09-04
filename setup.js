@@ -154,16 +154,19 @@ async function main() {
   let skipped = 0;  // Counter for topics that already exist
 
   for (const cfg of config) {
+    // Determine display title: prepend emoji only if configured, otherwise use clean name
+    const topicTitle = cfg.emoji ? `${cfg.emoji} ${cfg.subject}` : cfg.subject;
+
     // Skip subjects that already have a topic thread ID assigned
     if (cfg.topic_thread_id) {
-      console.log(`   ⏭️  "${cfg.emoji} ${cfg.subject}" — Already has Thread ID: ${cfg.topic_thread_id}`);
+      console.log(`   ⏭️  "${topicTitle}" — Already has Thread ID: ${cfg.topic_thread_id}`);
       skipped++;
       continue;
     }
 
     try {
-      // Create the forum topic with emoji + subject name as the title in Telegram supergroup
-      const threadId = await telegram.createForumTopic(`${cfg.emoji} ${cfg.subject}`);
+      // Create the forum topic with clean subject name as the title in Telegram supergroup
+      const threadId = await telegram.createForumTopic(topicTitle);
 
       // Save the thread ID back to the config object
       cfg.topic_thread_id = threadId;
@@ -191,7 +194,8 @@ async function main() {
   console.log('───────────────────────────────────────────');
   for (const cfg of config) {
     const status = cfg.topic_thread_id ? `Thread ID: ${cfg.topic_thread_id}` : '❌ Not created';
-    console.log(`   ${cfg.emoji} ${cfg.subject.padEnd(25)} → ${status}`);
+    const prefix = cfg.emoji ? `${cfg.emoji} ` : '';
+    console.log(`   ${prefix}${cfg.subject.padEnd(25)} → ${status}`);
   }
   console.log('───────────────────────────────────────────\n');
 }

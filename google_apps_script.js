@@ -150,11 +150,17 @@ function fetchConfigFromSheet() {
   return values
     .map(function(row) {
       return {
+        // Subject name without leading or trailing whitespace
         subject: String(row[0] || '').trim(),
-        emoji: String(row[1] || '📚').trim(),
+        // Emoji icon column left empty or clean string if specified
+        emoji: String(row[1] || '').trim(),
+        // Topic thread ID parsed as numeric value
         topic_thread_id: row[2] ? Number(row[2]) : null,
+        // Scheduling cron pattern string
         schedule_cron: String(row[3] || '').trim(),
+        // Number of questions dispatched in batch
         questions_per_batch: Number(row[4]) || 5,
+        // Active status flag parsed as boolean
         active: String(row[5] || 'YES').trim().toUpperCase() === 'YES'
       };
     })
@@ -340,3 +346,90 @@ function jsonResponse(data) {
   return ContentService.createTextOutput(JSON.stringify(data))
     .setMimeType(ContentService.MimeType.JSON);
 }
+
+/**
+ * setupSpreadsheet — One-click initialization for your Google Spreadsheet.
+ * What it does: Creates the "Config" tab and 16 subject tabs with headers and pre-mapped thread IDs (6 to 21).
+ * What it brings: Fully automated configuration of the online spreadsheet without manually typing 16 sheet names.
+ * Where changes can be seen: Direct creation of sheets and rows in your Google Spreadsheet.
+ *
+ * HOW TO RUN:
+ * 1. In Apps Script, select "setupSpreadsheet" from the function dropdown at the top.
+ * 2. Click "Run".
+ * 3. Look at your Google Sheet — all 16 subjects are now created with headers ready for your questions!
+ */
+function setupSpreadsheet() {
+  // Access the active spreadsheet container
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // All 16 APPSC subjects with clean names (no emojis) and the Telegram thread IDs created earlier
+  const configList = [
+    { subject: 'History', threadId: 6, cron: '0 9,18 * * *', count: 5 },
+    { subject: 'AP History', threadId: 7, cron: '0 */3 * * *', count: 5 },
+    { subject: 'Geography', threadId: 8, cron: '0 */3 * * *', count: 5 },
+    { subject: 'AP Geography', threadId: 9, cron: '0 */3 * * *', count: 5 },
+    { subject: 'Economy', threadId: 10, cron: '0 */3 * * *', count: 5 },
+    { subject: 'AP Economy', threadId: 11, cron: '0 */3 * * *', count: 5 },
+    { subject: 'Polity', threadId: 12, cron: '0 */2 * * *', count: 5 },
+    { subject: 'Society', threadId: 13, cron: '0 */4 * * *', count: 5 },
+    { subject: 'Current Affairs', threadId: 14, cron: '0 8,14,20 * * *', count: 5 },
+    { subject: 'Science and Technology', threadId: 15, cron: '0 */3 * * *', count: 5 },
+    { subject: 'Biology', threadId: 16, cron: '0 */4 * * *', count: 5 },
+    { subject: 'Chemistry', threadId: 17, cron: '0 */4 * * *', count: 5 },
+    { subject: 'Physics', threadId: 18, cron: '0 */4 * * *', count: 5 },
+    { subject: 'Environment', threadId: 19, cron: '0 */3 * * *', count: 5 },
+    { subject: 'General Studies', threadId: 20, cron: '0 */3 * * *', count: 5 },
+    { subject: 'Disaster Management', threadId: 21, cron: '0 */4 * * *', count: 5 }
+  ];
+
+  // Retrieve or create the Config tab
+  let configSheet = ss.getSheetByName('Config');
+  if (!configSheet) {
+    // Insert new sheet named Config as the first tab
+    configSheet = ss.insertSheet('Config', 0);
+  }
+  // Clear any previous formatting or stale data in the Config sheet
+  configSheet.clear();
+
+  // Define column headers for configuration
+  const configHeaders = ['Subject', 'Emoji', 'Topic_Thread_ID', 'Schedule_Cron', 'Questions_Per_Batch', 'Active'];
+  // Append header row to Config sheet
+  configSheet.appendRow(configHeaders);
+  // Style header row with bold font and subtle blue accent background
+  configSheet.getRange(1, 1, 1, configHeaders.length).setFontWeight('bold').setBackground('#E8EEF5');
+
+  // Populate config rows for each subject
+  for (let i = 0; i < configList.length; i++) {
+    const item = configList[i];
+    // Add subject row with empty emoji (clean text) and pre-mapped Telegram thread ID
+    configSheet.appendRow([item.subject, '', item.threadId, item.cron, item.count, 'YES']);
+  }
+
+  // Freeze the top header row in Config sheet
+  configSheet.setFrozenRows(1);
+
+  // Standard question column headers for each subject tab
+  const questionHeaders = ['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Answer', 'Explanation', 'Posted'];
+
+  // Create or refresh each of the 16 subject question tabs
+  for (let i = 0; i < configList.length; i++) {
+    const subjName = configList[i].subject;
+    // Check if the subject sheet already exists
+    let subjSheet = ss.getSheetByName(subjName);
+    if (!subjSheet) {
+      // Insert new sheet tab with the clean subject name
+      subjSheet = ss.insertSheet(subjName);
+    }
+
+    // If sheet is empty, add the standard headers
+    if (subjSheet.getLastRow() === 0) {
+      subjSheet.appendRow(questionHeaders);
+      subjSheet.getRange(1, 1, 1, questionHeaders.length).setFontWeight('bold').setBackground('#F0F4F8');
+      subjSheet.setFrozenRows(1);
+    }
+  }
+
+  // Log completion message in Apps Script execution log
+  Logger.log('✅ Spreadsheet setup complete! Config and 16 subject tabs created.');
+}
+
