@@ -71,8 +71,8 @@ async function sendBatch(cfg) {
     try {
       // Send the quiz poll to Telegram
       await telegram.sendQuizPoll(cfg.topic_thread_id, q);
-      // Track row index or sheet row number for batch update
-      postedRows.push(q.excel_row || q.row_index);
+      // Track 0-based data row index for marking as posted in Excel or Google Sheets
+      postedRows.push(q.row_index !== undefined ? q.row_index : q.excel_row);
 
       // Log success
       const preview = q.question_text.substring(0, 50);

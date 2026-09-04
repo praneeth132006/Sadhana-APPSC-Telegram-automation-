@@ -135,8 +135,44 @@ async function sendQuizPoll(threadId, question) {
     pollConfig.explanation_parse_mode = 'HTML';     // Allow basic HTML formatting
   }
 
+/**
+ * escapeHtml — Escapes special HTML characters (&, <, >) to avoid Telegram parse errors.
+ *
+ * @param {string} text — Raw unescaped string
+ * @returns {string} Sanitized string safe for Telegram HTML parse_mode
+ */
+function escapeHtml(text) {
+  // Replace HTML special characters with their corresponding entities
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+  // Telegram limits poll question text to a maximum of 300 characters.
+  // APPSC and competitive exam questions with multiple statements frequently exceed this limit.
+  // If the question exceeds 290 characters, we first send the full question text with statements
+  // as a formatted Telegram message in the topic thread, and then follow up with the quiz poll.
+  let pollQuestion = question.question_text;
+  if (pollQuestion.length > 290) {
+    // Post the complete question and statement list as a formatted topic message with HTML escaping
+    await bot.sendMessage(groupId, `📝 <b>Question:</b>\n\n${escapeHtml(question.question_text)}`, {
+      message_thread_id: threadId, // Direct message to the specific subject forum topic
+      parse_mode: 'HTML'           // Format as HTML for clean readability
+    });
+
+    // Extract the concluding prompt if present (e.g. "Which of the statements given above are correct?")
+    const lines = question.question_text.trim().split('\n');
+    const lastLine = lines[lines.length - 1].trim();
+    if (lastLine.endsWith('?') && lastLine.length < 250) {
+      pollQuestion = `👆 ${lastLine} (Refer to statements above)`;
+    } else {
+      pollQuestion = '👆 Choose the correct answer for the question above:';
+    }
+  }
+
   // Send the quiz poll to the Telegram group, targeting the specific topic
-  const sent = await bot.sendPoll(groupId, question.question_text, options, pollConfig);
+  const sent = await bot.sendPoll(groupId, pollQuestion, options, pollConfig);
 
   return sent; // Return the sent message object (contains message_id)
 }

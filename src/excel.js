@@ -205,8 +205,12 @@ function markAsPosted(subject, rowIndices, excelPath = DEFAULT_EXCEL_PATH) {
 
   // Update the "Posted" column for each specified row
   for (const rowIndex of rowIndices) {
-    if (rowIndex < rows.length) {
-      rows[rowIndex]['Posted'] = `YES | ${timestamp}`; // Mark as posted with timestamp
+    // Normalize index: if rowIndex is within data length, treat as 0-based index;
+    // if greater than or equal to rows.length and >= 2, treat as 1-based excel_row (offset by 2 for 1-based indexing and header)
+    const normalizedIndex = (rowIndex >= rows.length && rowIndex >= 2) ? (rowIndex - 2) : rowIndex;
+
+    if (normalizedIndex >= 0 && normalizedIndex < rows.length) {
+      rows[normalizedIndex]['Posted'] = `YES | ${timestamp}`; // Mark as posted with IST timestamp
     }
   }
 

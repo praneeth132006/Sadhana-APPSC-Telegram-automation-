@@ -108,8 +108,9 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
       // Send the quiz poll to the subject's Telegram forum topic
       await telegram.sendQuizPoll(subjectConfig.topic_thread_id, q);
 
-      // Track this row index (or excel row) for marking as posted
-      postedRowIndices.push(q.excel_row || q.row_index);
+      // Track 0-based data row index for marking as posted in Excel or Google Sheets
+      // This ensures the exact row is marked with timestamp upon successful delivery
+      postedRowIndices.push(q.row_index !== undefined ? q.row_index : q.excel_row);
 
       // Log success with a preview of the question text
       const preview = q.question_text.length > 50
