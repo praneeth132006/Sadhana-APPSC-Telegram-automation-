@@ -31,6 +31,20 @@ function init(token, chatGroupId) {
 }
 
 /**
+ * escapeHtml — Escapes special HTML characters (&, <, >) to avoid Telegram parse errors.
+ *
+ * @param {string} text — Raw unescaped string
+ * @returns {string} Sanitized string safe for Telegram HTML parse_mode
+ */
+function escapeHtml(text) {
+  // Replace HTML special characters with their corresponding entities
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
  * testConnection — Verifies the bot token is valid and the group is accessible.
  * Prints bot info and group info to the console.
  *
@@ -135,20 +149,6 @@ async function sendQuizPoll(threadId, question) {
     pollConfig.explanation_parse_mode = 'HTML';     // Allow basic HTML formatting
   }
 
-/**
- * escapeHtml — Escapes special HTML characters (&, <, >) to avoid Telegram parse errors.
- *
- * @param {string} text — Raw unescaped string
- * @returns {string} Sanitized string safe for Telegram HTML parse_mode
- */
-function escapeHtml(text) {
-  // Replace HTML special characters with their corresponding entities
-  return String(text || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
   // Telegram limits poll question text to a maximum of 300 characters.
   // APPSC and competitive exam questions with multiple statements frequently exceed this limit.
   // If the question exceeds 290 characters, we first send the full question text with statements
@@ -173,6 +173,30 @@ function escapeHtml(text) {
 
   // Send the quiz poll to the Telegram group, targeting the specific topic
   const sent = await bot.sendPoll(groupId, pollQuestion, options, pollConfig);
+
+  // Send the detailed Answer & Explanation message using Telegram's native <tg-spoiler> tag
+  // This guarantees:
+  // 1. The full, untruncated explanation is immediately available in the chat thread.
+  // 2. The correct answer option is prominently displayed.
+  // 3. The answer and explanation remain hidden behind a tap-to-reveal blur so users can attempt the poll first.
+  if (question.explanation || question.correct_answer) {
+    // Format the correct answer option letter (e.g. "D")
+    const answerLetter = String(question.correct_answer || '').toUpperCase();
+    // Sanitize the explanation text against HTML entity parsing issues
+    const explanationText = escapeHtml(question.explanation || 'No detailed explanation provided.');
+
+    // Construct the formatted spoiler message payload
+    const spoilerMessage =
+      `💡 <b>Answer &amp; Explanation</b> <i>(Tap below to reveal)</i>:\n` +
+      `<tg-spoiler>✅ <b>Correct Answer: Option ${answerLetter}</b>\n\n` +
+      `📖 <b>Explanation:</b>\n${explanationText}</tg-spoiler>`;
+
+    // Send the spoiler message to the specific forum topic thread
+    await bot.sendMessage(groupId, spoilerMessage, {
+      message_thread_id: threadId,
+      parse_mode: 'HTML'
+    });
+  }
 
   return sent; // Return the sent message object (contains message_id)
 }
