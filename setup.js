@@ -18,8 +18,10 @@
 
 require('dotenv').config(); // Load .env file variables into process.env
 
-const excel = require('./src/excel');       // Excel read/write module
-const telegram = require('./src/telegram'); // Telegram bot module
+// Load unified data manager — connects to Google Sheets if GOOGLE_SHEET_WEBAPP_URL is set, or local Excel
+const data = require('./src/data');
+// Load Telegram bot module to interact with Telegram Supergroups and forum topics
+const telegram = require('./src/telegram');
 
 /**
  * main — Reads config, creates Telegram topics, saves thread IDs back to config.
@@ -29,6 +31,8 @@ async function main() {
   console.log('🔧 ═══════════════════════════════════════════');
   console.log('🔧  Sadhana APPSC — Topic Setup');
   console.log('🔧 ═══════════════════════════════════════════');
+  // Log active data storage backend
+  console.log(`📡 Storage: ${data.getDataSourceName()}`);
 
   // ---- Check environment variables ----
   if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_GROUP_ID) {
@@ -49,18 +53,19 @@ async function main() {
     process.exit(1);
   }
 
-  // ---- Read the config file ----
+  // ---- Read the config file asynchronously ----
   let config;
   try {
-    config = excel.readConfig();
+    // Read subject configuration from active data source (Google Sheets or Excel)
+    config = await data.readConfig();
   } catch (error) {
-    console.error(`\n❌ Failed to read config.xlsx: ${error.message}`);
-    console.error('   Run: node create-sample.js to create sample files.\n');
+    console.error(`\n❌ Failed to read configuration: ${error.message}`);
+    console.error('   Verify your settings or run: node create-sample.js\n');
     process.exit(1);
   }
 
-  if (config.length === 0) {
-    console.error('\n❌ No subjects found in config.xlsx. Add subjects first.\n');
+  if (!config || config.length === 0) {
+    console.error('\n❌ No subjects found in configuration. Add subjects first.\n');
     process.exit(1);
   }
 
@@ -95,9 +100,10 @@ async function main() {
 
   // ---- Save updated config with topic thread IDs ----
   if (created > 0) {
-    excel.writeConfig(config);
+    // Write the updated configuration back to Google Sheets or local Excel
+    await data.writeConfig(config);
     console.log(`\n✅ Created ${created} new topic(s), skipped ${skipped} existing.`);
-    console.log('   Topic Thread IDs saved to config.xlsx\n');
+    console.log(`   Topic Thread IDs saved to ${data.getDataSourceName()}\n`);
   } else {
     console.log(`\n✅ All ${skipped} topic(s) already exist. Nothing to create.\n`);
   }
