@@ -31,6 +31,20 @@ function init(token, chatGroupId) {
 }
 
 /**
+ * escapeHtml — Escapes special HTML characters (&, <, >) to avoid Telegram parse errors.
+ *
+ * @param {string} text — Raw unescaped string
+ * @returns {string} Sanitized string safe for Telegram HTML parse_mode
+ */
+function escapeHtml(text) {
+  // Replace HTML special characters with their corresponding entities
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
  * testConnection — Verifies the bot token is valid and the group is accessible.
  * Prints bot info and group info to the console.
  *
@@ -135,11 +149,150 @@ async function sendQuizPoll(threadId, question) {
     pollConfig.explanation_parse_mode = 'HTML';     // Allow basic HTML formatting
   }
 
+  // Telegram limits poll question text to a maximum of 300 characters.
+  // APPSC and competitive exam questions with multiple statements frequently exceed this limit.
+  // If the question exceeds 290 characters, we first send the full question text with statements
+  // as a formatted Telegram message in the topic thread, and then follow up with the quiz poll.
+  let pollQuestion = question.question_text;
+  if (pollQuestion.length > 290) {
+    // Post the complete question and statement list as a formatted topic message with HTML escaping
+    await bot.sendMessage(groupId, `📝 <b>Question:</b>\n\n${escapeHtml(question.question_text)}`, {
+      message_thread_id: threadId, // Direct message to the specific subject forum topic
+      parse_mode: 'HTML'           // Format as HTML for clean readability
+    });
+
+    // Extract the concluding prompt if present (e.g. "Which of the statements given above are correct?")
+    const lines = question.question_text.trim().split('\n');
+    const lastLine = lines[lines.length - 1].trim();
+    if (lastLine.endsWith('?') && lastLine.length < 250) {
+      pollQuestion = `👆 ${lastLine} (Refer to statements above)`;
+    } else {
+      pollQuestion = '👆 Choose the correct answer for the question above:';
+    }
+  }
+
   // Send the quiz poll to the Telegram group, targeting the specific topic
-  const sent = await bot.sendPoll(groupId, question.question_text, options, pollConfig);
+  const sent = await bot.sendPoll(groupId, pollQuestion, options, pollConfig);
+
+  // Send the detailed Answer & Explanation message using Telegram's native <tg-spoiler> tag
+  // This guarantees:
+  // 1. The full, untruncated explanation is immediately available in the chat thread.
+  // 2. The correct answer option is prominently displayed.
+  // 3. The answer and explanation remain hidden behind a tap-to-reveal blur so users can attempt the poll first.
+  if (question.explanation || question.correct_answer) {
+    // Format the correct answer option letter (e.g. "D")
+    const answerLetter = String(question.correct_answer || '').toUpperCase();
+    // Sanitize the explanation text against HTML entity parsing issues
+    const explanationText = escapeHtml(question.explanation || 'No detailed explanation provided.');
+
+    // Construct the formatted spoiler message payload
+    const spoilerMessage =
+      `💡 <b>Answer &amp; Explanation</b> <i>(Tap below to reveal)</i>:\n` +
+      `<tg-spoiler>✅ <b>Correct Answer: Option ${answerLetter}</b>\n\n` +
+      `📖 <b>Explanation:</b>\n${explanationText}</tg-spoiler>`;
+
+    // Send the spoiler message to the specific forum topic thread
+    await bot.sendMessage(groupId, spoilerMessage, {
+      message_thread_id: threadId,
+      parse_mode: 'HTML'
+    });
+  }
 
   return sent; // Return the sent message object (contains message_id)
 }
 
+/**
+ * setGroupId — Updates the internal supergroup chat ID in the telegram module.
+ * What it does: Replaces the module-level groupId variable with a newly discovered or user-provided ID.
+ * What it brings: Allows dynamic runtime configuration of the group ID without restarting the process.
+ * Where changes can be seen: In subsequent API calls made by createForumTopic or sendQuizPoll.
+ *
+ * @param {string|number} newGroupId — The Telegram chat ID (starting with -100)
+ */
+function setGroupId(newGroupId) {
+  // Update the module-level groupId variable
+  groupId = String(newGroupId);
+}
+
+/**
+ * extractGroupIdFromLink — Extracts the standard Telegram chat ID from a web URL or raw ID string.
+ * What it does: Parses formats like https://t.me/c/3814998988/3 into the canonical -1003814998988 format.
+ * What it brings: Convenience for users who copy/paste browser or app topic links instead of raw chat IDs.
+ * Where changes can be seen: Used by setup.js and CLI tools to parse input arguments.
+ *
+ * @param {string} input — Link or raw string provided by the user
+ * @returns {string|null} Canonical chat ID formatted as -100..., or null if unrecognized
+ */
+function extractGroupIdFromLink(input) {
+  // Trim leading and trailing whitespace from the user input string
+  const cleanInput = String(input || '').trim();
+  // Match standard private supergroup URL format: https://t.me/c/<numeric_id>/...
+  const linkMatch = cleanInput.match(/t\.me\/c\/(\d+)/);
+  // If matched, prefix with -100 to convert internal telegram channel ID to supergroup chat ID
+  if (linkMatch && linkMatch[1]) {
+    return `-100${linkMatch[1]}`;
+  }
+  // If the user already provided a raw ID beginning with -100
+  if (cleanInput.startsWith('-100')) {
+    return cleanInput;
+  }
+  // Return null if the string pattern does not match expected Telegram formats
+  return null;
+}
+
+/**
+ * detectGroupId — Scans Telegram Bot API updates to discover supergroup IDs automatically.
+ * What it does: Retrieves recent updates from bot.getUpdates() and inspects chat payloads.
+ * What it brings: Zero-configuration group discovery when the bot is added to a group or receives /start.
+ * Where changes can be seen: Terminal logs during setup.js execution.
+ *
+ * @returns {Promise<{id: string, title: string}|null>} Discovered chat info or null
+ */
+async function detectGroupId() {
+  // Verify bot instance is initialized before attempting API call
+  if (!bot) throw new Error('Bot not initialized. Call init() first.');
+
+  try {
+    // Query Telegram Bot API getUpdates endpoint requesting message and membership change events
+    const updates = await bot.getUpdates({
+      limit: 50,
+      allowed_updates: ['message', 'my_chat_member', 'chat_member', 'channel_post']
+    });
+
+    // Loop through retrieved updates in reverse to check the most recent events first
+    for (let i = updates.length - 1; i >= 0; i--) {
+      const u = updates[i];
+      // Check message chat object
+      const chat = (u.message && u.message.chat) ||
+                   (u.my_chat_member && u.my_chat_member.chat) ||
+                   (u.channel_post && u.channel_post.chat);
+
+      // Verify that the chat object exists, is a supergroup or group, and has a negative ID
+      if (chat && chat.id && (chat.type === 'supergroup' || chat.type === 'group')) {
+        // Return the discovered chat ID and group title
+        return {
+          id: String(chat.id),
+          title: chat.title || 'Untitled Group'
+        };
+      }
+    }
+
+    // Return null if no supergroup activity was discovered in the update buffer
+    return null;
+  } catch (error) {
+    // Log warning if update fetch encountered an error
+    console.warn(`⚠️ Could not query getUpdates: ${error.message}`);
+    return null;
+  }
+}
+
 // Export all functions for use by send.js, setup.js, and scheduler.js
-module.exports = { init, testConnection, createForumTopic, sendQuizPoll };
+module.exports = {
+  init,
+  testConnection,
+  createForumTopic,
+  sendQuizPoll,
+  setGroupId,
+  extractGroupIdFromLink,
+  detectGroupId
+};

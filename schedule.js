@@ -25,8 +25,10 @@
 require('dotenv').config(); // Load .env file variables into process.env
 
 const cron = require('node-cron');          // Cron-based job scheduler
-const excel = require('./src/excel');       // Excel read/write module
-const telegram = require('./src/telegram'); // Telegram bot module
+// Load unified data manager — automatically supports Google Sheets or local Excel
+const data = require('./src/data');
+// Load Telegram bot module to send polls to forum topics
+const telegram = require('./src/telegram');
 
 // Check for --dry-run flag (show schedule but don't actually run)
 const isDryRun = process.argv.includes('--dry-run');
@@ -43,15 +45,15 @@ function sleep(ms) {
  * sendBatch — Sends a batch of unposted questions for a subject.
  * Called by the cron job when it fires.
  *
- * @param {Object} cfg — Config object for the subject (from config.xlsx)
+ * @param {Object} cfg — Config object for the subject (from Google Sheets or Excel)
  */
 async function sendBatch(cfg) {
   // Get a timestamp for logging
   const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
   console.log(`\n⏰ [${now}] Cron fired for: ${cfg.emoji} ${cfg.subject}`);
 
-  // Get unposted questions from the Excel file
-  const questions = excel.getUnpostedQuestions(cfg.subject, cfg.questions_per_batch);
+  // Fetch unposted questions asynchronously from Google Sheets or Excel
+  const questions = await data.getUnpostedQuestions(cfg.subject, cfg.questions_per_batch);
 
   if (questions.length === 0) {
     console.log(`   📭 No unposted questions remaining for "${cfg.subject}"`);
@@ -60,7 +62,7 @@ async function sendBatch(cfg) {
 
   console.log(`   📤 Sending ${questions.length} question(s)...`);
 
-  // Track successfully posted row indices for marking in Excel
+  // Track successfully posted row indices for marking in Google Sheets / Excel
   const postedRows = [];
 
   // Send each question with a delay between them
@@ -69,7 +71,8 @@ async function sendBatch(cfg) {
     try {
       // Send the quiz poll to Telegram
       await telegram.sendQuizPoll(cfg.topic_thread_id, q);
-      postedRows.push(q.row_index); // Track this row for Excel update
+      // Track 0-based data row index for marking as posted in Excel or Google Sheets
+      postedRows.push(q.row_index !== undefined ? q.row_index : q.excel_row);
 
       // Log success
       const preview = q.question_text.substring(0, 50);
@@ -82,10 +85,10 @@ async function sendBatch(cfg) {
     }
   }
 
-  // Mark posted questions in the Excel file
+  // Mark posted questions asynchronously in Google Sheets or Excel
   if (postedRows.length > 0) {
-    excel.markAsPosted(cfg.subject, postedRows);
-    console.log(`   📝 ${postedRows.length} question(s) marked as posted`);
+    await data.markAsPosted(cfg.subject, postedRows);
+    console.log(`   📝 ${postedRows.length} question(s) marked as posted in ${data.getDataSourceName()}`);
   }
 }
 
@@ -97,6 +100,9 @@ async function main() {
   console.log('⏰ ═══════════════════════════════════════════');
   console.log('⏰  Sadhana APPSC — Scheduled Posting');
   console.log('⏰ ═══════════════════════════════════════════');
+
+  // Display active data source backend (Google Sheets or Excel)
+  console.log(`📡 Storage: ${data.getDataSourceName()}`);
 
   // ---- Check environment variables ----
   if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_GROUP_ID) {
@@ -116,12 +122,13 @@ async function main() {
     process.exit(1);
   }
 
-  // ---- Read config ----
+  // ---- Read config asynchronously ----
   let config;
   try {
-    config = excel.readConfig();
+    // Read subject configuration asynchronously from Google Sheets or Excel
+    config = await data.readConfig();
   } catch (error) {
-    console.error(`\n❌ Failed to read config.xlsx: ${error.message}\n`);
+    console.error(`\n❌ Failed to read configuration: ${error.message}\n`);
     process.exit(1);
   }
 
@@ -133,7 +140,7 @@ async function main() {
   );
 
   if (activeSchedules.length === 0) {
-    console.log('\n📭 No active schedules found in config.xlsx');
+    console.log(`\n📭 No active schedules found in ${data.getDataSourceName()}`);
     console.log('   Make sure subjects have:');
     console.log('   - Schedule_Cron column filled (e.g., "0 */2 * * *")');
     console.log('   - Topic_Thread_ID set (run: node setup.js)');
