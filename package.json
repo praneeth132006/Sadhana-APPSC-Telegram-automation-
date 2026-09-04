@@ -1,13 +1,14 @@
 {
   "name": "sadhana-appsc-telegram-automation",
   "version": "1.0.0",
-  "description": "Simple Excel-based automation to post APPSC quiz questions to Telegram forum topics",
+  "description": "APPSC quiz automation with question dashboard, Google Sheets integration, and Telegram forum posting",
   "main": "send.js",
   "scripts": {
     "send": "node send.js",
     "setup": "node setup.js",
     "schedule": "node schedule.js",
-    "create-sample": "node create-sample.js"
+    "create-sample": "node create-sample.js",
+    "dashboard": "npx -y serve dashboard -p 3000"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
