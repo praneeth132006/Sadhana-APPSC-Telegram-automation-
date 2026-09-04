@@ -8,7 +8,7 @@
     "setup": "node setup.js",
     "schedule": "node schedule.js",
     "create-sample": "node create-sample.js",
-    "dashboard": "npx -y serve dashboard -p 3000"
+    "dashboard": "node server.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

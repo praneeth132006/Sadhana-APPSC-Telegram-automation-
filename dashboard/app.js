@@ -34,14 +34,33 @@ let questions = [];
 const STORAGE_KEY_URL = 'sadhana_sheet_url';
 
 // ---- Initialize on Page Load ----
-// Restore previously saved Sheet URL from localStorage if available
-(function init() {
+// Restore previously saved Sheet URL from localStorage and server configuration
+(async function init() {
   // Read stored URL value from browser's localStorage
   const savedUrl = localStorage.getItem(STORAGE_KEY_URL);
-  // If a URL was previously saved, populate the input field and test the connection
+  // If a URL was previously saved in localStorage, populate the input field
   if (savedUrl) {
     sheetUrlInput.value = savedUrl;
     testConnection(savedUrl);
+  }
+
+  // Attempt to fetch server-side configuration from local dashboard server API
+  try {
+    // Request server configuration to check if .env has GOOGLE_SHEET_WEBAPP_URL configured
+    const res = await fetch('/api/config');
+    // Check if the endpoint is available
+    if (res.ok) {
+      // Parse JSON configuration from server
+      const cfg = await res.json();
+      // If server has a configured sheet URL and input is either empty or matches old URL, use server URL
+      if (cfg.sheetUrl && (!sheetUrlInput.value || sheetUrlInput.value === savedUrl)) {
+        sheetUrlInput.value = cfg.sheetUrl;
+        localStorage.setItem(STORAGE_KEY_URL, cfg.sheetUrl);
+        testConnection(cfg.sheetUrl);
+      }
+    }
+  } catch (err) {
+    // If running as standalone file:// without server, silently continue
   }
 })();
 
@@ -135,20 +154,48 @@ sendToSheetBtn.addEventListener('click', async function() {
   sendToSheetBtn.textContent = 'Sending...';
 
   try {
-    // Send HTTP POST request to the Google Apps Script Web App
-    const response = await fetch(url, {
-      method: 'POST',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: 'addQuestions',   // Action identifier for the Apps Script doPost handler
-        subject: subject,         // Target subject tab name in Google Sheets
-        questions: payload        // Array of question objects with all 9 data fields
-      })
-    });
+    // Variable to hold the parsed response result
+    let result = null;
 
-    // Parse the JSON response from the Apps Script backend
-    const result = await response.json();
+    // Try sending through local server proxy first to avoid browser CORS and redirect issues
+    try {
+      // Send HTTP POST to local proxy endpoint on http://localhost:3000/api/send
+      const proxyRes = await fetch('/api/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: url,              // Upstream Google Apps Script Web App URL
+          subject: subject,      // Target subject sheet tab
+          questions: payload     // Question cards array
+        })
+      });
+
+      // If proxy endpoint exists and responded, parse its JSON response
+      if (proxyRes.ok) {
+        result = await proxyRes.json();
+      }
+    } catch (proxyErr) {
+      // Local server proxy unavailable (e.g. running as static file://), will fallback to direct fetch
+      result = null;
+    }
+
+    // If local proxy was not used or failed to respond, fallback to direct fetch to Google Apps Script
+    if (!result) {
+      // Send direct HTTP POST request to Google Apps Script Web App
+      const response = await fetch(url, {
+        method: 'POST',
+        redirect: 'follow',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action: 'addQuestions',   // Action identifier for the Apps Script doPost handler
+          subject: subject,         // Target subject tab name in Google Sheets
+          questions: payload        // Array of question objects with all 9 data fields
+        })
+      });
+
+      // Parse the JSON response from the Apps Script backend
+      result = await response.json();
+    }
 
     // Check if the operation was successful
     if (result.success) {
@@ -470,25 +517,56 @@ async function testConnection(url) {
   connectionStatus.className = 'status-dot loading';
   connectionStatus.title = 'Testing connection...';
 
+  // Variable to store the ping result
+  let result = null;
+
+  // Try checking via local server proxy first to avoid browser CORS restrictions
   try {
-    // Send GET request to the ping endpoint
-    const response = await fetch(url + '?action=ping', { redirect: 'follow' });
-    // Parse JSON response
-    const result = await response.json();
-    // Check if the ping was successful
-    if (result.status === 'ok') {
-      // Set status to online (green dot)
-      connectionStatus.className = 'status-dot online';
-      connectionStatus.title = 'Connected to Google Sheets';
-    } else {
-      // Set status to offline (red dot) if response was unexpected
-      connectionStatus.className = 'status-dot offline';
-      connectionStatus.title = 'Unexpected response from Sheet API';
+    // Call server proxy ping endpoint on http://localhost:3000/api/ping
+    const proxyRes = await fetch('/api/ping?url=' + encodeURIComponent(url));
+    // If endpoint responded successfully, parse JSON payload
+    if (proxyRes.ok) {
+      result = await proxyRes.json();
     }
-  } catch (e) {
-    // Set status to offline on network error
+  } catch (proxyErr) {
+    // Local server proxy unavailable (e.g. static file host), will fallback to direct fetch
+    result = null;
+  }
+
+  // If local proxy was not available, try direct browser fetch to Google Apps Script
+  if (!result) {
+    try {
+      // Send direct GET request to Google Apps Script ping endpoint
+      const response = await fetch(url + '?action=ping', { redirect: 'follow' });
+      // Parse JSON response from Apps Script
+      result = await response.json();
+    } catch (directErr) {
+      // Set status to offline on direct fetch error
+      connectionStatus.className = 'status-dot offline';
+      connectionStatus.title = 'Cannot reach Sheet API: ' + directErr.message;
+      return;
+    }
+  }
+
+  // Check if response indicates authorization is required (Google login redirect)
+  if (result.status === 'auth_required') {
+    // Set status indicator to offline (red dot)
     connectionStatus.className = 'status-dot offline';
-    connectionStatus.title = 'Cannot reach Sheet API: ' + e.message;
+    connectionStatus.title = result.error;
+    // Show descriptive toast notification explaining permission fix
+    showToast('error', '⚠️ Apps Script requires login. Redeploy with "Who has access: Anyone".');
+    return;
+  }
+
+  // Check if the ping was successful
+  if (result.status === 'ok') {
+    // Set status to online (green dot)
+    connectionStatus.className = 'status-dot online';
+    connectionStatus.title = 'Connected to Google Sheets';
+  } else {
+    // Set status to offline (red dot) if response was unexpected
+    connectionStatus.className = 'status-dot offline';
+    connectionStatus.title = result.error || 'Unexpected response from Sheet API';
   }
 }
 
