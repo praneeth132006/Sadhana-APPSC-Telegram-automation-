@@ -201,5 +201,98 @@ async function sendQuizPoll(threadId, question) {
   return sent; // Return the sent message object (contains message_id)
 }
 
+/**
+ * setGroupId — Updates the internal supergroup chat ID in the telegram module.
+ * What it does: Replaces the module-level groupId variable with a newly discovered or user-provided ID.
+ * What it brings: Allows dynamic runtime configuration of the group ID without restarting the process.
+ * Where changes can be seen: In subsequent API calls made by createForumTopic or sendQuizPoll.
+ *
+ * @param {string|number} newGroupId — The Telegram chat ID (starting with -100)
+ */
+function setGroupId(newGroupId) {
+  // Update the module-level groupId variable
+  groupId = String(newGroupId);
+}
+
+/**
+ * extractGroupIdFromLink — Extracts the standard Telegram chat ID from a web URL or raw ID string.
+ * What it does: Parses formats like https://t.me/c/3814998988/3 into the canonical -1003814998988 format.
+ * What it brings: Convenience for users who copy/paste browser or app topic links instead of raw chat IDs.
+ * Where changes can be seen: Used by setup.js and CLI tools to parse input arguments.
+ *
+ * @param {string} input — Link or raw string provided by the user
+ * @returns {string|null} Canonical chat ID formatted as -100..., or null if unrecognized
+ */
+function extractGroupIdFromLink(input) {
+  // Trim leading and trailing whitespace from the user input string
+  const cleanInput = String(input || '').trim();
+  // Match standard private supergroup URL format: https://t.me/c/<numeric_id>/...
+  const linkMatch = cleanInput.match(/t\.me\/c\/(\d+)/);
+  // If matched, prefix with -100 to convert internal telegram channel ID to supergroup chat ID
+  if (linkMatch && linkMatch[1]) {
+    return `-100${linkMatch[1]}`;
+  }
+  // If the user already provided a raw ID beginning with -100
+  if (cleanInput.startsWith('-100')) {
+    return cleanInput;
+  }
+  // Return null if the string pattern does not match expected Telegram formats
+  return null;
+}
+
+/**
+ * detectGroupId — Scans Telegram Bot API updates to discover supergroup IDs automatically.
+ * What it does: Retrieves recent updates from bot.getUpdates() and inspects chat payloads.
+ * What it brings: Zero-configuration group discovery when the bot is added to a group or receives /start.
+ * Where changes can be seen: Terminal logs during setup.js execution.
+ *
+ * @returns {Promise<{id: string, title: string}|null>} Discovered chat info or null
+ */
+async function detectGroupId() {
+  // Verify bot instance is initialized before attempting API call
+  if (!bot) throw new Error('Bot not initialized. Call init() first.');
+
+  try {
+    // Query Telegram Bot API getUpdates endpoint requesting message and membership change events
+    const updates = await bot.getUpdates({
+      limit: 50,
+      allowed_updates: ['message', 'my_chat_member', 'chat_member', 'channel_post']
+    });
+
+    // Loop through retrieved updates in reverse to check the most recent events first
+    for (let i = updates.length - 1; i >= 0; i--) {
+      const u = updates[i];
+      // Check message chat object
+      const chat = (u.message && u.message.chat) ||
+                   (u.my_chat_member && u.my_chat_member.chat) ||
+                   (u.channel_post && u.channel_post.chat);
+
+      // Verify that the chat object exists, is a supergroup or group, and has a negative ID
+      if (chat && chat.id && (chat.type === 'supergroup' || chat.type === 'group')) {
+        // Return the discovered chat ID and group title
+        return {
+          id: String(chat.id),
+          title: chat.title || 'Untitled Group'
+        };
+      }
+    }
+
+    // Return null if no supergroup activity was discovered in the update buffer
+    return null;
+  } catch (error) {
+    // Log warning if update fetch encountered an error
+    console.warn(`⚠️ Could not query getUpdates: ${error.message}`);
+    return null;
+  }
+}
+
 // Export all functions for use by send.js, setup.js, and scheduler.js
-module.exports = { init, testConnection, createForumTopic, sendQuizPoll };
+module.exports = {
+  init,
+  testConnection,
+  createForumTopic,
+  sendQuizPoll,
+  setGroupId,
+  extractGroupIdFromLink,
+  detectGroupId
+};
