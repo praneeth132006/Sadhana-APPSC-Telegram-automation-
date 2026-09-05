@@ -45,52 +45,64 @@ function escapeHtml(text) {
 }
 
 /**
- * MONTH_NAMES — Short 3-letter month name lookup for hashtag date formatting.
- * Index 0 = January, Index 11 = December.
- * Used by formatDateHashtag() to convert numeric months to readable abbreviated names.
- */
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/**
- * formatDateHashtag — Converts a date string to a Telegram-clickable hashtag.
- * What it does: Parses "05-09-2026" (DD-MM-YYYY) and converts it to "#Sep05_2026".
- * What it brings: Users can tap the hashtag in Telegram to find all questions from that date.
- * Where changes can be seen: Appended as a footer below each quiz poll in Telegram topics.
+ * formatDateHashtag — Converts a date string into a Telegram-clickable hashtag.
+ * What it does: Parses DD-MM-YYYY, YYYY-MM-DD, or full JS Date strings into #DD_MM_YYYY (e.g. #05_09_2026).
+ * What it brings: Users can tap the hashtag in Telegram to filter questions posted for that specific date.
+ * Where changes can be seen: Appended directly to the question text in Telegram.
  *
- * @param {string} dateStr — Date string in DD-MM-YYYY, YYYY-MM-DD, or similar format
- * @returns {string} Formatted hashtag like "#Sep05_2026", or empty string if invalid
+ * @param {string|Date} dateStr — Date string or object from Google Sheets
+ * @returns {string} Formatted hashtag like "#05_09_2026", or empty string if invalid
  */
 function formatDateHashtag(dateStr) {
-  // Return empty if no date provided
-  if (!dateStr || !dateStr.trim()) return '';
-  // Clean the input string
-  const clean = dateStr.trim();
+  // Return empty string if no date value was provided
+  if (!dateStr) return '';
+  // Convert input to trimmed string
+  const clean = String(dateStr).trim();
+  // Return empty string if cleaned value is blank
+  if (!clean) return '';
 
-  // Try DD-MM-YYYY or DD/MM/YYYY format first (most common in Indian context)
-  const ddmmyyyy = clean.match(/^(\d{1,2})[\-\/](\d{1,2})[\-\/](\d{4})$/);
+  // Case 1: Match DD-MM-YYYY or DD/MM/YYYY format directly from sheet (e.g., "05-09-2026")
+  const ddmmyyyy = clean.match(/^(\d{1,2})[\-\/](\d{1,2})[\-\/](\d{4})/);
   if (ddmmyyyy) {
-    const day = ddmmyyyy[1].padStart(2, '0');          // Zero-pad day to 2 digits
-    const monthIndex = parseInt(ddmmyyyy[2], 10) - 1;  // Convert 1-based month to 0-based index
-    const year = ddmmyyyy[3];                           // Full 4-digit year
-    // Validate month index is within range
-    if (monthIndex >= 0 && monthIndex < 12) {
-      return '#' + MONTH_NAMES[monthIndex] + day + '_' + year; // e.g., #Sep05_2026
-    }
+    // Zero-pad day to 2 digits
+    const day = ddmmyyyy[1].padStart(2, '0');
+    // Zero-pad month to 2 digits
+    const month = ddmmyyyy[2].padStart(2, '0');
+    // Extract 4-digit year
+    const year = ddmmyyyy[3];
+    // Return hashtag in #DD_MM_YYYY format
+    return '#' + day + '_' + month + '_' + year;
   }
 
-  // Try YYYY-MM-DD format (ISO standard)
-  const yyyymmdd = clean.match(/^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})$/);
+  // Case 2: Match YYYY-MM-DD or YYYY/MM/DD ISO format (e.g., "2026-09-05")
+  const yyyymmdd = clean.match(/^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})/);
   if (yyyymmdd) {
+    // Extract 4-digit year
     const year = yyyymmdd[1];
-    const monthIndex = parseInt(yyyymmdd[2], 10) - 1;
+    // Zero-pad month to 2 digits
+    const month = yyyymmdd[2].padStart(2, '0');
+    // Zero-pad day to 2 digits
     const day = yyyymmdd[3].padStart(2, '0');
-    if (monthIndex >= 0 && monthIndex < 12) {
-      return '#' + MONTH_NAMES[monthIndex] + day + '_' + year;
-    }
+    // Return hashtag in #DD_MM_YYYY format
+    return '#' + day + '_' + month + '_' + year;
   }
 
-  // Fallback: remove all non-alphanumeric characters and prepend #
-  const fallback = clean.replace(/[^a-zA-Z0-9]/g, '');
+  // Case 3: Parse full JavaScript Date string from Google Sheets (e.g., "Sat Sep 05 2026 00:00:00 GMT+0530")
+  const parsed = new Date(clean);
+  // Check if parsed date is valid
+  if (!isNaN(parsed.getTime())) {
+    // Extract day from date object and pad to 2 digits
+    const day = String(parsed.getDate()).padStart(2, '0');
+    // Extract 1-based month from date object and pad to 2 digits
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    // Extract 4-digit year from date object
+    const year = parsed.getFullYear();
+    // Return hashtag in #DD_MM_YYYY format
+    return '#' + day + '_' + month + '_' + year;
+  }
+
+  // Case 4: Fallback for other text: clean non-alphanumeric characters and prefix with #
+  const fallback = clean.replace(/[^a-zA-Z0-9_]/g, '_');
   return fallback ? '#' + fallback : '';
 }
 
@@ -224,14 +236,29 @@ async function sendQuizPoll(threadId, question) {
     pollConfig.explanation_parse_mode = 'HTML';     // Allow basic HTML formatting
   }
 
+  // ---- Format Hashtags: Date and Newspaper metadata ----
+  // Format date as #DD_MM_YYYY (e.g. #05_09_2026) and newspaper as #TheHindu
+  const dateTag = formatDateHashtag(question.date || '');
+  const newspaperTag = formatNewspaperHashtag(question.newspaper || '');
+  // Collect available tags with descriptive icons
+  const tagParts = [];
+  if (dateTag) tagParts.push('📅 ' + dateTag);
+  if (newspaperTag) tagParts.push('📰 ' + newspaperTag);
+  // Join tags into a single line string
+  const tagLine = tagParts.join('  ');
+
   // Telegram limits poll question text to a maximum of 300 characters.
   // APPSC and competitive exam questions with multiple statements frequently exceed this limit.
-  // If the question exceeds 290 characters, we first send the full question text with statements
-  // as a formatted Telegram message in the topic thread, and then follow up with the quiz poll.
+  // If the question exceeds 290 characters, we send the full question text with statements
+  // AND attached hashtags directly in the topic message, and then follow up with the quiz poll.
   let pollQuestion = question.question_text;
   if (pollQuestion.length > 290) {
-    // Post the complete question and statement list as a formatted topic message with HTML escaping
-    await bot.sendMessage(groupId, `📝 <b>Question:</b>\n\n${escapeHtml(question.question_text)}`, {
+    // Construct question message with hashtags attached directly at the end (never sent separately)
+    const questionTextWithTags = `📝 <b>Question:</b>\n\n${escapeHtml(question.question_text)}` +
+      (tagLine ? `\n\n${tagLine}` : '');
+
+    // Post the complete question and statement list with inline hashtags to the forum topic
+    await bot.sendMessage(groupId, questionTextWithTags, {
       message_thread_id: threadId, // Direct message to the specific subject forum topic
       parse_mode: 'HTML'           // Format as HTML for clean readability
     });
@@ -242,6 +269,21 @@ async function sendQuizPoll(threadId, question) {
     if (lastLine.endsWith('?') && lastLine.length < 250) {
       pollQuestion = `👆 ${lastLine} (Refer to statements above)`;
     } else {
+      pollQuestion = '👆 Choose the correct answer for the question above:';
+    }
+  } else {
+    // If question is short (<= 290 chars):
+    // If question + tags fits within Telegram's 300-char poll question limit, attach hashtags directly!
+    if (tagLine && (pollQuestion.length + tagLine.length + 2 <= 300)) {
+      pollQuestion = `${pollQuestion}\n\n${tagLine}`;
+    } else if (tagLine) {
+      // If adding hashtags pushes pollQuestion beyond 300 characters,
+      // send the question with hashtags as a formatted topic message, then follow up with poll
+      const shortQuestionWithTags = `📝 <b>Question:</b>\n\n${escapeHtml(question.question_text)}\n\n${tagLine}`;
+      await bot.sendMessage(groupId, shortQuestionWithTags, {
+        message_thread_id: threadId,
+        parse_mode: 'HTML'
+      });
       pollQuestion = '👆 Choose the correct answer for the question above:';
     }
   }
@@ -270,25 +312,6 @@ async function sendQuizPoll(threadId, question) {
     await bot.sendMessage(groupId, spoilerMessage, {
       message_thread_id: threadId,
       parse_mode: 'HTML'
-    });
-  }
-
-  // ---- Hashtag Footer: Date and Newspaper metadata ----
-  // Format date and newspaper as clickable Telegram hashtags for filtering
-  const dateTag = formatDateHashtag(question.date || '');         // e.g., #Sep05_2026
-  const newspaperTag = formatNewspaperHashtag(question.newspaper || ''); // e.g., #TheHindu
-
-  // Only send hashtag footer if at least one tag is available
-  if (dateTag || newspaperTag) {
-    // Build the hashtag footer line with calendar and newspaper icons
-    const parts = [];                                               // Array to collect non-empty tag parts
-    if (dateTag) parts.push('📅 ' + dateTag);                      // Add date hashtag with calendar emoji
-    if (newspaperTag) parts.push('📰 ' + newspaperTag);            // Add newspaper hashtag with newspaper emoji
-    const hashtagFooter = parts.join('  ');                        // Join tags with double space separator
-
-    // Send the hashtag footer as a separate message in the topic thread
-    await bot.sendMessage(groupId, hashtagFooter, {
-      message_thread_id: threadId                                   // Target the same forum topic
     });
   }
 
@@ -388,5 +411,7 @@ module.exports = {
   sendQuizPoll,
   setGroupId,
   extractGroupIdFromLink,
-  detectGroupId
+  detectGroupId,
+  formatDateHashtag,
+  formatNewspaperHashtag
 };
