@@ -54,7 +54,7 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 /** Apps Script version these dashboards require. Older deployments lack the
  *  analytics, browse and edit actions, so the UI warns instead of failing. */
-const REQUIRED_SHEET_VERSION = 'v5 (30 columns)';
+const REQUIRED_SHEET_VERSION = 'v6 (30 columns + membership)';
 
 /** Rate limit: requests allowed per IP inside the window. */
 const RATE_LIMIT_MAX = 240;

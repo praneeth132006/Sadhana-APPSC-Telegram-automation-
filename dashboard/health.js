@@ -117,7 +117,7 @@ function connectivityChecks(data) {
     // Reachable and bound, but an older version of the script.
     checks.push(check('fail', 'Google Apps Script version',
       `The deployed Web App is running <code>${data.sheets.version || 'an unknown version'}</code>, but these ` +
-      'dashboards need <code>v5 (30 columns)</code>. Analytics, the question browser and editing will not ' +
+      'dashboards need <code>v6 (30 columns + membership)</code>. Analytics, the question browser and editing will not ' +
       'work until you open your Sheet → <code>Extensions → Apps Script</code>, paste the current ' +
       '<code>google_apps_script.js</code>, run <code>upgradeSpreadsheet</code>, and deploy a ' +
       '<strong>New version</strong> of that same deployment.'));
