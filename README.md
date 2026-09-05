@@ -205,6 +205,13 @@ proven, is in [SECURITY-REVIEW.md](SECURITY-REVIEW.md).
 
 ## Troubleshooting
 
+**Already-posted questions reappeared as pending after upgrading.**
+The v2 layout stored the flag and the time in one cell (`YES | 05/09/2026, 01:16 PM`)
+rather than a bare `YES`. Any script version that tests for an exact `YES` reads those
+rows as unposted and will send them to Telegram again. The current
+`google_apps_script.js` handles the combined format and moves the buried timestamp
+into `Posted At` — **paste the current version before running `upgradeSpreadsheet`.**
+
 **"Google Apps Script needs upgrading" banner won't go away.**
 The Web App at your `GOOGLE_SHEET_WEBAPP_URL` is still serving old code. Either you
 ran the function in the editor without deploying (running ≠ deploying — you need
@@ -237,7 +244,7 @@ Add the address to `CURATOR_EMAILS` in `.env` and restart.
 npm test
 ```
 
-78 tests across three suites:
+81 tests across three suites:
 
 - `test/server.test.js` — every API route, input validation, and a regression test for
   each security finding (traversal, CORS, SSRF, body limits, forged authorship).

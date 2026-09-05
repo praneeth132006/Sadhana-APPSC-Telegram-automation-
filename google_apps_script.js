@@ -484,6 +484,32 @@ function headerAliases(canonical) {
   return table[canonical] || [normaliseHeader(canonical)];
 }
 
+/**
+ * isPostedValue — true when a Posted cell means "this went out".
+ *
+ * The v2 layout stored the flag and the timestamp together in one cell, e.g.
+ * `YES | 05/09/2026, 01:16:53 PM`. Testing for an exact 'YES' would read those
+ * rows as unposted, which on migration would have cleared the flag and queued
+ * every already-published question to be sent to Telegram a second time.
+ *
+ * @param {*} value Raw cell contents
+ * @returns {boolean}
+ */
+function isPostedValue(value) {
+  return /^\s*yes\b/i.test(String(value === null || value === undefined ? '' : value));
+}
+
+/**
+ * postedTimestampFrom — pulls the timestamp out of a legacy `YES | <when>` cell.
+ *
+ * @param {*} value Raw Posted cell contents
+ * @returns {string} The timestamp portion, or '' when there is none
+ */
+function postedTimestampFrom(value) {
+  var match = String(value === null || value === undefined ? '' : value).match(/^\s*yes\s*\|\s*(.+)$/i);
+  return match ? match[1].trim() : '';
+}
+
 /** Reads a cell from a row array using the header map, always as trimmed text. */
 function cell(row, map, header) {
   var idx = map[header];
@@ -552,7 +578,10 @@ function rowToQuestion(row, map, subject, dataIndex) {
     tags: cell(row, map, 'Tags'),
     source_url: cell(row, map, 'Source URL'),
     status: cell(row, map, 'Status') || 'Draft',
-    posted: cell(row, map, 'Posted') || 'NO',
+    // Normalised to a strict YES/NO here so every caller can compare directly;
+    // posted_raw keeps the original cell for the migration to mine.
+    posted: isPostedValue(cell(row, map, 'Posted')) ? 'YES' : 'NO',
+    posted_raw: cell(row, map, 'Posted'),
     posted_at: cell(row, map, 'Posted At'),
     scheduled_for: cell(row, map, 'Scheduled For'),
     thread_id: cell(row, map, 'Thread ID'),
@@ -1219,7 +1248,11 @@ function migrateSheetToCanonical(sheet) {
       ? rawStatus
       : (wasPosted ? 'Posted' : 'Draft');
     row[17] = wasPosted ? 'YES' : 'NO';
-    row[18] = q.posted_at === '-' ? '' : q.posted_at;
+    // Recover the timestamp the v2 layout buried inside the Posted cell.
+    var recoveredPostedAt = (q.posted_at && q.posted_at !== '-')
+      ? q.posted_at
+      : postedTimestampFrom(q.posted_raw);
+    row[18] = recoveredPostedAt;
     row[19] = q.scheduled_for;
     row[20] = q.thread_id;
     row[21] = q.telegram_msg_id === '-' ? '' : q.telegram_msg_id;

@@ -292,6 +292,86 @@ test('headerMap tolerates alternative spellings', () => {
 // Migration
 // ===========================================================================
 
+test('a legacy "YES | timestamp" Posted cell counts as posted', () => {
+  // The v2 layout wrote the flag and the time into one cell. Reading that as
+  // unposted would re-send every already-published question to Telegram.
+  const s = freshScript();
+  assert.equal(s.isPostedValue('YES'), true);
+  assert.equal(s.isPostedValue('YES | 05/09/2026, 01:16:53 PM'), true);
+  assert.equal(s.isPostedValue('yes | 05/09/2026'), true, 'must be case-insensitive');
+  assert.equal(s.isPostedValue('  YES  '), true);
+  assert.equal(s.isPostedValue('NO'), false);
+  assert.equal(s.isPostedValue(''), false);
+  assert.equal(s.isPostedValue('YESTERDAY'), false, 'word boundary must be respected');
+
+  assert.equal(s.postedTimestampFrom('YES | 05/09/2026, 01:16:53 PM'), '05/09/2026, 01:16:53 PM');
+  assert.equal(s.postedTimestampFrom('YES'), '');
+  assert.equal(s.postedTimestampFrom('NO'), '');
+});
+
+test('migrating a v2 sheet preserves posted state and recovers the timestamp', () => {
+  // Exactly the shape of the user's live sheet before upgrading.
+  const s = freshScript();
+  const v2Headers = [
+    'Date', 'Newspaper', 'Subject', 'Question', 'Option A', 'Option B',
+    'Option C', 'Option D', 'Correct Answer', 'Explanation', 'Posted'
+  ];
+  const sheet = new FakeSheet('Environment', [
+    v2Headers,
+    ['05-09-2026', 'The Hindu', 'Environment', 'Already sent question?', 'a', 'b', 'c', 'd', 'B',
+     'Because.', 'YES | 05/09/2026, 01:16:37 PM'],
+    ['05-09-2026', 'The Hindu', 'Environment', 'Still pending question?', 'a', 'b', 'c', 'd', 'C',
+     'Because.', 'NO']
+  ]);
+
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+  assert.equal(script.migrateSheetToCanonical(sheet), 2);
+
+  const map = script.headerMap(sheet);
+  const sent = sheet.values[1];
+  const pending = sheet.values[2];
+
+  // The already-published row must stay published.
+  assert.equal(sent[map['Posted']], 'YES', 'a posted row was reset to NO — it would be re-sent');
+  assert.equal(sent[map['Status']], 'Posted');
+  assert.equal(sent[map['Times Posted']], 1);
+  assert.equal(sent[map['Posted At']], '05/09/2026, 01:16:37 PM', 'the buried timestamp was lost');
+
+  // The pending row stays pending.
+  assert.equal(pending[map['Posted']], 'NO');
+  assert.equal(pending[map['Status']], 'Draft');
+  assert.equal(pending[map['Posted At']], '');
+
+  // And the v2 data landed in the right v5 columns.
+  assert.equal(sent[map['Date']], '05-09-2026');
+  assert.equal(sent[map['Question']], 'Already sent question?');
+  assert.equal(sent[map['Correct Answer']], 'B');
+  assert.match(sent[map['Question ID']], /^ENV-\d{8}-0001$/);
+  assert.equal(sent[map['Dup Hash']].length, 16);
+});
+
+test('a legacy posted row is never offered for posting again', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Environment', [
+    ['Date', 'Newspaper', 'Subject', 'Question', 'Option A', 'Option B', 'Option C',
+     'Option D', 'Correct Answer', 'Explanation', 'Posted'],
+    ['05-09-2026', 'The Hindu', 'Environment', 'Already sent?', 'a', 'b', 'c', 'd', 'A',
+     'e', 'YES | 05/09/2026, 01:16:37 PM'],
+    ['05-09-2026', 'The Hindu', 'Environment', 'Not sent yet?', 'a', 'b', 'c', 'd', 'A', 'e', '']
+  ]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  const pending = script.fetchUnpostedQuestions('Environment', 50, false);
+  assert.deepEqual(Array.from(pending, (q) => q.question_text), ['Not sent yet?'],
+    'a question already sent to Telegram was queued to go out again');
+
+  // Analytics must count it as posted too, even before migration.
+  const analytics = script.buildAnalytics();
+  const env = analytics.subjects.find((x) => x.subject === 'Environment');
+  assert.equal(env.posted, 1);
+  assert.equal(env.pending, 1);
+});
+
 test('a header that is absent maps to -1 rather than to a wrong column', () => {
   // Regression test. headerMap used to fall back to the canonical position for
   // a missing header, so reading "Question ID" (canonical index 1) from a v4
