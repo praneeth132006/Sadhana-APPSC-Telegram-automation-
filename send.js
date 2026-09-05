@@ -101,8 +101,9 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
 
   console.log(`   📤 Sending ${questions.length} question(s)...`);
 
-  // Track which rows were successfully posted (for marking in Google Sheets / Excel)
+  // Track which rows were successfully posted and the latest Telegram message ID
   const postedRowIndices = [];
+  let lastMessageId = null;
 
   // Send each question one by one with a delay between them
   for (let i = 0; i < questions.length; i++) {
@@ -110,7 +111,12 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
 
     try {
       // Send the quiz poll to the subject's Telegram forum topic
-      await telegram.sendQuizPoll(subjectConfig.topic_thread_id, q);
+      const sentPoll = await telegram.sendQuizPoll(subjectConfig.topic_thread_id, q);
+
+      // Extract and save Telegram message ID if available
+      if (sentPoll && sentPoll.message_id) {
+        lastMessageId = sentPoll.message_id;
+      }
 
       // Track 0-based data row index for marking as posted in Excel or Google Sheets
       // This ensures the exact row is marked with timestamp upon successful delivery
@@ -135,8 +141,8 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
 
   // Mark all successfully posted questions in Google Sheets or local Excel
   if (postedRowIndices.length > 0) {
-    // Call unified markAsPosted to update the "Posted" column with timestamp
-    await data.markAsPosted(subjectConfig.subject, postedRowIndices);
+    // Call unified markAsPosted to update "Posted", "Posted At", and "Telegram Msg ID"
+    await data.markAsPosted(subjectConfig.subject, postedRowIndices, lastMessageId);
     console.log(`   📝 ${postedRowIndices.length} question(s) marked as posted in ${data.getDataSourceName()}`);
   }
 }

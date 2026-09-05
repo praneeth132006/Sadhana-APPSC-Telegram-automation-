@@ -147,38 +147,31 @@ body {
   flex-wrap: wrap;
 }
 
-/* Sheet URL Input Widget */
-.sheet-url-config {
+/* What this block does: Styles the read-only embedded Google Sheets connection pill */
+/* What it brings: Sleek, non-editable status widget that embeds the connection */
+/* Where changes can be seen: Top navigation header on http://localhost:3000 */
+.sheet-connection-pill {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-card);
-  padding: 6px 14px;
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  padding: 7px 14px;
+  border-radius: 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(8px);
 }
 
-.config-label {
-  font-size: 0.75rem;
+/* What this rule does: Styles the connection status text inside the embedded pill */
+/* What it brings: Legible label displaying the state of Google Sheets connectivity */
+/* Where changes can be seen: Text inside the connection pill in the header */
+.connection-status-text {
+  font-size: 0.8rem;
   font-weight: 600;
   color: var(--text-secondary);
+  letter-spacing: 0.02em;
   white-space: nowrap;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
-
-.config-input {
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 0.82rem;
-  width: 260px;
-}
-
-.config-input::placeholder { color: var(--text-muted); }
 
 /* Status Dot Indicator */
 .status-dot {
@@ -304,6 +297,194 @@ body {
 }
 
 .btn-signout:hover { color: var(--accent-danger); }
+
+/* ============================================================================
+   Authentication Gate Hero Section Styles
+   ============================================================================ */
+
+/* What this rule does: Centers the auth gate card vertically and horizontally across the screen */
+/* What it brings: Distraction-free authentication screen when the user is logged out */
+/* Where changes can be seen: http://localhost:3000 prior to authentication */
+.auth-gate-hero {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: calc(100vh - 130px);
+  width: 100%;
+  padding: 30px 20px;
+  animation: fadeIn 0.4s ease-out;
+}
+
+/* What this rule does: Styles the high-end glassmorphic login card with subtle glowing borders */
+/* What it brings: Premium dark-mode aesthetic that inspires confidence and security */
+/* Where changes can be seen: Centered card container on the login gate */
+.auth-gate-card {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 35px rgba(59, 130, 246, 0.12);
+  backdrop-filter: blur(20px);
+  border-radius: 24px;
+  padding: 44px 40px;
+  max-width: 520px;
+  width: 100%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* What this rule does: Styles the security status badge at the top of the auth card */
+/* What it brings: Visual indicator showing that the workspace is secured and requires credentials */
+/* Where changes can be seen: Red security pill badge at the top of the login card */
+.auth-gate-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 20px;
+  color: #fca5a5;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 20px;
+}
+
+/* What this rule does: Styles the main title of the login card with an elegant gradient */
+/* What it brings: Prominent typography highlighting the Sadhana APPSC branding */
+/* Where changes can be seen: Large header text on the login card */
+.auth-gate-title {
+  font-size: 1.85rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  background: linear-gradient(135deg, #ffffff 0%, #94a3b8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* What this rule does: Styles the explanatory subtitle under the title */
+/* What it brings: Explains why access is restricted and what authenticating enables */
+/* Where changes can be seen: Paragraph under the title */
+.auth-gate-subtitle {
+  font-size: 0.92rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+
+/* What this rule does: Styles the feature summary box inside the login card */
+/* What it brings: Previews the key capabilities (auto-expansion, live sync, attribution) */
+/* Where changes can be seen: Darker panel with checkmarks inside the login card */
+.auth-features-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  background: rgba(10, 14, 26, 0.65);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 26px;
+  text-align: left;
+}
+
+/* What this rule does: Styles individual feature preview items with aligned text */
+/* What it brings: Clean row layout for each feature point */
+/* Where changes can be seen: Individual checkmark lines inside the feature box */
+.auth-feature-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.86rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+/* What this rule does: Styles the bright green checkmark icon */
+/* What it brings: Crisp visual confirmation of each platform benefit */
+/* Where changes can be seen: Green checkmark icons in the feature box */
+.auth-feature-check {
+  color: var(--accent-correct);
+  font-weight: 800;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+/* What this rule does: Extends the Google sign-in button for hero display */
+/* What it brings: Full-width, prominent call-to-action button for 1-click Google authentication */
+/* Where changes can be seen: Large Google login button on the auth card */
+.btn-hero {
+  width: 100%;
+  padding: 13px 20px;
+  font-size: 0.98rem;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+/* What this rule does: Styles the horizontal separator between Google and email login */
+/* What it brings: Clear distinction between OAuth and email/password paths */
+/* Where changes can be seen: Divider with text "or continue with email" */
+.auth-gate-divider {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  text-align: center;
+  margin: 22px 0;
+}
+
+.auth-gate-divider::before,
+.auth-gate-divider::after {
+  content: '';
+  flex: 1;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.auth-gate-divider span {
+  padding: 0 12px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* What this rule does: Styles the tab bar for toggling between Sign In and Create Account */
+/* What it brings: User-friendly switching without page reloading */
+/* Where changes can be seen: Tab container above email form in the login card */
+.auth-gate-tabs {
+  display: flex;
+  width: 100%;
+  background: rgba(10, 14, 26, 0.55);
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 18px;
+  gap: 6px;
+}
+
+.auth-gate-tabs .auth-tab {
+  flex: 1;
+  padding: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.auth-gate-tabs .auth-tab.active {
+  background: var(--accent-primary);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4);
+}
 
 /* ---- Main Content Workspace ---- */
 .main-content {
@@ -680,24 +861,28 @@ body {
 }
 
 /* Question Prompt Textarea */
+/* What this block does: Styles the question prompt textarea with spacious padding, font size, and overflow handling */
+/* What it brings: Eliminates inner scrollbars so long multi-statement exam questions are fully visible without scrolling */
+/* Where changes can be seen: In every question card prompt area on http://localhost:3000 */
 .question-textarea-vertical {
-  background: rgba(10, 14, 26, 0.6);
+  background: rgba(10, 14, 26, 0.7);
   border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
-  padding: 12px;
+  padding: 14px 16px;
   color: var(--text-primary);
   font-family: var(--font-sans);
-  font-size: 0.92rem;
-  line-height: 1.55;
+  font-size: 0.95rem;
+  line-height: 1.65;
   resize: vertical;
-  min-height: 90px;
+  min-height: 140px;
+  overflow-y: hidden; /* Removes internal scrollbars; height expands dynamically via JS */
   outline: none;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .question-textarea-vertical:focus {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 }
 
 /* Vertical Options List */
@@ -779,19 +964,23 @@ body {
 .option-input-vertical::placeholder { color: var(--text-muted); }
 
 /* Explanation Textarea */
+/* What this block does: Styles the explanation textarea with increased line height and auto-height expansion */
+/* What it brings: Allows reading detailed multi-sentence explanations comfortably without inner scrollbars */
+/* Where changes can be seen: In every question card explanation section on http://localhost:3000 */
 .explanation-textarea-vertical {
-  background: rgba(10, 14, 26, 0.6);
+  background: rgba(10, 14, 26, 0.7);
   border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
+  padding: 14px 16px;
   color: var(--text-secondary);
   font-family: var(--font-sans);
-  font-size: 0.85rem;
-  line-height: 1.5;
+  font-size: 0.92rem;
+  line-height: 1.6;
   resize: vertical;
-  min-height: 70px;
+  min-height: 110px;
+  overflow-y: hidden; /* Removes internal scrollbars; height expands dynamically via JS */
   outline: none;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .explanation-textarea-vertical:focus {

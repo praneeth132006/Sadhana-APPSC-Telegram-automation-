@@ -1,267 +1,324 @@
 // ============================================================================
-// Google Apps Script — APPSC Telegram Quiz Automation Backend (v2)
+// Google Apps Script — APPSC Telegram Quiz Automation Backend (v4)
 // ============================================================================
 // INSTRUCTIONS TO DEPLOY:
-// 1. Open your Google Sheet in a browser
+// 1. Open your Google Sheet in a browser ("Sadhana APPSC Questions Tracker")
 // 2. Go to: Extensions > Apps Script
-// 3. Delete any code in Code.gs and paste this entire file
-// 4. Click the blue "Deploy" button (top right) > "New deployment"
-// 5. Select type: "Web app" (click the gear icon > Web app)
-// 6. Set Description: "APPSC Telegram Bot API"
-// 7. Set "Execute as": "Me"
-// 8. Set "Who has access": "Anyone"  <-- CRITICAL so the bot can connect!
-// 9. Click "Deploy", authorize permissions when prompted
-// 10. Copy the "Web app URL" and paste it into your .env file as:
-//     GOOGLE_SHEET_WEBAPP_URL=https://script.google.com/macros/s/.../exec
+// 3. Delete any old code in Code.gs and paste this entire file
+// 4. To upgrade your existing sheet with all 16 columns and keep existing questions:
+//    - Select "upgradeSpreadsheet" from the function dropdown at the top and click "Run"!
+// 5. To deploy Web App:
+//    - Click the blue "Deploy" button (top right) > "Manage deployments" > Edit (pencil icon)
+//    - Select Version: "New version"
+//    - Set "Execute as": "Me"
+//    - Set "Who has access": "Anyone"  <-- CRITICAL so dashboard and bot can connect!
+//    - Click "Deploy"
 // ============================================================================
 //
-// COLUMN LAYOUT (v3) — 14 columns per subject sheet:
-// A: S.No | B: Date | C: Newspaper | D: Question | E: Option A | F: Option B |
-// G: Option C | H: Option D | I: Correct Answer | J: Explanation | K: Posted |
-// L: Posted At | M: Added At | N: Added By
+// 16-COLUMN ENHANCED TRACKING SCHEMA (Columns A through P):
+// 1.  S.No              (Col A) - Serial number (1, 2, 3...)
+// 2.  Date              (Col B) - Publication/exam date (e.g., 05-09-2026)
+// 3.  Newspaper         (Col C) - Source publication (e.g., The Hindu)
+// 4.  Subject           (Col D) - Subject category (e.g., Environment)
+// 5.  Question          (Col E) - Full question text and statements
+// 6.  Option A          (Col F) - Option A choice text
+// 7.  Option B          (Col G) - Option B choice text
+// 8.  Option C          (Col H) - Option C choice text
+// 9.  Option D          (Col I) - Option D choice text
+// 10. Correct Answer    (Col J) - Correct option letter (A, B, C, D)
+// 11. Explanation       (Col K) - Detailed rationale/statement analysis
+// 12. Posted            (Col L) - Strictly 'YES' or 'NO' (Dropdown & Color-coded)
+// 13. Posted At         (Col M) - Timestamp when published to Telegram
+// 14. Added At          (Col N) - Timestamp when uploaded via Dashboard
+// 15. Added By          (Col O) - Curator name/email from Firebase Auth
+// 16. Telegram Msg ID   (Col P) - Telegram message link/ID for easy tracking
 // ============================================================================
 
+// Header definitions for all 16 subject tabs
+// What this line does: Defines standard 16 column headers for tracking questions
+// What it brings: Unifies the schema across all subject sheets with complete metadata
+// Where changes can be seen: Row 1 of every subject sheet in Google Spreadsheet
+const QUESTION_HEADERS = [
+  'S.No',
+  'Date',
+  'Newspaper',
+  'Subject',
+  'Question',
+  'Option A',
+  'Option B',
+  'Option C',
+  'Option D',
+  'Correct Answer',
+  'Explanation',
+  'Posted',
+  'Posted At',
+  'Added At',
+  'Added By',
+  'Telegram Msg ID'
+];
+
+// Master list of 16 APPSC subjects with clean names and default Telegram thread IDs
+// What this line does: Maps all 16 topics to forum thread IDs created during setup
+// What it brings: Central registry for batch scheduling and sheet tab generation
+// Where changes can be seen: "Config" tab in Google Spreadsheet
+const SUBJECT_CONFIG_LIST = [
+  { subject: 'History', threadId: 6, cron: '0 9,18 * * *', count: 5 },
+  { subject: 'AP History', threadId: 7, cron: '0 */3 * * *', count: 5 },
+  { subject: 'Geography', threadId: 8, cron: '0 */3 * * *', count: 5 },
+  { subject: 'AP Geography', threadId: 9, cron: '0 */3 * * *', count: 5 },
+  { subject: 'Economy', threadId: 10, cron: '0 */3 * * *', count: 5 },
+  { subject: 'AP Economy', threadId: 11, cron: '0 */3 * * *', count: 5 },
+  { subject: 'Polity', threadId: 12, cron: '0 */2 * * *', count: 5 },
+  { subject: 'Society', threadId: 13, cron: '0 */4 * * *', count: 5 },
+  { subject: 'Current Affairs', threadId: 14, cron: '0 8,14,20 * * *', count: 5 },
+  { subject: 'Science and Technology', threadId: 15, cron: '0 */3 * * *', count: 5 },
+  { subject: 'Biology', threadId: 16, cron: '0 */4 * * *', count: 5 },
+  { subject: 'Chemistry', threadId: 17, cron: '0 */4 * * *', count: 5 },
+  { subject: 'Physics', threadId: 18, cron: '0 */4 * * *', count: 5 },
+  { subject: 'Environment', threadId: 19, cron: '0 */3 * * *', count: 5 },
+  { subject: 'General Studies', threadId: 20, cron: '0 */3 * * *', count: 5 },
+  { subject: 'Disaster Management', threadId: 21, cron: '0 */4 * * *', count: 5 }
+];
+
 /**
- * doGet — Handles HTTP GET requests sent from the Node.js automation bot.
- * Actions supported:
- * - action=ping: Health check to verify deployment
- * - action=getConfig: Returns subject config list with topic IDs & schedules
- * - action=getQuestions: Returns unposted questions for a specific subject
- * - action=getStats: Returns question counts (total, posted, pending) per subject
+ * doGet — Handles HTTP GET requests sent from the Node.js automation bot or browser.
+ * What it does: Routes actions for ping, getConfig, getQuestions, and getStats.
+ * What it brings: Provides read access to unposted questions and subject configurations.
+ * Where changes can be seen: Responses to GET requests from server.js and send.js.
  *
  * @param {Object} e - Event parameter containing HTTP query string parameters
  * @returns {TextOutput} JSON response payload
  */
 function doGet(e) {
   try {
-    // Extract query parameters from the request URL
+    // Extract query parameters from request URL
     const params = (e && e.parameter) || {};
-    // Determine the requested action (default to 'ping' for health checks)
+    // Extract action parameter (default to ping)
     const action = params.action || 'ping';
 
-    // Handle health check action to verify script deployment
+    // Health check action
     if (action === 'ping') {
-      return jsonResponse({ status: 'ok', message: 'Google Sheets API is running (v2 — 10 columns)' });
+      return jsonResponse({
+        status: 'ok',
+        version: 'v4 (16 columns)',
+        message: 'Google Sheets API is running with 16-column enhanced tracking'
+      });
     }
 
-    // Handle fetching subject configuration from the "Config" sheet
+    // Return subject configurations from Config sheet
     if (action === 'getConfig') {
       const config = fetchConfigFromSheet();
       return jsonResponse({ success: true, data: config });
     }
 
-    // Handle fetching unposted questions for a specific subject
+    // Return unposted questions for a specific subject
     if (action === 'getQuestions') {
       const subject = params.subject;
-      // Parse requested question count (defaults to 1 if not provided)
       const limit = parseInt(params.limit || '1', 10);
 
-      // Validate that a subject name was provided
       if (!subject) {
         return jsonResponse({ success: false, error: 'Missing "subject" query parameter' });
       }
 
-      // Fetch unposted questions from the subject tab
       const questions = fetchUnpostedQuestions(subject, limit);
       return jsonResponse({ success: true, data: questions });
     }
 
-    // Handle fetching summary statistics for all subjects
+    // Return summary statistics across all subjects
     if (action === 'getStats') {
       const stats = fetchSummaryStats();
       return jsonResponse({ success: true, data: stats });
     }
 
-    // Return error if action parameter is unrecognized
-    return jsonResponse({ success: false, error: 'Unknown action: ' + action });
+    return jsonResponse({ success: false, error: 'Unknown GET action: ' + action });
   } catch (err) {
-    // Catch and return any unexpected runtime errors
     return jsonResponse({ success: false, error: err.toString() });
   }
 }
 
 /**
- * doPost — Handles HTTP POST requests sent from the Node.js automation bot and the web dashboard.
- * Actions supported:
- * - action=markPosted: Marks question rows as posted with timestamp in column J (10th column)
- * - action=updateConfig: Updates Topic Thread IDs in the Config sheet
- * - action=addQuestions: Appends new questions from the web dashboard to a subject tab
+ * doPost — Handles HTTP POST requests sent from the Node.js automation bot and web dashboard.
+ * What it does: Handles markPosted, updateConfig, and addQuestions.
+ * What it brings: Persists updates, marks questions as posted, and appends new questions with metadata.
+ * Where changes can be seen: In the Google Spreadsheet rows and status flags.
  *
  * @param {Object} e - Event parameter containing HTTP POST body data
  * @returns {TextOutput} JSON response payload
  */
 function doPost(e) {
   try {
-    // Parse the incoming JSON body from postData contents
+    // Parse incoming JSON body
     let payload = {};
     if (e && e.postData && e.postData.contents) {
       payload = JSON.parse(e.postData.contents);
     }
 
-    // Determine the requested POST action
     const action = payload.action;
 
-    // Handle marking questions as posted after sending to Telegram
+    // Handle marking questions as posted
     if (action === 'markPosted') {
       const subject = payload.subject;
-      // 1-based row numbers in sheet pointing to column J (Posted)
       const rowIndices = payload.rowIndices || [];
+      const messageId = payload.messageId || payload.message_id || '';
 
-      // Validate required inputs
       if (!subject || !rowIndices.length) {
         return jsonResponse({ success: false, error: 'Missing subject or rowIndices array' });
       }
 
-      // Mark the rows in the Google Sheet
-      const updatedCount = markRowsAsPostedInSheet(subject, rowIndices);
+      const updatedCount = markRowsAsPostedInSheet(subject, rowIndices, messageId);
       return jsonResponse({ success: true, updatedCount: updatedCount });
     }
 
-    // Handle saving created Topic Thread IDs into the Config sheet
+    // Handle updating topic thread IDs in Config tab
     if (action === 'updateConfig') {
       const configData = payload.config || [];
-      // Update thread IDs in the Config sheet
+      if (!configData.length) {
+        return jsonResponse({ success: false, error: 'Missing config array' });
+      }
+
       updateConfigInSheet(configData);
       return jsonResponse({ success: true, message: 'Config updated successfully' });
     }
 
-    // Handle adding new questions from the web dashboard
+    // Handle appending questions from web dashboard
     if (action === 'addQuestions') {
-      // Extract subject name from the payload
       const subject = payload.subject;
-      // Extract array of question objects
       const questions = payload.questions || [];
-      // Extract user identification who uploaded the questions (from Firebase Auth)
       const addedBy = payload.added_by || payload.addedBy || 'Dashboard User';
 
-      // Validate that subject and questions exist
       if (!subject) {
-        return jsonResponse({ success: false, error: 'Missing "subject" field in payload' });
+        return jsonResponse({ success: false, error: 'Missing "subject" in payload' });
       }
       if (questions.length === 0) {
-        return jsonResponse({ success: false, error: 'No questions provided in the payload' });
+        return jsonResponse({ success: false, error: 'No questions provided in payload' });
       }
 
-      // Append questions to the correct subject tab with S.No, timestamps, and uploader email
       const addedCount = appendQuestionsToSheet(subject, questions, addedBy);
-      return jsonResponse({ success: true, addedCount: addedCount, message: addedCount + ' questions added to ' + subject });
+      return jsonResponse({
+        success: true,
+        addedCount: addedCount,
+        message: addedCount + ' question(s) added to "' + subject + '"'
+      });
     }
 
-    // Return error if action is unrecognized
     return jsonResponse({ success: false, error: 'Unknown POST action: ' + action });
   } catch (err) {
-    // Catch and return any unexpected runtime errors
     return jsonResponse({ success: false, error: err.toString() });
   }
 }
 
 /**
- * fetchConfigFromSheet — Reads the "Config" sheet tab and extracts configuration rows.
- * Expected columns: Subject | Emoji | Topic_Thread_ID | Schedule_Cron | Questions_Per_Batch | Active
+ * fetchConfigFromSheet — Reads the "Config" tab and returns subject list with topic IDs.
+ * What it does: Reads Subject, Emoji, Topic_Thread_ID, Schedule_Cron, Questions_Per_Batch, Active.
+ * What it brings: Dynamic configuration data for the bot scheduler.
+ * Where changes can be seen: Used by schedule.js and send.js.
  *
- * @returns {Array<Object>} Array of subject configuration objects
+ * @returns {Array<Object>} List of subject config objects
  */
 function fetchConfigFromSheet() {
-  // Open active spreadsheet
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  // Get the Config tab
   const sheet = ss.getSheetByName('Config');
   if (!sheet) {
-    throw new Error('Sheet named "Config" was not found in spreadsheet.');
+    throw new Error('Sheet named "Config" not found. Run setupSpreadsheet() first.');
   }
 
-  // Get all data rows (excluding row 1 header)
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return [];
 
-  // Read range A2:F[lastRow] — 6 columns for config
-  const values = sheet.getRange(2, 1, lastRow - 1, 6).getValues();
-
-  // Map each row to a structured config object
-  return values
+  const data = sheet.getRange(2, 1, lastRow - 1, 6).getValues();
+  return data
     .map(function(row) {
       return {
-        // Subject name without leading or trailing whitespace
         subject: String(row[0] || '').trim(),
-        // Emoji icon column left empty or clean string if specified
         emoji: String(row[1] || '').trim(),
-        // Topic thread ID parsed as numeric value
-        topic_thread_id: row[2] ? Number(row[2]) : null,
-        // Scheduling cron pattern string
+        topic_thread_id: Number(row[2]) || null,
         schedule_cron: String(row[3] || '').trim(),
-        // Number of questions dispatched in batch
         questions_per_batch: Number(row[4]) || 5,
-        // Active status flag parsed as boolean
-        active: String(row[5] || 'YES').trim().toUpperCase() === 'YES'
+        active: String(row[5] || '').trim().toUpperCase() === 'YES'
       };
     })
     .filter(function(item) {
-      // Exclude empty subject rows
       return item.subject.length > 0;
     });
 }
 
 /**
- * fetchUnpostedQuestions — Reads a subject sheet and returns questions where Posted (Col K, index 10) is not 'YES'.
- * v3 column layout (14 cols):
- * S.No(0) | Date(1) | Newspaper(2) | Question(3) | OptA(4) | OptB(5) | OptC(6) | OptD(7) | Answer(8) | Explanation(9) | Posted(10) | Posted At(11) | Added At(12) | Added By(13)
+ * fetchUnpostedQuestions — Reads a subject sheet and returns questions where Posted !== 'YES'.
+ * What it does: Reads all 16 columns and returns unposted questions up to limit.
+ * What it brings: Accurate fetching of questions that still need to be posted to Telegram.
+ * Where changes can be seen: Questions sent to Telegram in send.js.
  *
- * @param {string} subject - Name of the subject tab (e.g., "Polity")
- * @param {number} limit - Maximum number of questions to return
- * @returns {Array<Object>} List of unposted questions with 1-based sheet row index
+ * @param {string} subject - Name of the subject tab
+ * @param {number} limit - Maximum number of questions to retrieve
+ * @returns {Array<Object>} List of unposted question objects
  */
 function fetchUnpostedQuestions(subject, limit) {
-  // Open active spreadsheet container
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  // Locate the subject-specific sheet tab
   const sheet = ss.getSheetByName(subject);
   if (!sheet) {
     throw new Error('Sheet tab "' + subject + '" not found in spreadsheet.');
   }
 
-  // Count total rows including header
   const lastRow = sheet.getLastRow();
-  // Return empty array if sheet contains only header or is empty
   if (lastRow <= 1) return [];
 
-  // Read all 14 columns (A through N) starting from row 2
-  const data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
-  // Array to collect unposted question objects
+  // Determine total columns available (at least 16)
+  const lastCol = Math.max(sheet.getLastColumn(), 16);
+  const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
   const results = [];
 
-  // Iterate over each data row checking posted status
+  // Identify column indices based on header row
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
+    return String(h || '').trim().toLowerCase();
+  });
+
+  // Find column positions dynamically for backward compatibility
+  const colSNo = findColIndex(headers, ['s.no', 'sno', 'sl.no', 'sl no'], 0);
+  const colDate = findColIndex(headers, ['date'], 1);
+  const colNews = findColIndex(headers, ['newspaper', 'source'], 2);
+  const colSubj = findColIndex(headers, ['subject'], 3);
+  const colQues = findColIndex(headers, ['question', 'question text', 'prompt'], 4);
+  const colOptA = findColIndex(headers, ['option a', 'opt a', 'a'], 5);
+  const colOptB = findColIndex(headers, ['option b', 'opt b', 'b'], 6);
+  const colOptC = findColIndex(headers, ['option c', 'opt c', 'c'], 7);
+  const colOptD = findColIndex(headers, ['option d', 'opt d', 'd'], 8);
+  const colAns  = findColIndex(headers, ['correct answer', 'answer', 'correct'], 9);
+  const colExp  = findColIndex(headers, ['explanation', 'exp'], 10);
+  const colPost = findColIndex(headers, ['posted'], 11);
+  const colPostAt = findColIndex(headers, ['posted at', 'posted_at'], 12);
+  const colAddAt  = findColIndex(headers, ['added at', 'added_at'], 13);
+  const colAddBy  = findColIndex(headers, ['added by', 'added_by', 'uploader'], 14);
+  const colMsgId  = findColIndex(headers, ['telegram msg id', 'message id', 'msg id'], 15);
+
   for (let i = 0; i < data.length; i++) {
     const row = data[i];
-    // Column K (index 10) holds the posted status flag ('YES' or 'NO')
-    const postedValue = String(row[10] || '').trim();
+    const postedVal = String(row[colPost] || '').trim();
 
-    // If "Posted" is not "YES", this question is pending
-    if (postedValue.toUpperCase() !== 'YES') {
-      // Column D (index 3) holds the question text
-      const qText = String(row[3] || '').trim();
-      // Skip blank rows where question text is empty
+    // If not posted, this question is pending
+    if (postedVal.toUpperCase() !== 'YES') {
+      const qText = String(row[colQues] || '').trim();
       if (qText.length > 0) {
-        // Build structured question object with all 14 metadata fields
         results.push({
-          s_no: row[0],                                                   // Column A: Serial number
-          date: String(row[1] || '').trim(),                              // Column B: Publication date string (e.g. 05-09-2026)
-          newspaper: String(row[2] || '').trim(),                         // Column C: Source newspaper name
-          question_text: qText,                                           // Column D: Full question text
-          option_a: String(row[4] || '').trim(),                          // Column E: Option A text
-          option_b: String(row[5] || '').trim(),                          // Column F: Option B text
-          option_c: String(row[6] || '').trim(),                          // Column G: Option C text
-          option_d: String(row[7] || '').trim(),                          // Column H: Option D text
-          correct_answer: String(row[8] || 'A').trim().toUpperCase(),    // Column I: Correct option letter (A, B, C, D)
-          explanation: String(row[9] || '').trim(),                       // Column J: Detailed explanation
-          posted: String(row[10] || 'NO').trim(),                         // Column K: Posted status ('YES' or 'NO')
-          posted_at: String(row[11] || '').trim(),                        // Column L: Posted timestamp
-          added_at: String(row[12] || '').trim(),                         // Column M: Added timestamp
-          added_by: String(row[13] || '').trim(),                         // Column N: Added by user
-          row_index: i,                                                   // 0-based data row index within sheet
-          excel_row: i + 2                                                // 1-based sheet row number (header offset)
+          s_no: row[colSNo] || (i + 1),
+          date: String(row[colDate] || '').trim(),
+          newspaper: String(row[colNews] || '').trim(),
+          subject: String(row[colSubj] || subject).trim(),
+          question_text: qText,
+          option_a: String(row[colOptA] || '').trim(),
+          option_b: String(row[colOptB] || '').trim(),
+          option_c: String(row[colOptC] || '').trim(),
+          option_d: String(row[colOptD] || '').trim(),
+          correct_answer: String(row[colAns] || 'A').trim().toUpperCase(),
+          explanation: String(row[colExp] || '').trim(),
+          posted: postedVal || 'NO',
+          posted_at: String(row[colPostAt] || '').trim(),
+          added_at: String(row[colAddAt] || '').trim(),
+          added_by: String(row[colAddBy] || '').trim(),
+          telegram_msg_id: String(row[colMsgId] || '').trim(),
+          row_index: i,
+          excel_row: i + 2
         });
 
-        // Break once limit is reached to prevent fetching excess data
         if (results.length >= limit) {
           break;
         }
@@ -269,106 +326,74 @@ function fetchUnpostedQuestions(subject, limit) {
     }
   }
 
-  // Return collected unposted question objects
   return results;
 }
 
 /**
- * markRowsAsPostedInSheet — Updates "Posted" to 'YES' (Column K, col 11) and "Posted At" with timestamp (Column L, col 12).
- * Supports both 0-based row_index (0, 1...) and 1-based sheet row numbers (2, 3...).
+ * markRowsAsPostedInSheet — Marks question rows as 'YES' with IST timestamp in Google Sheets.
+ * What it does: Updates Column L (Posted) to 'YES' and Column M (Posted At) with IST timestamp.
+ * What it brings: Clearly records when questions were sent to Telegram without mixing YES and timestamp into one cell.
+ * Where changes can be seen: In Column L and Column M of the subject sheet.
  *
  * @param {string} subject - Name of the subject tab
- * @param {Array<number>} rowIndices - List of row numbers or indices to update
- * @returns {number} Number of rows successfully updated
+ * @param {Array<number>} rowIndices - List of 1-based sheet row numbers or 0-based data indices
+ * @param {string|number} [messageId] - Optional Telegram message ID
+ * @returns {number} Count of marked rows
  */
-function markRowsAsPostedInSheet(subject, rowIndices) {
-  // Open active spreadsheet
+function markRowsAsPostedInSheet(subject, rowIndices, messageId) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  // Locate the subject sheet tab
   const sheet = ss.getSheetByName(subject);
   if (!sheet) {
     throw new Error('Sheet tab "' + subject + '" not found in spreadsheet.');
   }
 
-  // Format Indian Standard Time (IST) timestamp for posted timestamp column
+  // Format current IST timestamp
   const now = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'dd-MM-yyyy, hh:mm:ss a') + ' IST';
 
-  // Update Column 11 (Column K — Posted = 'YES') and Column 12 (Column L — Posted At = timestamp)
   for (let i = 0; i < rowIndices.length; i++) {
-    // If index is less than 2, it's 0-based, so add 2 to convert to sheet row number
+    // Determine row number: if < 2, convert 0-based index to 1-based sheet row
     const rowNumber = rowIndices[i] < 2 ? rowIndices[i] + 2 : rowIndices[i];
-    // Write 'YES' to Column K (column 11)
-    sheet.getRange(rowNumber, 11).setValue('YES');
-    // Write formatted IST timestamp to Column L (column 12)
-    sheet.getRange(rowNumber, 12).setValue(now);
+
+    // Column L (Col 12): Strictly 'YES'
+    sheet.getRange(rowNumber, 12).setValue('YES');
+    // Column M (Col 13): Posted At timestamp
+    sheet.getRange(rowNumber, 13).setValue(now);
+    // Column P (Col 16): Telegram Message ID if available
+    if (messageId) {
+      sheet.getRange(rowNumber, 16).setValue(String(messageId));
+    }
   }
 
-  // Return the count of rows that were marked
   return rowIndices.length;
 }
 
 /**
- * updateConfigInSheet — Updates Topic Thread IDs in the "Config" sheet.
+ * appendQuestionsToSheet — Appends questions from dashboard to a subject tab in 16-column format.
+ * What it does: Ensures 16 headers exist, calculates next consecutive S.No, and appends rows.
+ * What it brings: Direct integration from web dashboard with S.No, IST timestamps, and uploader attribution.
+ * Where changes can be seen: Bottom rows of the subject sheet.
  *
- * @param {Array<Object>} configData - Array of config objects containing topic_thread_id
- */
-function updateConfigInSheet(configData) {
-  // Open active spreadsheet
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  // Locate Config sheet tab
-  const sheet = ss.getSheetByName('Config');
-  if (!sheet) {
-    throw new Error('Sheet named "Config" was not found in spreadsheet.');
-  }
-
-  // Count total data rows
-  const lastRow = sheet.getLastRow();
-  if (lastRow <= 1) return;
-
-  // Read current subjects from column A
-  const subjects = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-
-  // Match each config item and update Column C (Topic_Thread_ID)
-  for (let r = 0; r < subjects.length; r++) {
-    // Normalize subject names for case-insensitive comparison
-    const subjectName = String(subjects[r][0] || '').trim().toLowerCase();
-    // Find matching config entry from the incoming payload
-    const matched = configData.find(function(c) {
-      return String(c.subject || '').trim().toLowerCase() === subjectName;
-    });
-
-    // Write matched topic thread ID to Column C (3rd column)
-    if (matched && matched.topic_thread_id) {
-      // Row is r + 2 (1-indexed + header offset), Column 3 is Topic_Thread_ID
-      sheet.getRange(r + 2, 3).setValue(matched.topic_thread_id);
-    }
-  }
-}
-
-/**
- * appendQuestionsToSheet — Appends new questions from the web dashboard to a subject tab.
- * What it does: Takes an array of question objects and writes them as new rows in 14-column layout.
- * What it brings: Enables the web dashboard "Send to Sheet" button to batch-push questions with S.No, timestamps, and uploader tracking.
- * Where changes can be seen: New rows appended at the bottom of the subject-specific Google Sheet tab.
- *
- * @param {string} subject - Name of the subject sheet tab (e.g., "Polity")
- * @param {Array<Object>} questions - Array of question objects with date, newspaper, question, options, answer, explanation
- * @param {string} addedBy - Email or name of the user who pushed the questions (from Firebase Auth)
- * @returns {number} Count of questions successfully appended
+ * @param {string} subject - Subject tab name
+ * @param {Array<Object>} questions - Array of question objects
+ * @param {string} addedBy - Authenticated user email/name from Firebase Auth
+ * @returns {number} Count of added questions
  */
 function appendQuestionsToSheet(subject, questions, addedBy) {
-  // Open active spreadsheet container
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  // Locate the subject-specific sheet tab
-  const sheet = ss.getSheetByName(subject);
+  let sheet = ss.getSheetByName(subject);
+
+  // If subject tab does not exist, create it with 16-column layout
   if (!sheet) {
-    throw new Error('Sheet tab "' + subject + '" not found. Run setupSpreadsheet() first.');
+    sheet = ss.insertSheet(subject);
+    formatSheetHeaders(sheet);
+  } else {
+    // Ensure 16-column headers are applied if sheet is new or had old layout
+    ensureSheetHeaders(sheet);
   }
 
-  // Determine starting S.No based on current last row
+  // Calculate starting S.No
   const lastRow = sheet.getLastRow();
   let startSNo = 1;
-  // If rows already exist past the header, calculate the next consecutive S.No
   if (lastRow > 1) {
     const lastSNoVal = sheet.getRange(lastRow, 1).getValue();
     startSNo = (Number(lastSNoVal) || (lastRow - 1)) + 1;
@@ -376,98 +401,90 @@ function appendQuestionsToSheet(subject, questions, addedBy) {
 
   // Format current IST timestamp for Added At column
   const addedAt = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'dd-MM-yyyy, hh:mm:ss a') + ' IST';
-  // Standardize uploader email or display name
   const uploader = String(addedBy || 'Dashboard User').trim();
 
-  // Track number of successfully appended questions
   let addedCount = 0;
 
-  // Iterate through each question object and append as a new row
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
     const sNo = startSNo + i;
 
-    // Build the 14-column row array matching the v3 column layout
+    // Build 16-column row
     const newRow = [
-      sNo,                                                    // Column A: S.No (Serial Number)
-      String(q.date || '').trim(),                            // Column B: Date (e.g., "05-09-2026")
-      String(q.newspaper || '').trim(),                       // Column C: Newspaper source name
-      String(q.question || '').trim(),                        // Column D: Full question text
-      String(q.option_a || '').trim(),                        // Column E: Option A
-      String(q.option_b || '').trim(),                        // Column F: Option B
-      String(q.option_c || '').trim(),                        // Column G: Option C
-      String(q.option_d || '').trim(),                        // Column H: Option D
-      String(q.correct_answer || 'A').trim().toUpperCase(),   // Column I: Correct answer letter (A, B, C, D)
-      String(q.explanation || '').trim(),                     // Column J: Detailed explanation
-      'NO',                                                   // Column K: Posted status ('NO' initially)
-      '',                                                     // Column L: Posted At (empty until posted)
-      addedAt,                                                // Column M: Added At timestamp (when pushed to sheet)
-      uploader                                                // Column N: Added By (who pushed the questions)
+      sNo,                                                    // Col A (1):  S.No
+      String(q.date || '').trim(),                            // Col B (2):  Date
+      String(q.newspaper || '').trim(),                       // Col C (3):  Newspaper
+      subject,                                                // Col D (4):  Subject
+      String(q.question || q.question_text || '').trim(),     // Col E (5):  Question
+      String(q.option_a || '').trim(),                        // Col F (6):  Option A
+      String(q.option_b || '').trim(),                        // Col G (7):  Option B
+      String(q.option_c || '').trim(),                        // Col H (8):  Option C
+      String(q.option_d || '').trim(),                        // Col I (9):  Option D
+      String(q.correct_answer || 'A').trim().toUpperCase(),   // Col J (10): Correct Answer
+      String(q.explanation || '').trim(),                     // Col K (11): Explanation
+      'NO',                                                   // Col L (12): Posted ('NO' initially)
+      '-',                                                    // Col M (13): Posted At ('-' until posted)
+      addedAt,                                                // Col N (14): Added At (when pushed from dashboard)
+      uploader,                                               // Col O (15): Added By (who pushed it)
+      '-'                                                     // Col P (16): Telegram Msg ID ('-' until posted)
     ];
-    // Append the row to the bottom of the sheet
+
     sheet.appendRow(newRow);
-    // Increment the count of successfully added questions
     addedCount++;
   }
 
-  // Return the total number of questions appended
+  // Apply YES/NO dropdown validation on Column L for new rows
+  applyPostedDataValidation(sheet);
+
   return addedCount;
 }
 
 /**
- * fetchSummaryStats — Computes total, posted, and pending questions across all subjects.
- * v3: Reads 14 columns; Question text is in Column D (index 3), Posted status is in Column K (index 10).
+ * fetchSummaryStats — Computes total, posted, and pending counts across all 16 subjects.
+ * What it does: Reads Column E (Question) and Column L (Posted) for each subject.
+ * What it brings: High-level overview of question inventory.
+ * Where changes can be seen: In CLI `node send.js --stats`.
  *
- * @returns {Array<Object>} Array of statistics objects per subject
+ * @returns {Array<Object>} Summary statistics array
  */
 function fetchSummaryStats() {
-  // Fetch the list of configured subjects
   const configs = fetchConfigFromSheet();
-  // Open active spreadsheet
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  // Array to collect stats for each subject
   const stats = [];
 
-  // Iterate through each configured subject
   for (let i = 0; i < configs.length; i++) {
-    var subject = configs[i].subject;
-    // Attempt to find the subject's sheet tab
-    var sheet = ss.getSheetByName(subject);
+    const subject = configs[i].subject;
+    const sheet = ss.getSheetByName(subject);
 
-    // If sheet doesn't exist, report zero counts
     if (!sheet) {
       stats.push({ subject: subject, total: 0, posted: 0, pending: 0 });
       continue;
     }
 
-    // Get total row count
-    var lastRow = sheet.getLastRow();
-    // If only header or empty, report zero counts
+    const lastRow = sheet.getLastRow();
     if (lastRow <= 1) {
       stats.push({ subject: subject, total: 0, posted: 0, pending: 0 });
       continue;
     }
 
-    // Read all 14 columns: question in Col D (index 3), posted in Col K (index 10)
-    var values = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
-    var total = 0;
-    var posted = 0;
+    // Read question and posted status
+    const values = sheet.getRange(2, 1, lastRow - 1, Math.max(sheet.getLastColumn(), 16)).getValues();
+    let total = 0;
+    let posted = 0;
 
-    // Count valid questions and posted status
-    for (var j = 0; j < values.length; j++) {
-      // Check Column D (index 3) for non-empty question text
-      var qText = String(values[j][3] || '').trim();
+    for (let j = 0; j < values.length; j++) {
+      // Check question text (Col 5 / index 4)
+      const qText = String(values[j][4] || '').trim();
       if (qText.length > 0) {
         total++;
-        // Check Column K (index 10) for posted status
-        var postedVal = String(values[j][10] || '').trim();
+        // Check posted status (Col 12 / index 11)
+        const postedVal = String(values[j][11] || '').trim();
         if (postedVal.toUpperCase() === 'YES') {
           posted++;
         }
       }
     }
 
-    // Push computed stats for this subject
     stats.push({
       subject: subject,
       total: total,
@@ -476,143 +493,338 @@ function fetchSummaryStats() {
     });
   }
 
-  // Return the complete stats array
   return stats;
 }
 
 /**
- * jsonResponse — Helper to format a JavaScript object into a JSON TextOutput response.
+ * updateConfigInSheet — Updates Topic Thread IDs in the "Config" sheet.
  *
- * @param {Object} data - Payload to serialize as JSON
- * @returns {TextOutput} Configured TextOutput object
+ * @param {Array<Object>} configData - Config items with topic_thread_id
  */
-function jsonResponse(data) {
-  return ContentService.createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
+function updateConfigInSheet(configData) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Config');
+  if (!sheet) {
+    throw new Error('Config sheet not found. Run setupSpreadsheet() first.');
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return;
+
+  const subjects = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+
+  for (let r = 0; r < subjects.length; r++) {
+    const subjectName = String(subjects[r][0] || '').trim().toLowerCase();
+    const matched = configData.find(function(c) {
+      return String(c.subject || '').trim().toLowerCase() === subjectName;
+    });
+
+    if (matched && matched.topic_thread_id) {
+      sheet.getRange(r + 2, 3).setValue(matched.topic_thread_id);
+    }
+  }
+}
+
+// ============================================================================
+// Spreadsheet Formatting & Upgrade Helpers
+// ============================================================================
+
+/**
+ * ensureSheetHeaders — Verifies if sheet has the 16 headers; applies them if not.
+ *
+ * @param {Sheet} sheet - Google Sheet tab
+ */
+function ensureSheetHeaders(sheet) {
+  const lastRow = sheet.getLastRow();
+  // If completely empty, format headers
+  if (lastRow === 0) {
+    formatSheetHeaders(sheet);
+    return;
+  }
+
+  // Check header in row 1
+  const firstRow = sheet.getRange(1, 1, 1, Math.min(sheet.getLastColumn(), 5)).getValues()[0];
+  const firstHeader = String(firstRow[0] || '').trim();
+
+  // If first column is not "S.No", upgrade is needed
+  if (firstHeader !== 'S.No') {
+    formatSheetHeaders(sheet);
+  }
 }
 
 /**
- * setupSpreadsheet — One-click initialization for your Google Spreadsheet (v2 — 10 columns).
- * What it does: Creates the "Config" tab and 16 subject tabs with 10-column headers and pre-mapped thread IDs (6 to 21).
- * What it brings: Fully automated configuration of the online spreadsheet with Date and Newspaper metadata fields.
- * Where changes can be seen: Direct creation of sheets and rows in your Google Spreadsheet.
+ * formatSheetHeaders — Formats row 1 with 16 column headers and styling.
+ * What it does: Writes QUESTION_HEADERS, freezes row 1, sets widths, and sets conditional formatting.
+ * What it brings: Elegant, professional look with dark header and distinct column sizes.
+ * Where changes can be seen: Top row of the sheet.
+ *
+ * @param {Sheet} sheet - Target sheet tab
+ */
+function formatSheetHeaders(sheet) {
+  // Write header values
+  sheet.getRange(1, 1, 1, QUESTION_HEADERS.length).setValues([QUESTION_HEADERS]);
+
+  // Style header row: Dark slate background (#1E293B) with white bold text
+  sheet.getRange(1, 1, 1, QUESTION_HEADERS.length)
+    .setFontWeight('bold')
+    .setFontColor('#FFFFFF')
+    .setBackground('#1E293B')
+    .setHorizontalAlignment('center');
+
+  // Freeze header row
+  sheet.setFrozenRows(1);
+
+  // Set optimal column widths
+  sheet.setColumnWidth(1, 70);    // S.No
+  sheet.setColumnWidth(2, 110);   // Date
+  sheet.setColumnWidth(3, 140);   // Newspaper
+  sheet.setColumnWidth(4, 140);   // Subject
+  sheet.setColumnWidth(5, 420);   // Question
+  sheet.setColumnWidth(6, 180);   // Option A
+  sheet.setColumnWidth(7, 180);   // Option B
+  sheet.setColumnWidth(8, 180);   // Option C
+  sheet.setColumnWidth(9, 180);   // Option D
+  sheet.setColumnWidth(10, 110);  // Correct Answer
+  sheet.setColumnWidth(11, 380);  // Explanation
+  sheet.setColumnWidth(12, 100);  // Posted (YES/NO)
+  sheet.setColumnWidth(13, 200);  // Posted At
+  sheet.setColumnWidth(14, 200);  // Added At
+  sheet.setColumnWidth(15, 230);  // Added By
+  sheet.setColumnWidth(16, 140);  // Telegram Msg ID
+
+  // Set alignments for data columns
+  sheet.getRange('A2:A').setHorizontalAlignment('center');  // S.No centered
+  sheet.getRange('B2:B').setHorizontalAlignment('center');  // Date centered
+  sheet.getRange('J2:J').setHorizontalAlignment('center');  // Correct Answer centered
+  sheet.getRange('L2:L').setHorizontalAlignment('center');  // Posted centered
+
+  // Apply conditional formatting on Column L (Posted: YES = Green, NO = Red)
+  applyConditionalFormatting(sheet);
+
+  // Apply Data Validation dropdown (YES, NO) on Column L
+  applyPostedDataValidation(sheet);
+}
+
+/**
+ * applyPostedDataValidation — Adds a dropdown selector for YES/NO in Column L.
+ *
+ * @param {Sheet} sheet - Target sheet tab
+ */
+function applyPostedDataValidation(sheet) {
+  const rule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(['YES', 'NO'], true)
+    .setAllowInvalid(false)
+    .build();
+
+  sheet.getRange('L2:L500').setDataValidation(rule);
+}
+
+/**
+ * applyConditionalFormatting — Colors Column L cells (Green for YES, Red for NO).
+ *
+ * @param {Sheet} sheet - Target sheet tab
+ */
+function applyConditionalFormatting(sheet) {
+  const range = sheet.getRange('L2:L1000');
+
+  // Green rule for YES
+  const yesRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('YES')
+    .setBackground('#E6F4EA')
+    .setFontColor('#137333')
+    .setBold(true)
+    .setRanges([range])
+    .build();
+
+  // Red/Orange rule for NO
+  const noRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('NO')
+    .setBackground('#FCE8E6')
+    .setFontColor('#C5221F')
+    .setBold(true)
+    .setRanges([range])
+    .build();
+
+  sheet.setConditionalFormatRules([yesRule, noRule]);
+}
+
+/**
+ * findColIndex — Helper to find a column index based on candidate header names.
+ *
+ * @param {Array<string>} headers - Lowercased header names array
+ * @param {Array<string>} candidates - Possible matches
+ * @param {number} defaultIndex - Default index if not found
+ * @returns {number} 0-based column index
+ */
+function findColIndex(headers, candidates, defaultIndex) {
+  for (let c = 0; c < candidates.length; c++) {
+    const idx = headers.indexOf(candidates[c]);
+    if (idx !== -1) return idx;
+  }
+  return defaultIndex;
+}
+
+// ============================================================================
+// One-Click Setup & Migration Functions (Run from Apps Script Editor)
+// ============================================================================
+
+/**
+ * upgradeSpreadsheet — Safely upgrades existing sheets to 16 columns without losing questions!
+ * What it does:
+ * 1. Reads existing rows in each subject sheet.
+ * 2. Parses previous columns (including splitting "YES | 05/09/2026..." into separate YES and timestamp).
+ * 3. Populates S.No consecutively (1, 2, 3...).
+ * 4. Writes all data back with 16 columns and applies beautiful styling, dropdowns, and colors.
  *
  * HOW TO RUN:
- * 1. In Apps Script, select "setupSpreadsheet" from the function dropdown at the top.
+ * 1. Select "upgradeSpreadsheet" from the dropdown at the top.
  * 2. Click "Run".
- * 3. Look at your Google Sheet — all 16 subjects are now created with 10-column headers!
+ * 3. Check your Google Sheet — all your existing questions are preserved and upgraded to 16 columns!
  */
-function setupSpreadsheet() {
-  // Access the active spreadsheet container
+function upgradeSpreadsheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // All 16 APPSC subjects with clean names (no emojis) and the Telegram thread IDs created earlier
-  const configList = [
-    { subject: 'History', threadId: 6, cron: '0 9,18 * * *', count: 5 },
-    { subject: 'AP History', threadId: 7, cron: '0 */3 * * *', count: 5 },
-    { subject: 'Geography', threadId: 8, cron: '0 */3 * * *', count: 5 },
-    { subject: 'AP Geography', threadId: 9, cron: '0 */3 * * *', count: 5 },
-    { subject: 'Economy', threadId: 10, cron: '0 */3 * * *', count: 5 },
-    { subject: 'AP Economy', threadId: 11, cron: '0 */3 * * *', count: 5 },
-    { subject: 'Polity', threadId: 12, cron: '0 */2 * * *', count: 5 },
-    { subject: 'Society', threadId: 13, cron: '0 */4 * * *', count: 5 },
-    { subject: 'Current Affairs', threadId: 14, cron: '0 8,14,20 * * *', count: 5 },
-    { subject: 'Science and Technology', threadId: 15, cron: '0 */3 * * *', count: 5 },
-    { subject: 'Biology', threadId: 16, cron: '0 */4 * * *', count: 5 },
-    { subject: 'Chemistry', threadId: 17, cron: '0 */4 * * *', count: 5 },
-    { subject: 'Physics', threadId: 18, cron: '0 */4 * * *', count: 5 },
-    { subject: 'Environment', threadId: 19, cron: '0 */3 * * *', count: 5 },
-    { subject: 'General Studies', threadId: 20, cron: '0 */3 * * *', count: 5 },
-    { subject: 'Disaster Management', threadId: 21, cron: '0 */4 * * *', count: 5 }
-  ];
+  for (let c = 0; c < SUBJECT_CONFIG_LIST.length; c++) {
+    const subjName = SUBJECT_CONFIG_LIST[c].subject;
+    const sheet = ss.getSheetByName(subjName);
+    if (!sheet) continue;
 
-  // Retrieve or create the Config tab
-  let configSheet = ss.getSheetByName('Config');
-  if (!configSheet) {
-    // Insert new sheet named Config as the first tab
-    configSheet = ss.insertSheet('Config', 0);
-  }
-  // Clear any previous formatting or stale data in the Config sheet
-  configSheet.clear();
+    const lastRow = sheet.getLastRow();
+    const lastCol = sheet.getLastColumn();
 
-  // Define column headers for configuration
-  const configHeaders = ['Subject', 'Emoji', 'Topic_Thread_ID', 'Schedule_Cron', 'Questions_Per_Batch', 'Active'];
-  // Append header row to Config sheet
-  configSheet.appendRow(configHeaders);
-  // Style header row with bold font and subtle blue accent background
-  configSheet.getRange(1, 1, 1, configHeaders.length).setFontWeight('bold').setBackground('#E8EEF5');
-
-  // Populate config rows for each subject
-  for (let i = 0; i < configList.length; i++) {
-    const item = configList[i];
-    // Add subject row with empty emoji (clean text) and pre-mapped Telegram thread ID
-    configSheet.appendRow([item.subject, '', item.threadId, item.cron, item.count, 'YES']);
-  }
-
-  // Freeze the top header row in Config sheet
-  configSheet.setFrozenRows(1);
-
-  // v3 question column headers — 14 columns with S.No, timestamps, and uploader tracking
-  const questionHeaders = [
-    'S.No',
-    'Date',
-    'Newspaper',
-    'Question',
-    'Option A',
-    'Option B',
-    'Option C',
-    'Option D',
-    'Correct Answer',
-    'Explanation',
-    'Posted',
-    'Posted At',
-    'Added At',
-    'Added By'
-  ];
-
-  // Create or refresh each of the 16 subject question tabs
-  for (let i = 0; i < configList.length; i++) {
-    const subjName = configList[i].subject;
-    // Check if the subject sheet already exists
-    let subjSheet = ss.getSheetByName(subjName);
-    if (!subjSheet) {
-      // Insert new sheet tab with the clean subject name
-      subjSheet = ss.insertSheet(subjName);
-    } else {
-      // Clear existing sheet to apply new column layout
-      subjSheet.clear();
+    // If empty or only header, simply apply new headers
+    if (lastRow <= 1) {
+      sheet.clear();
+      formatSheetHeaders(sheet);
+      continue;
     }
 
-    // Write the 14-column header row
-    subjSheet.appendRow(questionHeaders);
-    // Style header row with bold font and clean light blue-gray background
-    subjSheet.getRange(1, 1, 1, questionHeaders.length).setFontWeight('bold').setBackground('#F0F4F8');
-    // Freeze the top header row for easy scrolling
-    subjSheet.setFrozenRows(1);
+    // Read existing headers and data
+    const existingHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
+      return String(h || '').trim().toLowerCase();
+    });
+    const existingData = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
 
-    // Set column widths for optimal readability
-    subjSheet.setColumnWidth(1, 70);    // S.No
-    subjSheet.setColumnWidth(2, 120);   // Date
-    subjSheet.setColumnWidth(3, 150);   // Newspaper
-    subjSheet.setColumnWidth(4, 400);   // Question
-    subjSheet.setColumnWidth(5, 200);   // Option A
-    subjSheet.setColumnWidth(6, 200);   // Option B
-    subjSheet.setColumnWidth(7, 200);   // Option C
-    subjSheet.setColumnWidth(8, 200);   // Option D
-    subjSheet.setColumnWidth(9, 120);   // Correct Answer
-    subjSheet.setColumnWidth(10, 350);  // Explanation
-    subjSheet.setColumnWidth(11, 90);   // Posted (YES/NO)
-    subjSheet.setColumnWidth(12, 180);  // Posted At
-    subjSheet.setColumnWidth(13, 180);  // Added At
-    subjSheet.setColumnWidth(14, 220);  // Added By
+    // Map existing columns
+    const colDate = findColIndex(existingHeaders, ['date'], 0);
+    const colNews = findColIndex(existingHeaders, ['newspaper', 'source'], 1);
+    const colSubj = findColIndex(existingHeaders, ['subject'], 2);
+    const colQues = findColIndex(existingHeaders, ['question', 'question text', 'prompt'], 3);
+    const colOptA = findColIndex(existingHeaders, ['option a', 'opt a', 'a'], 4);
+    const colOptB = findColIndex(existingHeaders, ['option b', 'opt b', 'b'], 5);
+    const colOptC = findColIndex(existingHeaders, ['option c', 'opt c', 'c'], 6);
+    const colOptD = findColIndex(existingHeaders, ['option d', 'opt d', 'd'], 7);
+    const colAns  = findColIndex(existingHeaders, ['correct answer', 'answer', 'correct'], 8);
+    const colExp  = findColIndex(existingHeaders, ['explanation', 'exp'], 9);
+    const colPost = findColIndex(existingHeaders, ['posted'], 10);
+
+    const upgradedRows = [];
+
+    for (let r = 0; r < existingData.length; r++) {
+      const oldRow = existingData[r];
+      const qText = String(oldRow[colQues] || oldRow[3] || '').trim();
+      if (!qText) continue;
+
+      // Extract Posted status and timestamp
+      const rawPosted = String(oldRow[colPost] || oldRow[10] || '').trim();
+      let postedStatus = 'NO';
+      let postedAt = '-';
+
+      if (rawPosted.toUpperCase().includes('YES')) {
+        postedStatus = 'YES';
+        // Check if timestamp is embedded like "YES | 05/09/2026, 01:16:37 PM"
+        if (rawPosted.includes('|')) {
+          postedAt = rawPosted.split('|')[1].trim();
+        } else {
+          postedAt = 'Earlier Post';
+        }
+      }
+
+      upgradedRows.push([
+        r + 1,                                                      // Col A: S.No (consecutive)
+        String(oldRow[colDate] || '').trim(),                       // Col B: Date
+        String(oldRow[colNews] || '').trim(),                       // Col C: Newspaper
+        subjName,                                                   // Col D: Subject
+        qText,                                                      // Col E: Question
+        String(oldRow[colOptA] || '').trim(),                       // Col F: Option A
+        String(oldRow[colOptB] || '').trim(),                       // Col G: Option B
+        String(oldRow[colOptC] || '').trim(),                       // Col H: Option C
+        String(oldRow[colOptD] || '').trim(),                       // Col I: Option D
+        String(oldRow[colAns] || 'A').trim().toUpperCase(),         // Col J: Correct Answer
+        String(oldRow[colExp] || '').trim(),                        // Col K: Explanation
+        postedStatus,                                               // Col L: Posted ('YES' or 'NO')
+        postedAt,                                                   // Col M: Posted At
+        'Imported / Initial',                                       // Col N: Added At
+        'Initial Import',                                           // Col O: Added By
+        '-'                                                         // Col P: Telegram Msg ID
+      ]);
+    }
+
+    // Clear sheet and rewrite with 16 columns
+    sheet.clear();
+    formatSheetHeaders(sheet);
+
+    if (upgradedRows.length > 0) {
+      sheet.getRange(2, 1, upgradedRows.length, 16).setValues(upgradedRows);
+    }
   }
 
-  // Remove the default blank "Sheet1" tab if it exists
-  var defaultSheet = ss.getSheetByName('Sheet1');
-  if (defaultSheet) {
+  Logger.log('✅ Spreadsheet upgraded successfully to 16-column enhanced tracking! All existing questions preserved.');
+}
+
+/**
+ * setupSpreadsheet — Full initial setup for your Google Spreadsheet.
+ * What it does: Creates Config sheet + all 16 subject tabs with 16-column layout.
+ *
+ * HOW TO RUN:
+ * 1. Select "setupSpreadsheet" from the dropdown.
+ * 2. Click "Run".
+ */
+function setupSpreadsheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // 1. Setup Config sheet
+  let configSheet = ss.getSheetByName('Config');
+  if (!configSheet) {
+    configSheet = ss.insertSheet('Config', 0);
+  }
+  configSheet.clear();
+
+  const configHeaders = ['Subject', 'Emoji', 'Topic_Thread_ID', 'Schedule_Cron', 'Questions_Per_Batch', 'Active'];
+  configSheet.appendRow(configHeaders);
+  configSheet.getRange(1, 1, 1, configHeaders.length)
+    .setFontWeight('bold')
+    .setFontColor('#FFFFFF')
+    .setBackground('#1E293B');
+
+  for (let i = 0; i < SUBJECT_CONFIG_LIST.length; i++) {
+    const item = SUBJECT_CONFIG_LIST[i];
+    configSheet.appendRow([item.subject, '', item.threadId, item.cron, item.count, 'YES']);
+  }
+  configSheet.setFrozenRows(1);
+
+  // 2. Setup 16 subject sheets
+  for (let i = 0; i < SUBJECT_CONFIG_LIST.length; i++) {
+    const subjName = SUBJECT_CONFIG_LIST[i].subject;
+    let subjSheet = ss.getSheetByName(subjName);
+    if (!subjSheet) {
+      subjSheet = ss.insertSheet(subjName);
+    } else {
+      subjSheet.clear();
+    }
+    formatSheetHeaders(subjSheet);
+  }
+
+  // 3. Delete default Sheet1 if present
+  const defaultSheet = ss.getSheetByName('Sheet1');
+  if (defaultSheet && ss.getSheets().length > 1) {
     ss.deleteSheet(defaultSheet);
   }
 
-  // Log completion message in Apps Script execution log
-  Logger.log('✅ Spreadsheet setup complete! Config and 16 subject tabs created with v3 (14-column) layout.');
+  Logger.log('✅ setupSpreadsheet complete! Config and all 16 subjects formatted with 16-column layout.');
+}
+
+function jsonResponse(data) {
+  return ContentService.createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
 }
