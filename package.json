@@ -10,7 +10,10 @@
     "create-sample": "node create-sample.js",
     "dashboard": "node server.js",
     "test": "node --test \"test/**/*.test.js\"",
-    "verify-topics": "node verify-topics.js"
+    "verify-topics": "node verify-topics.js",
+    "bot": "node bot.js",
+    "membership-cron": "node membership-cron.js",
+    "setup-razorpay": "node setup-razorpay.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

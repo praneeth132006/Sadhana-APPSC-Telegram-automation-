@@ -8,7 +8,7 @@ bot that posts on a schedule or on demand.
 
 ---
 
-## The five dashboards
+## The six dashboards
 
 Live at <https://appscsadhana.vercel.app>, or locally with `npm run dashboard` at
 <http://localhost:3000>.
@@ -19,6 +19,7 @@ Live at <https://appscsadhana.vercel.app>, or locally with `npm run dashboard` a
 | 📊 | **Analytics** (`/analytics.html`) | How many questions exist per subject, how many are posted, what is pending, the workflow and difficulty mix, curator contributions, posting timeline, and how many days of content each subject has left. |
 | 📚 | **Questions** (`/questions.html`) | Browse and search the whole bank. Filter by subject, status, difficulty or posted state. Edit any question in place, approve or reject in bulk, delete. |
 | 🤖 | **Automation** (`/automation.html`) | Post to Telegram straight from the browser. Queue batches for a planned time. See every subject's cron cadence and remaining runway. |
+| 💳 | **Members** (`/members.html`) | Paying members, revenue by plan, who is about to lapse, and a dry run of the nightly expiry sweep. |
 | 🩺 | **Health** (`/health.html`) | Is the server, the sheet and the bot reachable — and are the security controls that protect them actually switched on. |
 
 ---
@@ -237,6 +238,104 @@ proven, is in [SECURITY-REVIEW.md](SECURITY-REVIEW.md).
 
 ---
 
+## Paid group access (Razorpay)
+
+Students buy a pass from the Telegram bot and are let into a private group
+automatically. Three options:
+
+| Pass | Price | Type | Access ends |
+|---|---|---|---|
+| 🗓️ 30-Day Sprint | ₹299 | one-time | 30 days after payment |
+| 🔄 Monthly Auto-Pay | ₹249/mo | recurring | keeps renewing until cancelled |
+| 🎯 Target APPSC 2026 | ₹799 | one-time | fixed exam date (`EXAM_PASS_END_DATE`) |
+
+Everything is stored in the same Google Sheet — a **Subscribers** tab with one row
+per member, and an append-only **Payments** log.
+
+### How access is granted
+
+```
+student taps a plan  →  bot creates a Razorpay link carrying their Telegram id
+       ↓
+student pays         →  Razorpay POSTs a signed webhook to /api/payments/webhook
+       ↓
+signature verified   →  expiry computed, row written, single-use invite DMed
+       ↓
+nightly sweep        →  reminds before expiry, removes after it
+```
+
+**The signature is the whole security model.** The webhook is the only path from
+money to group access, and a request without a valid HMAC over the exact bytes
+Razorpay sent is rejected before a single field is read. Without that check, anyone
+who found the URL could POST "payment captured" and be handed a paid seat.
+
+Two more things worth knowing:
+
+- **Invite links are single-use** (`member_limit: 1`). Forwarding one gives away your
+  own seat rather than creating a free second one.
+- **Renewing early never costs you days.** A new term extends from your current
+  expiry, not from today.
+
+### Setup
+
+1. Put your Razorpay keys in `.env` (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`) and
+   generate a webhook secret:
+
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+   ```
+
+2. In Apps Script, paste the current `google_apps_script.js`, run
+   **`setupSubscriptionSheets`**, and deploy a new version.
+
+3. Create the recurring plan and print the webhook settings:
+
+   ```bash
+   npm run setup-razorpay
+   ```
+
+4. In Razorpay → **Settings → Webhooks**, add `<PUBLIC_BASE_URL>/api/payments/webhook`
+   with that secret and these events:
+   `payment_link.paid`, `subscription.charged`, `subscription.cancelled`,
+   `subscription.halted`.
+
+5. Run the bot and the nightly sweep:
+
+   ```bash
+   npm run bot
+   ```
+
+   ```bash
+   npm run membership-cron -- --watch
+   ```
+
+The **Health** dashboard checks every one of these and names what is missing.
+
+### Testing it without real money
+
+The keys in `.env` are **test keys** — no real money moves. Use Razorpay's test
+cards (e.g. `4111 1111 1111 1111`, any future expiry, any CVV) or test UPI.
+
+Webhooks cannot reach `localhost`, so during local testing expose the server:
+
+```bash
+npx cloudflared tunnel --url http://localhost:3000
+```
+
+Put that HTTPS URL in `PUBLIC_BASE_URL` and in the Razorpay webhook, then buy a pass
+from the bot with a test card and watch the invite arrive.
+
+### Bot commands
+
+| Command | What it does |
+|---|---|
+| `/start`, `/plans` | Show the three passes as buttons |
+| `/status` | Current pass, expiry date, days left |
+| `/cancel` | Stop auto-renewal, keeping the paid period |
+| `/help` | How the flow works |
+
+---
+
 ## Troubleshooting
 
 ### Signing in
@@ -246,6 +345,27 @@ Fixed. That check used to compare against a hardcoded guess at the authorised ho
 so it wrongly flagged the live Vercel domain. It now reads the project's real
 `authorizedDomains` list and stays silent if it cannot reach it — a false alarm is
 worse than none.
+
+### Payments
+
+**Someone paid but got no invite link.**
+Check the **Health** dashboard first — it tests each link in the chain. The usual
+causes, in order: the Apps Script was not redeployed with the membership actions;
+`RAZORPAY_WEBHOOK_SECRET` does not match what is set in the Razorpay dashboard; or
+`PUBLIC_BASE_URL` points somewhere Razorpay cannot reach. Razorpay retries a failed
+webhook, so fix the cause and the delivery will succeed on its own — the payment is
+not lost. Razorpay → Settings → Webhooks shows every delivery attempt and its
+response.
+
+Telegram also forbids a bot from opening a conversation, so a student who has never
+messaged the bot cannot be DMed. They will still be recorded as active; `/status`
+gives them their link.
+
+**Every webhook returns 401.**
+The secret in `.env` and the one in the Razorpay dashboard differ. They must match
+exactly.
+
+### Signing in
 
 **Google sign-in shows "500. That's an error" from accounts.google.com.**
 Almost always the host the page is open on. Firebase authorises sign-in per
@@ -354,6 +474,9 @@ npm test
   header resolution, the migration, duplicate detection, filtering and the runway math.
 - `test/host-authorisation.test.js` — the Firebase authorised-domain matching rule,
   pinned after a hardcoded guess wrongly flagged the live Vercel host.
+- `test/payments.test.js` — plan pricing and expiry arithmetic, and the webhook
+  security model: forged signatures, tampered bodies, replayed deliveries, and
+  identity coming only from Razorpay's echoed notes.
 
 ---
 

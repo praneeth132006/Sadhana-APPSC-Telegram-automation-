@@ -29,6 +29,9 @@ const path = require('path');
 const sheets = require('./src/sheets');
 const auth = require('./src/auth');
 const telegram = require('./src/telegram');
+const razorpay = require('./src/razorpay');
+const membership = require('./src/membership');
+const plans = require('./src/plans');
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -214,6 +217,36 @@ function readJsonBody(req) {
   });
 }
 
+/**
+ * readRawBody — buffers a request body as raw bytes.
+ *
+ * A webhook signature is an HMAC over the EXACT bytes Razorpay sent.
+ * Re-serialising parsed JSON changes key order and whitespace, so the hash
+ * would never match. Everything else uses readJsonBody; this exists only for
+ * signature verification.
+ *
+ * @param {http.IncomingMessage} req
+ * @returns {Promise<string>} The body as a UTF-8 string
+ */
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let received = 0;
+
+    req.on('data', (chunk) => {
+      received += chunk.length;
+      if (received > MAX_BODY_BYTES) {
+        reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('error', reject);
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Input validation
 // ---------------------------------------------------------------------------
@@ -393,6 +426,141 @@ async function serveStatic(res, pathname) {
 }
 
 /**
+ * createCheckoutForStudent — builds the right kind of Razorpay checkout.
+ *
+ * A one-time pass gets a payment link; the recurring plan gets a subscription
+ * mandate. Both carry the Telegram id in `notes`, which is how the webhook
+ * later knows who to let in.
+ *
+ * @param {Object} options { plan, telegramId, username, name }
+ * @returns {Promise<Object>} { url, kind, id, plan, price }
+ */
+async function createCheckoutForStudent({ plan, telegramId, username, name }) {
+  if (plan.type === 'recurring') {
+    const razorpayPlanId = String(process.env[plan.razorpayPlanIdEnv] || '').trim();
+    if (!razorpayPlanId) {
+      throw new Error(
+        `${plan.razorpayPlanIdEnv} is not set. Run "node setup-razorpay.js" once and put the id in .env.`
+      );
+    }
+
+    const subscription = await razorpay.createSubscription({
+      plan, razorpayPlanId, telegramId, username
+    });
+    return {
+      url: subscription.short_url,
+      kind: 'subscription',
+      id: subscription.id,
+      plan: plan.id,
+      price: plans.formatAmount(plan.amountPaise)
+    };
+  }
+
+  const base = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  const link = await razorpay.createPaymentLink({
+    plan,
+    telegramId,
+    username,
+    name,
+    callbackUrl: base ? `${base}/payment-success.html` : undefined
+  });
+
+  return {
+    url: link.short_url,
+    kind: 'payment_link',
+    id: link.id,
+    plan: plan.id,
+    price: plans.formatAmount(plan.amountPaise)
+  };
+}
+
+/**
+ * handlePaymentEvent — turns a verified Razorpay webhook into group access.
+ *
+ * Only the events that actually mean "money arrived" grant anything. Every
+ * identity fact — who paid, for which plan — is read from `notes`, which
+ * Razorpay echoes back from what WE set when creating the link. Nothing here
+ * trusts a value the payer could choose.
+ *
+ * @param {Object} event Parsed, signature-verified webhook body
+ * @returns {Promise<{handled: boolean, reason?: string}>}
+ */
+async function handlePaymentEvent(event) {
+  const type = String(event.event || '');
+  const payload = event.payload || {};
+
+  /** Pulls our own notes back out of whichever entity the event carries. */
+  const notesFrom = (entity) => (entity && entity.notes) || {};
+
+  // ---- One-time passes: a payment link was paid --------------------------
+  if (type === 'payment_link.paid') {
+    const link = (payload.payment_link && payload.payment_link.entity) || {};
+    const payment = (payload.payment && payload.payment.entity) || {};
+    const notes = notesFrom(link);
+
+    if (!notes.telegram_id || !notes.plan_id) {
+      return { handled: false, reason: 'payment link had no telegram_id/plan_id in notes' };
+    }
+
+    await membership.grantAccess({
+      telegramId: notes.telegram_id,
+      planId: notes.plan_id,
+      username: notes.telegram_username,
+      paymentId: payment.id || link.id,
+      amountPaise: payment.amount || link.amount_paid || link.amount,
+      linkId: link.id,
+      event: type
+    });
+    return { handled: true };
+  }
+
+  // ---- Recurring: a subscription cycle was charged -----------------------
+  if (type === 'subscription.charged') {
+    const subscription = (payload.subscription && payload.subscription.entity) || {};
+    const payment = (payload.payment && payload.payment.entity) || {};
+    const notes = notesFrom(subscription);
+
+    if (!notes.telegram_id || !notes.plan_id) {
+      return { handled: false, reason: 'subscription had no telegram_id/plan_id in notes' };
+    }
+
+    await membership.grantAccess({
+      telegramId: notes.telegram_id,
+      planId: notes.plan_id,
+      username: notes.telegram_username,
+      paymentId: payment.id || subscription.id,
+      amountPaise: payment.amount,
+      subscriptionId: subscription.id,
+      event: type
+    });
+    return { handled: true };
+  }
+
+  // ---- Recurring: the mandate ended --------------------------------------
+  // The member keeps what they already paid for; the daily cron removes them
+  // when the paid period actually runs out.
+  if (type === 'subscription.cancelled' || type === 'subscription.halted') {
+    const subscription = (payload.subscription && payload.subscription.entity) || {};
+    const notes = notesFrom(subscription);
+    if (!notes.telegram_id) return { handled: false, reason: 'no telegram_id in notes' };
+
+    await sheets.upsertSubscriber({
+      telegram_id: notes.telegram_id,
+      status: 'cancelled',
+      subscription_id: subscription.id,
+      notes: `Subscription ${type.split('.')[1]} on ${membership.formatIst(new Date())}. ` +
+             'Access continues until the paid period ends.',
+      is_payment: false
+    }, type);
+    return { handled: true };
+  }
+
+  // Everything else (payment.captured for a link we already handled,
+  // authorisations, refunds) is acknowledged without action.
+  return { handled: false, reason: `no handler for "${type}"` };
+}
+
+/**
  * canonicalRedirect — returns the localhost URL to send a 127.0.0.1 request to.
  *
  * Set CANONICAL_HOST_REDIRECT=false in .env to switch this off (for example if
@@ -457,9 +625,14 @@ function sleep(ms) {
  * handlePublicRoute — the two endpoints that work before sign-in.
  * Neither returns any spreadsheet content or secret value.
  *
+ * @param {string} pathname Request path
+ * @param {string} method HTTP method
+ * @param {http.IncomingMessage} req Needed by the webhook, which must read the
+ *   raw request body to verify Razorpay's signature over the exact bytes sent
+ * @param {http.ServerResponse} res
  * @returns {Promise<boolean>} true when the route was handled
  */
-async function handlePublicRoute(pathname, method, res) {
+async function handlePublicRoute(pathname, method, req, res) {
   // Client bootstrap: what the browser needs to render the login gate.
   if (pathname === '/api/config' && method === 'GET') {
     sendJSON(res, 200, {
@@ -472,6 +645,66 @@ async function handlePublicRoute(pathname, method, res) {
       telegramConfigured: telegramConfigured(),
       allowRegistration: String(process.env.ALLOW_SELF_REGISTRATION || '').toLowerCase() === 'true'
     });
+    return true;
+  }
+
+  // Plan catalogue. Public: it is a price list, and the bot reads it too.
+  if (pathname === '/api/plans' && method === 'GET') {
+    sendJSON(res, 200, {
+      success: true,
+      data: {
+        configured: razorpay.isConfigured(),
+        testMode: razorpay.isTestMode(),
+        plans: plans.listPlans().map((plan) => ({
+          id: plan.id,
+          label: plan.label,
+          emoji: plan.emoji,
+          price: plans.formatAmount(plan.amountPaise),
+          amountPaise: plan.amountPaise,
+          type: plan.type,
+          durationDays: plan.durationDays,
+          tagline: plan.tagline,
+          description: plan.description
+        }))
+      }
+    });
+    return true;
+  }
+
+  // ---- Razorpay webhook --------------------------------------------------
+  // Public because Razorpay's servers call it, and they cannot present a
+  // Firebase token. It is NOT unauthenticated: the HMAC signature over the raw
+  // body is the credential, and a request without a valid one is rejected
+  // before a single field of its payload is read.
+  if (pathname === '/api/payments/webhook' && method === 'POST') {
+    const rawBody = await readRawBody(req);
+    const signature = req.headers['x-razorpay-signature'];
+
+    if (!razorpay.verifyWebhookSignature(rawBody, signature)) {
+      // Deliberately terse: telling a forger why they failed helps them.
+      console.warn('[payments] rejected a webhook with an invalid signature');
+      sendJSON(res, 401, { success: false, error: 'Invalid signature' });
+      return true;
+    }
+
+    let event;
+    try {
+      event = JSON.parse(rawBody);
+    } catch (err) {
+      sendJSON(res, 400, { success: false, error: 'Malformed webhook payload' });
+      return true;
+    }
+
+    try {
+      const result = await handlePaymentEvent(event);
+      // Always 200 once handled, so Razorpay stops retrying.
+      sendJSON(res, 200, { success: true, handled: result.handled, reason: result.reason || null });
+    } catch (err) {
+      // A 500 makes Razorpay retry, which is what we want for a transient
+      // failure — the payment is real and must not be silently dropped.
+      console.error('[payments] webhook handling failed:', err.message);
+      sendJSON(res, 500, { success: false, error: 'Processing failed, please retry' });
+    }
     return true;
   }
 
@@ -538,11 +771,20 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
       auth: auth.describeConfig(),
       sheets: {
         configured: sheets.isConfigured(), reachable: false, version: null,
-        tokenRequired: null, current: false, bound: null, spreadsheetName: null, error: null
+        tokenRequired: null, current: false, bound: null, spreadsheetName: null,
+        membershipReady: null, membershipError: null, error: null
       },
       telegram: {
         configured: telegramConfigured(), reachable: false, botUsername: null,
         groupTitle: null, groupReachable: false, isForum: false, error: null
+      },
+      payments: {
+        configured: razorpay.isConfigured(),
+        testMode: razorpay.isTestMode(),
+        webhookSecretSet: Boolean(String(process.env.RAZORPAY_WEBHOOK_SECRET || '').trim()),
+        publicBaseUrl: String(process.env.PUBLIC_BASE_URL || '') || null,
+        recurringPlanReady: Boolean(String(process.env.RAZORPAY_MONTHLY_PLAN_ID || '').trim()),
+        premiumGroupSet: Boolean(membership.getPremiumGroupId())
       },
       you: { email: user.email, uid: user.uid, provider: user.signInProvider, emailVerified: user.emailVerified }
     };
@@ -557,6 +799,17 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         health.sheets.current = /^v5\b/.test(String(health.sheets.version || ''));
         health.sheets.bound = ping.boundToSpreadsheet !== false;
         health.sheets.spreadsheetName = ping.spreadsheetName || null;
+
+        // The membership actions only exist in a script deployed after the
+        // payments release. Probe one so the dashboard can say so plainly
+        // rather than letting a webhook fail mysteriously at 2am.
+        try {
+          await sheets.getRevenue();
+          health.sheets.membershipReady = true;
+        } catch (err) {
+          health.sheets.membershipReady = false;
+          health.sheets.membershipError = err.message;
+        }
       } catch (err) {
         health.sheets.error = err.message;
       }
@@ -710,6 +963,57 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
 
     const updatedCount = await sheets.scheduleQuestions(subject.value, ids, str(body.scheduledFor, 40), actor);
     sendJSON(res, 200, { success: true, updatedCount });
+    return true;
+  }
+
+  // ---- Members -------------------------------------------------------------
+  if (pathname === '/api/members' && method === 'GET') {
+    const data = await sheets.listSubscribers({
+      status: str(query.get('status'), 20),
+      plan: str(query.get('plan'), 40),
+      search: str(query.get('search'), 120),
+      page: str(query.get('page'), 8) || '1',
+      pageSize: str(query.get('pageSize'), 4) || '50'
+    });
+    sendJSON(res, 200, { success: true, data });
+    return true;
+  }
+
+  if (pathname === '/api/members/revenue' && method === 'GET') {
+    sendJSON(res, 200, { success: true, data: await sheets.getRevenue() });
+    return true;
+  }
+
+  // Creates a checkout link on behalf of a student. The bot calls this, and so
+  // can an admin issuing a link manually.
+  if (pathname === '/api/payments/link' && method === 'POST') {
+    const body = await readJsonBody(req);
+
+    const plan = plans.getPlan(str(body.planId, 40));
+    if (!plan) { sendJSON(res, 400, { success: false, error: 'Unknown plan' }); return true; }
+
+    const telegramId = str(body.telegramId, 32);
+    if (!/^\d+$/.test(telegramId)) {
+      sendJSON(res, 400, { success: false, error: 'telegramId must be numeric' });
+      return true;
+    }
+
+    const link = await createCheckoutForStudent({
+      plan,
+      telegramId,
+      username: str(body.username, 60),
+      name: str(body.name, 100)
+    });
+    sendJSON(res, 200, { success: true, data: link });
+    return true;
+  }
+
+  // Runs the expiry sweep on demand, so an admin can see what the nightly job
+  // will do (or fix a missed run) without waiting for cron.
+  if (pathname === '/api/members/run-check' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const summary = await membership.runDailyCheck({ dryRun: body.dryRun !== false });
+    sendJSON(res, 200, { success: true, data: summary });
     return true;
   }
 
@@ -883,7 +1187,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    if (await handlePublicRoute(pathname, method, res)) return;
+    if (await handlePublicRoute(pathname, method, req, res)) return;
 
     // Everything past this point requires a verified Firebase identity.
     if (!auth.isConfigured()) {
@@ -957,3 +1261,5 @@ if (require.main === module) {
 }
 
 module.exports = server;
+module.exports.createCheckoutForStudent = createCheckoutForStudent;
+module.exports.handlePaymentEvent = handlePaymentEvent;

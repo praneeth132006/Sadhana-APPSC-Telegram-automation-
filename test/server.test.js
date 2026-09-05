@@ -28,6 +28,10 @@ process.env.SHEET_API_TOKEN = 'test-sheet-token';
 process.env.TELEGRAM_BOT_TOKEN = '123:TEST';
 process.env.TELEGRAM_GROUP_ID = '-1001234567890';
 process.env.CURATOR_EMAILS = '';
+process.env.RAZORPAY_KEY_ID = 'rzp_test_dummy';
+process.env.RAZORPAY_KEY_SECRET = 'dummy_secret';
+process.env.RAZORPAY_WEBHOOK_SECRET = 'webhook_secret_for_tests';
+process.env.EXAM_PASS_END_DATE = '30-11-2026';
 process.env.PORT = '0';
 process.env.HOST = '127.0.0.1';
 
@@ -78,6 +82,21 @@ auth.authorize = async (token) => {
     emailVerified: true, signInProvider: 'google.com'
   };
 };
+
+// Payments: record what the webhook would do rather than calling Razorpay or
+// Telegram for real.
+const membership = require('../src/membership');
+const paymentCalls = [];
+membership.grantAccess = async (options) => {
+  paymentCalls.push(options);
+  return { subscriber: { telegram_id: options.telegramId }, inviteLink: 'https://t.me/+stub' };
+};
+membership.runDailyCheck = async ({ dryRun }) => ({
+  checked: 2, reminded: [{ telegram_id: '1', daysLeft: 2 }], removed: [], failed: [], dryRun
+});
+stub(sheets, 'listSubscribers', { total: 1, page: 1, totalPages: 1, subscribers: [{ telegram_id: '555' }] });
+stub(sheets, 'getRevenue', { totalMembers: 1, active: 1, totalRevenue: 299, byPlan: {} });
+stub(sheets, 'upsertSubscriber', { telegram_id: '555' });
 
 const server = require('../server');
 
@@ -461,6 +480,152 @@ test('static assets inside dashboard/ are served normally', async () => {
     const res = await call(asset);
     assert.equal(res.status, 200, `${asset} was not served`);
   }
+});
+
+// ===========================================================================
+// Payments
+// ===========================================================================
+
+/** Signs a webhook body the way Razorpay does. */
+function signWebhook(body) {
+  return require('node:crypto')
+    .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+    .update(body).digest('hex');
+}
+
+test('the plan catalogue is public and exposes no secrets', async () => {
+  const res = await call('/api/plans');
+  assert.equal(res.status, 200);
+  assert.equal(res.json.data.plans.length, 3);
+
+  // A price list is fine to publish; keys are not.
+  assert.ok(!res.text.includes(process.env.RAZORPAY_KEY_SECRET), 'the Razorpay key secret leaked');
+  assert.ok(!res.text.includes(process.env.RAZORPAY_WEBHOOK_SECRET), 'the webhook secret leaked');
+});
+
+test('a webhook with a valid signature is processed', async () => {
+  paymentCalls.length = 0;
+  const body = JSON.stringify({
+    event: 'payment_link.paid',
+    payload: {
+      payment_link: { entity: { id: 'plink_x', notes: { telegram_id: '4242', plan_id: 'sprint_30' } } },
+      payment: { entity: { id: 'pay_x', amount: 29900 } }
+    }
+  });
+
+  const res = await fetch(baseUrl + '/api/payments/webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Razorpay-Signature': signWebhook(body) },
+    body
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(paymentCalls.length, 1);
+  assert.equal(paymentCalls[0].telegramId, '4242');
+});
+
+test('a webhook with a forged signature grants nothing', async () => {
+  // The whole paywall rests on this: without it, anyone who finds the URL can
+  // POST "payment captured" and be handed a paid seat for free.
+  paymentCalls.length = 0;
+  const body = JSON.stringify({
+    event: 'payment_link.paid',
+    payload: {
+      payment_link: { entity: { id: 'plink_evil', notes: { telegram_id: '666', plan_id: 'exam_pass' } } },
+      payment: { entity: { id: 'pay_evil', amount: 79900 } }
+    }
+  });
+
+  for (const signature of ['deadbeef', 'f'.repeat(64), '']) {
+    const res = await fetch(baseUrl + '/api/payments/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Razorpay-Signature': signature },
+      body
+    });
+    assert.equal(res.status, 401, `signature "${signature.slice(0, 12)}" was accepted`);
+  }
+
+  // And with no signature header at all.
+  const bare = await fetch(baseUrl + '/api/payments/webhook', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body
+  });
+  assert.equal(bare.status, 401);
+
+  assert.equal(paymentCalls.length, 0, 'a forged webhook granted group access');
+});
+
+test('a webhook body altered after signing is rejected', async () => {
+  paymentCalls.length = 0;
+  const original = JSON.stringify({
+    event: 'payment_link.paid',
+    payload: {
+      payment_link: { entity: { id: 'p1', notes: { telegram_id: '1', plan_id: 'sprint_30' } } },
+      payment: { entity: { id: 'pay1', amount: 29900 } }
+    }
+  });
+  const signature = signWebhook(original);
+
+  // Same signature, upgraded plan — the classic tamper.
+  const tampered = original.replace('sprint_30', 'exam_pass');
+
+  const res = await fetch(baseUrl + '/api/payments/webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Razorpay-Signature': signature },
+    body: tampered
+  });
+
+  assert.equal(res.status, 401);
+  assert.equal(paymentCalls.length, 0);
+});
+
+test('the webhook is not behind the Firebase auth gate', async () => {
+  // Razorpay cannot present a Firebase token. Its credential is the signature,
+  // so a signed call must succeed with no Authorization header at all.
+  const body = JSON.stringify({ event: 'payment.authorized', payload: {} });
+  const res = await fetch(baseUrl + '/api/payments/webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Razorpay-Signature': signWebhook(body) },
+    body
+  });
+  assert.equal(res.status, 200);
+});
+
+test('member endpoints require authentication', async () => {
+  for (const [method, route] of [
+    ['GET', '/api/members'], ['GET', '/api/members/revenue'],
+    ['POST', '/api/payments/link'], ['POST', '/api/members/run-check']
+  ]) {
+    const res = await call(route, { method, body: method === 'POST' ? {} : undefined });
+    assert.equal(res.status, 401, `${method} ${route} did not require authentication`);
+  }
+});
+
+test('creating a payment link validates the plan and telegram id', async () => {
+  const bad = [
+    [{ planId: 'not_a_plan', telegramId: '123' }, /Unknown plan/],
+    [{ planId: 'sprint_30', telegramId: 'abc' }, /numeric/],
+    [{ planId: 'sprint_30', telegramId: '' }, /numeric/],
+    [{ planId: 'sprint_30', telegramId: "1; DROP TABLE" }, /numeric/]
+  ];
+
+  for (const [body, pattern] of bad) {
+    const res = await authed('/api/payments/link', { method: 'POST', body });
+    assert.equal(res.status, 400, `accepted ${JSON.stringify(body)}`);
+    assert.match(res.json.error, pattern);
+  }
+});
+
+test('the expiry sweep defaults to a dry run', async () => {
+  // An admin clicking "preview" must never actually remove anyone.
+  const res = await authed('/api/members/run-check', { method: 'POST', body: {} });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.data.dryRun, true);
+});
+
+test('members list is returned to an authenticated curator', async () => {
+  const res = await authed('/api/members');
+  assert.equal(res.status, 200);
+  assert.equal(res.json.data.subscribers.length, 1);
 });
 
 test('a 127.0.0.1 page load is redirected to localhost', async () => {
