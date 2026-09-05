@@ -1016,7 +1016,10 @@ function appendQuestionsToSheet(subject, questions, addedBy, skipDuplicates) {
     row[writeIndex(map, 'Difficulty')] = normaliseChoice(q.difficulty, DIFFICULTY_VALUES, 'Medium');
     row[writeIndex(map, 'Tags')] = String(q.tags || '').trim();
     row[writeIndex(map, 'Source URL')] = String(q.source_url || q.sourceUrl || '').trim();
-    row[writeIndex(map, 'Status')] = normaliseChoice(q.status, STATUS_VALUES, 'Draft');
+    // What this line does: Falls back to 'Approved' instead of 'Draft' when inserting new questions into Google Sheets
+    // What it brings: Ensures that newly added questions are automatically ready for scheduling and posting
+    // Where changes can be seen: In Column J ('Status') of the Google Sheet for the subject tab
+    row[writeIndex(map, 'Status')] = normaliseChoice(q.status, STATUS_VALUES, 'Approved');
     row[writeIndex(map, 'Posted')] = 'NO';
     row[writeIndex(map, 'Posted At')] = '';
     row[writeIndex(map, 'Scheduled For')] = String(q.scheduled_for || '').trim();

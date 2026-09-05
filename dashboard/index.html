@@ -24,77 +24,99 @@
            LEFT: JSON input and the metadata applied across the batch
            ================================================================ -->
       <section class="input-panel">
+        <!-- Panel header with title and quick sample loading options -->
         <div class="panel-header">
           <h2 class="panel-title">Paste JSON Questions</h2>
-          <button id="sampleBtn" class="btn btn-sm btn-ghost" title="Load a sample APPSC question batch">
-            Load Sample JSON
-          </button>
+          <!-- Header actions: load full sample or minimal 4-essential format -->
+          <div class="header-sample-actions">
+            <button id="sampleBtn" class="btn btn-sm btn-ghost" title="Load full APPSC question sample with all optional attributes">
+              Full Sample
+            </button>
+            <button id="templateBtn" class="btn btn-sm btn-ghost" title="Load minimal JSON format with only the 4 required essentials: Subject, Question, Options, Answer">
+              Minimal JSON
+            </button>
+          </div>
         </div>
 
-        <!-- Batch defaults. Anything left blank here can still be set per card. -->
-        <div class="meta-fields">
-          <div class="field-group">
+        <!-- Target Subject: Primary selector, required if omitted inside JSON payload -->
+        <div class="field-group hero-subject-group">
+          <div class="label-with-pill">
             <label for="subjectSelect">Target Subject</label>
-            <select id="subjectSelect" class="field-select"></select>
+            <span class="pill-badge pill-required">Required if not in JSON</span>
           </div>
-          <div class="field-group">
-            <label for="defaultDate">Default Date</label>
-            <input type="text" id="defaultDate" class="field-input" placeholder="e.g. 05-09-2026">
+          <select id="subjectSelect" class="field-select hero-select"></select>
+        </div>
+
+        <!-- Batch Defaults (Compact 2-Column Grid to eliminate vertical scrolling) -->
+        <div class="meta-section-compact">
+          <div class="meta-section-header">
+            <span class="meta-section-title">Batch Defaults</span>
+            <span class="meta-section-sub">(Optional — auto-fills blank card fields)</span>
           </div>
-          <div class="field-group">
-            <label for="defaultNewspaper">Default Newspaper</label>
-            <input type="text" id="defaultNewspaper" class="field-input" placeholder="e.g. The Hindu">
-          </div>
-          <div class="field-group">
-            <label for="defaultTopic">Default Topic</label>
-            <input type="text" id="defaultTopic" class="field-input" placeholder="e.g. Biodiversity">
-          </div>
-          <div class="field-group">
-            <label for="defaultDifficulty">Default Difficulty</label>
-            <select id="defaultDifficulty" class="field-select"></select>
-          </div>
-          <div class="field-group">
-            <label for="defaultStatus">Default Status</label>
-            <select id="defaultStatus" class="field-select"></select>
-          </div>
-          <div class="field-group">
-            <label for="defaultTags">Default Tags</label>
-            <input type="text" id="defaultTags" class="field-input" placeholder="comma, separated, keywords">
-          </div>
-          <div class="field-group">
-            <label for="defaultSourceUrl">Default Source URL</label>
-            <input type="text" id="defaultSourceUrl" class="field-input" placeholder="https://…">
+          <div class="meta-grid-2col">
+            <!-- Col 1: Default Date -->
+            <div class="field-group-compact">
+              <label for="defaultDate">Date</label>
+              <input type="text" id="defaultDate" class="field-input-compact" placeholder="DD-MM-YYYY (e.g. 05-09-2026)">
+            </div>
+            <!-- Col 2: Default Newspaper -->
+            <div class="field-group-compact">
+              <label for="defaultNewspaper">Newspaper</label>
+              <input type="text" id="defaultNewspaper" class="field-input-compact" placeholder="e.g. The Hindu">
+            </div>
+            <!-- Col 1: Default Difficulty -->
+            <div class="field-group-compact">
+              <label for="defaultDifficulty">Difficulty</label>
+              <select id="defaultDifficulty" class="field-select-compact"></select>
+            </div>
+            <!-- Col 2: Default Status (defaults to Approved) -->
+            <div class="field-group-compact">
+              <label for="defaultStatus">Status</label>
+              <select id="defaultStatus" class="field-select-compact"></select>
+            </div>
+            <!-- Col 1: Default Topic -->
+            <div class="field-group-compact">
+              <label for="defaultTopic">Topic</label>
+              <input type="text" id="defaultTopic" class="field-input-compact" placeholder="e.g. Biodiversity">
+            </div>
+            <!-- Col 2: Default Tags -->
+            <div class="field-group-compact">
+              <label for="defaultTags">Tags</label>
+              <input type="text" id="defaultTags" class="field-input-compact" placeholder="keywords, comma-separated">
+            </div>
+            <!-- Full width (span 2): Default Source URL -->
+            <div class="field-group-compact grid-col-span-2">
+              <label for="defaultSourceUrl">Source URL</label>
+              <input type="text" id="defaultSourceUrl" class="field-input-compact" placeholder="https://… (optional reference link)">
+            </div>
           </div>
         </div>
 
-        <textarea id="jsonInput" class="json-textarea" spellcheck="false"
-                  placeholder='Paste your questions JSON here…
+        <!-- JSON Input Textarea with explicit requirement header -->
+        <div class="textarea-header">
+          <label for="jsonInput">JSON Payload</label>
+          <span class="textarea-requirement-hint">Must contain: <b>Subject, Question, Options, Answer</b></span>
+        </div>
+        <textarea id="jsonInput" class="json-textarea-compact" spellcheck="false"
+                  placeholder='Paste JSON here. A question is added ONLY when it has Subject, Question, 4 Options, and Answer.
 
-Either an object with a questions array:
 {
   "subject": "Environment",
-  "date": "05-09-2026",
-  "newspaper": "The Hindu",
   "questions": [
     {
-      "question": "Question text here?",
-      "option_a": "1 and 2 only",
-      "option_b": "2 and 3 only",
-      "option_c": "1 and 3 only",
-      "option_d": "1, 2 and 3",
-      "correct_answer": "D",
-      "explanation": "Detailed explanation here.",
-      "topic": "Biodiversity",
-      "difficulty": "Medium",
-      "tags": "wetlands, ramsar"
+      "question": "Which of the following is an autonomous body for green cover in Andhra Pradesh?",
+      "option_a": "AP-Green",
+      "option_b": "AP-Forest",
+      "option_c": "AP-Eco",
+      "option_d": "AP-Bio",
+      "correct_answer": "A"
     }
   ]
-}
+}'></textarea>
 
-…or a plain array of question objects.'></textarea>
-
+        <!-- Action Buttons: Parse & Preview, Clear All -->
         <div class="action-buttons">
-          <button id="parseBtn" class="btn btn-primary" title="Parse the JSON into editable cards">
+          <button id="parseBtn" class="btn btn-primary" title="Parse the JSON into editable cards (⌘+Enter)">
             🔍 Parse &amp; Preview
           </button>
           <button id="clearBtn" class="btn btn-ghost" title="Clear the input and all cards">
@@ -102,6 +124,7 @@ Either an object with a questions array:
           </button>
         </div>
 
+        <!-- Error display box for JSON syntax or missing mandatory fields -->
         <div id="parseError" class="error-box" style="display:none"></div>
       </section>
 
@@ -125,6 +148,45 @@ Either an object with a questions array:
           </div>
         </div>
 
+        <!-- Bulk Actions Toolbar: Apply Difficulty, Status, or Batch Defaults across all cards simultaneously -->
+        <div id="bulkToolbar" class="bulk-toolbar" style="display:none">
+          <div class="bulk-toolbar-title">
+            <span class="bulk-icon">⚡</span>
+            <span>Bulk Apply:</span>
+          </div>
+          <div class="bulk-toolbar-controls">
+            <!-- Bulk Difficulty Selector -->
+            <div class="bulk-control-group">
+              <label for="bulkDifficulty">Difficulty</label>
+              <select id="bulkDifficulty" class="field-select-compact">
+                <option value="">— Set all difficulty —</option>
+                <option value="Easy">Easy</option>
+                <option value="Medium">Medium</option>
+                <option value="Hard">Hard</option>
+              </select>
+            </div>
+            <!-- Bulk Status Selector -->
+            <div class="bulk-control-group">
+              <label for="bulkStatus">Status</label>
+              <select id="bulkStatus" class="field-select-compact">
+                <option value="">— Set all status —</option>
+                <option value="Approved">Approved</option>
+                <option value="Draft">Draft</option>
+                <option value="Review">Review</option>
+                <option value="Scheduled">Scheduled</option>
+                <option value="Posted">Posted</option>
+                <option value="Rejected">Rejected</option>
+                <option value="Archived">Archived</option>
+              </select>
+            </div>
+            <!-- Apply Left Defaults to All Cards Button -->
+            <button id="applyDefaultsBtn" class="btn btn-sm btn-outline-cyan" title="Copy batch defaults from left panel to all cards">
+              ⚡ Apply Defaults to All Cards
+            </button>
+          </div>
+        </div>
+
+        <!-- Container for individual editable question cards -->
         <div id="cardsContainer" class="cards-container vertical-flow"></div>
       </section>
 

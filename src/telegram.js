@@ -46,64 +46,73 @@ function escapeHtml(text) {
 
 /**
  * formatDateHashtag — Converts a date string into a Telegram-clickable hashtag.
- * What it does: Parses DD-MM-YYYY, YYYY-MM-DD, or full JS Date strings into #DD_MM_YYYY (e.g. #05_09_2026).
- * What it brings: Users can tap the hashtag in Telegram to filter questions posted for that specific date.
- * Where changes can be seen: Appended directly to the question text in Telegram.
+ * What it does: Parses DD-MM-YYYY, YYYY-MM-DD, or full JS Date strings into #Date_DD_MM_YYYY (e.g. #Date_05_09_2026).
+ * What it brings: Telegram requires hashtags to contain letters; prefixing with "Date_" ensures Telegram renders it as a blue clickable hashtag entity rather than plain text.
+ * Where changes can be seen: Appended directly to the question prompt message in Telegram forum topics.
  *
  * @param {string|Date} dateStr — Date string or object from Google Sheets
- * @returns {string} Formatted hashtag like "#05_09_2026", or empty string if invalid
+ * @returns {string} Formatted hashtag like "#Date_05_09_2026", or empty string if invalid
  */
 function formatDateHashtag(dateStr) {
-  // Return empty string if no date value was provided
+  // Check if date argument is falsy or null
   if (!dateStr) return '';
-  // Convert input to trimmed string
+  // Convert date input to string and strip surrounding whitespace
   const clean = String(dateStr).trim();
-  // Return empty string if cleaned value is blank
+  // Return empty string if cleaned text has zero length
   if (!clean) return '';
 
-  // Case 1: Match DD-MM-YYYY or DD/MM/YYYY format directly from sheet (e.g., "05-09-2026")
+  // Case 1: Match DD-MM-YYYY or DD/MM/YYYY format (e.g., "05-09-2026" or "5/9/2026")
   const ddmmyyyy = clean.match(/^(\d{1,2})[\-\/](\d{1,2})[\-\/](\d{4})/);
+  // If matched, format into canonical 2-digit day and month
   if (ddmmyyyy) {
-    // Zero-pad day to 2 digits
+    // Zero-pad day component to ensure 2 digits (e.g. "05")
     const day = ddmmyyyy[1].padStart(2, '0');
-    // Zero-pad month to 2 digits
+    // Zero-pad month component to ensure 2 digits (e.g. "09")
     const month = ddmmyyyy[2].padStart(2, '0');
-    // Extract 4-digit year
+    // Extract full 4-digit year component (e.g. "2026")
     const year = ddmmyyyy[3];
-    // Return hashtag in #DD_MM_YYYY format
-    return '#' + day + '_' + month + '_' + year;
+    // Return #Date_DD_MM_YYYY with "Date_" letter prefix for Telegram hashtag entity recognition
+    return '#Date_' + day + '_' + month + '_' + year;
   }
 
   // Case 2: Match YYYY-MM-DD or YYYY/MM/DD ISO format (e.g., "2026-09-05")
   const yyyymmdd = clean.match(/^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})/);
+  // If matched, format into canonical 2-digit day and month
   if (yyyymmdd) {
-    // Extract 4-digit year
+    // Extract full 4-digit year component
     const year = yyyymmdd[1];
-    // Zero-pad month to 2 digits
+    // Zero-pad month component to ensure 2 digits
     const month = yyyymmdd[2].padStart(2, '0');
-    // Zero-pad day to 2 digits
+    // Zero-pad day component to ensure 2 digits
     const day = yyyymmdd[3].padStart(2, '0');
-    // Return hashtag in #DD_MM_YYYY format
-    return '#' + day + '_' + month + '_' + year;
+    // Return #Date_DD_MM_YYYY with "Date_" letter prefix for Telegram hashtag entity recognition
+    return '#Date_' + day + '_' + month + '_' + year;
   }
 
   // Case 3: Parse full JavaScript Date string from Google Sheets (e.g., "Sat Sep 05 2026 00:00:00 GMT+0530")
   const parsed = new Date(clean);
-  // Check if parsed date is valid
+  // Validate that the parsed timestamp is a real calendar date
   if (!isNaN(parsed.getTime())) {
-    // Extract day from date object and pad to 2 digits
+    // Zero-pad calendar day of month to 2 digits
     const day = String(parsed.getDate()).padStart(2, '0');
-    // Extract 1-based month from date object and pad to 2 digits
+    // Zero-pad 1-based month index to 2 digits
     const month = String(parsed.getMonth() + 1).padStart(2, '0');
-    // Extract 4-digit year from date object
+    // Extract full 4-digit calendar year
     const year = parsed.getFullYear();
-    // Return hashtag in #DD_MM_YYYY format
-    return '#' + day + '_' + month + '_' + year;
+    // Return #Date_DD_MM_YYYY with "Date_" letter prefix for Telegram hashtag entity recognition
+    return '#Date_' + day + '_' + month + '_' + year;
   }
 
-  // Case 4: Fallback for other text: clean non-alphanumeric characters and prefix with #
+  // Case 4: Fallback for non-standard formats — strip special symbols and ensure Telegram hashtag compatibility
   const fallback = clean.replace(/[^a-zA-Z0-9_]/g, '_');
-  return fallback ? '#' + fallback : '';
+  // Check if cleaned fallback text contains any valid characters
+  if (!fallback) return '';
+  // Check if string contains at least one letter and does not start with a digit
+  const startsWithLetter = /^[a-zA-Z]/.test(fallback);
+  // Prefix with Date_ if string begins with a number so Telegram parses it as a clickable entity
+  const validTag = startsWithLetter ? fallback : 'Date_' + fallback;
+  // Return hashtag with hash symbol prefix
+  return '#' + validTag;
 }
 
 /**

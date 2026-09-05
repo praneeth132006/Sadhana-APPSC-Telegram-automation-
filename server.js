@@ -282,7 +282,10 @@ function sanitiseQuestion(raw, index) {
       difficulty: str(raw.difficulty, 20) || 'Medium',
       tags: str(raw.tags, LIMITS.short),
       source_url: sourceUrl,
-      status: str(raw.status, 20) || 'Draft',
+      // What this does: Sets the default workflow status for newly added questions to 'Approved'
+      // What it brings: Ensures all incoming questions default to Approved as requested by the user
+      // Where changes can be seen: In API responses from /api/questions and rows saved to Google Sheets
+      status: str(raw.status, 20) || 'Approved',
       review_notes: str(raw.review_notes, LIMITS.notes),
       scheduled_for: str(raw.scheduled_for, 40)
     }
