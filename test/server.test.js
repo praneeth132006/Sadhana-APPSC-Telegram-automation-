@@ -172,6 +172,33 @@ test('GET /api/ping probes the sheet without accepting a caller-supplied URL', a
   assert.equal(pings[pings.length - 1].args.length, 0, 'ping accepted an argument from the query string');
 });
 
+test('the health report and the ping route agree about the deployed version', async () => {
+  // These two once carried separate copies of the version test. One was updated
+  // and the other was not, so Health called a current deployment outdated
+  // against the very version it was asking for.
+  const original = sheets.ping;
+  sheets.ping = async () => ({ status: 'ok', version: 'v6 (30 columns + membership)', boundToSpreadsheet: true });
+  try {
+    const ping = await call('/api/ping');
+    const health = await authed('/api/health');
+    assert.equal(ping.json.outdated, false);
+    assert.equal(health.json.data.sheets.current, true, 'health disagreed with ping about the same version');
+  } finally {
+    sheets.ping = original;
+  }
+});
+
+test('a version newer than the one required is not called outdated', async () => {
+  const original = sheets.ping;
+  sheets.ping = async () => ({ status: 'ok', version: 'v7 (a later release)', boundToSpreadsheet: true });
+  try {
+    const res = await call('/api/ping');
+    assert.equal(res.json.outdated, false);
+  } finally {
+    sheets.ping = original;
+  }
+});
+
 test('GET /api/ping flags an outdated Apps Script deployment', async () => {
   const original = sheets.ping;
   sheets.ping = async () => ({ status: 'ok', version: 'v2 (10 columns)' });

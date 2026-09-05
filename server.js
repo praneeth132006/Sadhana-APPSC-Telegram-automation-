@@ -56,6 +56,19 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
  *  analytics, browse and edit actions, so the UI warns instead of failing. */
 const REQUIRED_SHEET_VERSION = 'v6 (30 columns + membership)';
 
+/** Major version number REQUIRED_SHEET_VERSION asks for, e.g. 6. */
+const REQUIRED_SHEET_MAJOR = Number(REQUIRED_SHEET_VERSION.match(/^v(\d+)/)[1]);
+
+/** Whether a deployment's reported version is new enough for the dashboards.
+ *  A later major version is fine; only an older one is a problem. Both the
+ *  ping route and the health report ask this, and when they each carried their
+ *  own copy of the test one was left behind on an upgrade and the Health page
+ *  called a current deployment outdated against itself. */
+function sheetVersionIsCurrent(version) {
+  const major = Number((String(version).match(/^v(\d+)/) || [])[1]);
+  return Number.isFinite(major) && major >= REQUIRED_SHEET_MAJOR;
+}
+
 /** Rate limit: requests allowed per IP inside the window. */
 const RATE_LIMIT_MAX = 240;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
@@ -724,8 +737,7 @@ async function handlePublicRoute(pathname, method, req, res) {
       // (the membership reads behind the Members page). Detect an older
       // deployment here so the UI can say exactly what to do instead of
       // surfacing an opaque "Unknown action" from Google.
-      const versionNumber = Number((String(version).match(/^v(\d+)/) || [])[1]);
-      const outdated = !(versionNumber >= 6);
+      const outdated = !sheetVersionIsCurrent(version);
 
       // A script that is not bound to a spreadsheet was pasted into a
       // standalone project instead of the Sheet's own Extensions > Apps Script.
@@ -773,6 +785,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
       auth: auth.describeConfig(),
       sheets: {
         configured: sheets.isConfigured(), reachable: false, version: null,
+        requiredVersion: REQUIRED_SHEET_VERSION,
         tokenRequired: null, current: false, bound: null, spreadsheetName: null,
         membershipReady: null, membershipError: null, error: null
       },
@@ -798,7 +811,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         health.sheets.version = ping.version ||
           (String(ping.message || '').match(/v\d+[^)"]*/) || [null])[0];
         health.sheets.tokenRequired = Boolean(ping.tokenRequired);
-        health.sheets.current = /^v5\b/.test(String(health.sheets.version || ''));
+        health.sheets.current = sheetVersionIsCurrent(health.sheets.version);
         health.sheets.bound = ping.boundToSpreadsheet !== false;
         health.sheets.spreadsheetName = ping.spreadsheetName || null;
 
