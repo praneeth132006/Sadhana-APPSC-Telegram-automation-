@@ -205,6 +205,77 @@ proven, is in [SECURITY-REVIEW.md](SECURITY-REVIEW.md).
 
 ## Troubleshooting
 
+### Signing in
+
+**Google sign-in shows "500. That's an error" from accounts.google.com.**
+Almost always the host the page is open on. Firebase authorises sign-in per
+*domain*, and it treats `localhost` and `127.0.0.1` as different domains — only
+`localhost` is on the default list. Loading the dashboard on `127.0.0.1` or a LAN IP
+makes Google reject the request, often as a bare 500 with no explanation.
+
+The server now redirects `127.0.0.1` to `localhost` automatically, so open
+**http://localhost:3000**. For any other host, either use localhost or add that host
+under **Firebase Console → Authentication → Settings → Authorised domains**. The
+dashboard shows a red banner up front when the current host cannot work.
+
+**A second person signs in but every panel errors.**
+Their account authenticated; the server refuses it because it is not on the curator
+allowlist. Add their address to `CURATOR_EMAILS` in `.env` (comma separated) and
+restart. The dashboard names the account and the fix in a banner.
+
+Each person needs their **own** copy of the server running on their own machine — it
+binds to loopback only, so one person cannot reach another's.
+
+**A brief splash when moving between dashboards.**
+Expected — that is the session being restored from local storage. If you see the
+*sign-in form* instead, your browser is blocking site data for localhost, which stops
+Firebase persisting the session.
+
+**HTTP 503 "Server auth is not configured".**
+`FIREBASE_PROJECT_ID` is missing from `.env`. Set it and restart.
+
+### Google Sheets
+
+**Opening the Sheet gives ERR_TOO_MANY_REDIRECTS.**
+Not the dashboard. The URL in that loop is
+`accounts.google.com/ServiceLogin?service=wise`, which is Google's own sign-in for
+Docs and Sheets. It loops when the browser's Google cookies are in a bad state,
+usually from several Google accounts being signed in at once. Fix it in the browser:
+clear cookies for `google.com` and `accounts.google.com`, or open the sheet in a
+fresh profile or incognito window and sign in with one account.
+
+**I deleted a question in the dashboard but it is still in the sheet.**
+Two buttons look like "delete":
+- The **Upload** page's per-card button only removes a card from the batch you are
+  about to send — nothing has been written to the sheet yet. It is labelled
+  *Remove from batch*.
+- The **Questions** page's 🗑️ is the real one and deletes the sheet row.
+
+If a Questions-page delete genuinely did not stick, the row had no **Question ID**
+(rows written before the 30-column migration have that cell empty). Fixed: the
+dashboard now also sends the row number and question text, and the sheet acts on
+that row only when the text still matches. Run **`backfillQuestionIds`** once from
+the Apps Script editor to give every old row a proper id.
+
+**Clear every question and start fresh.**
+Run **`clearAllQuestions`** from the Apps Script editor. It empties every subject tab,
+rebuilds the canonical headers, and leaves **Config** and its Telegram thread ids
+untouched. For one subject: `clearSubjectQuestions("Polity")`. Neither is reachable
+over HTTP, so no dashboard button or stray request can trigger a wipe.
+
+### Telegram
+
+**Topics are missing, or posts go to the wrong thread.**
+Run `node verify-topics.js` to check every subject's thread id against the group, then
+`node verify-topics.js --fix` to create any missing ones and write the new ids back to
+Config. Telegram has no API to *list* topics, so this probes each with a no-op rename.
+
+Be careful with **`setupSpreadsheet`**: it rebuilds the Config tab. It now preserves
+existing thread ids, emojis, cron settings and Active flags, but `upgradeSpreadsheet`
+is the right function for an existing sheet.
+
+### Apps Script deployment
+
 **Already-posted questions reappeared as pending after upgrading.**
 The v2 layout stored the flag and the time in one cell (`YES | 05/09/2026, 01:16 PM`)
 rather than a bare `YES`. Any script version that tests for an exact `YES` reads those
@@ -226,17 +297,6 @@ your Sheet's URL, and copy that project's new `/exec` URL into `.env`.
 
 **Analytics or the question browser show "Unknown action".**
 Same cause — the deployed script predates those actions. Redeploy a new version.
-
-**A brief splash when moving between dashboards.**
-That is the session being restored from local storage, and it is expected. If you see
-the *sign-in form* rather than the splash, your browser is blocking site data for
-localhost, which stops Firebase persisting the session.
-
-**HTTP 503 "Server auth is not configured".**
-`FIREBASE_PROJECT_ID` is missing from `.env`. Set it and restart the server.
-
-**"Account … is not on the curator allowlist".**
-Add the address to `CURATOR_EMAILS` in `.env` and restart.
 
 ## Tests
 

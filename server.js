@@ -392,6 +392,23 @@ async function serveStatic(res, pathname) {
   }
 }
 
+/**
+ * canonicalRedirect — returns the localhost URL to send a 127.0.0.1 request to.
+ *
+ * Set CANONICAL_HOST_REDIRECT=false in .env to switch this off (for example if
+ * you deliberately added 127.0.0.1 to your Firebase authorised domains).
+ *
+ * @param {URL} parsedUrl The incoming request URL
+ * @returns {string|null} Absolute URL to redirect to, or null to serve normally
+ */
+function canonicalRedirect(parsedUrl) {
+  if (String(process.env.CANONICAL_HOST_REDIRECT || '').toLowerCase() === 'false') return null;
+  if (parsedUrl.hostname !== '127.0.0.1' && parsedUrl.hostname !== '[::1]' && parsedUrl.hostname !== '::1') {
+    return null;
+  }
+  return `http://localhost:${parsedUrl.port || PORT}${parsedUrl.pathname}${parsedUrl.search}`;
+}
+
 // ---------------------------------------------------------------------------
 // Telegram helpers
 // ---------------------------------------------------------------------------
@@ -834,6 +851,21 @@ const server = http.createServer(async (req, res) => {
       sendText(res, 405, '405 Method Not Allowed');
       return;
     }
+
+    // Firebase authorises sign-in per DOMAIN, and it treats "localhost" and
+    // "127.0.0.1" as different domains. Only "localhost" is on the default
+    // authorised list, so loading the dashboard at http://127.0.0.1:3000 makes
+    // Google sign-in fail — often as an opaque 500 from accounts.google.com.
+    // Same machine, same port, so redirecting is free and removes the trap.
+    const redirect = canonicalRedirect(parsedUrl);
+    if (redirect) {
+      res.statusCode = 302;
+      res.setHeader('Location', redirect);
+      res.setHeader('Cache-Control', 'no-store');
+      res.end();
+      return;
+    }
+
     await serveStatic(res, pathname);
     return;
   }
@@ -889,8 +921,11 @@ if (require.main === module) {
     if (!auth.getCuratorAllowlist().length) warnings.push('CURATOR_EMAILS not set — any verified Firebase user can curate');
     if (HOST === '0.0.0.0') warnings.push('HOST=0.0.0.0 — this dashboard is reachable from your whole network');
 
+    // Always print the localhost form: it is the origin Firebase authorises.
+    const displayHost = (HOST === '127.0.0.1' || HOST === '::1') ? 'localhost' : HOST;
+
     console.log('════════════════════════════════════════════════════════');
-    console.log(`🚀 Sadhana APPSC Dashboard   http://${HOST}:${PORT}`);
+    console.log(`🚀 Sadhana APPSC Dashboard   http://${displayHost}:${PORT}`);
     console.log('────────────────────────────────────────────────────────');
     console.log('   📤 Upload      /index.html');
     console.log('   📊 Analytics   /analytics.html');

@@ -408,10 +408,52 @@ function buildBootScreen() {
   ]);
 }
 
+/**
+ * warnIfOriginNotAuthorised — flags a host Firebase sign-in cannot work from.
+ *
+ * Firebase authorises sign-in per domain, and "localhost" and "127.0.0.1" are
+ * different domains to it. Only localhost, the two firebaseapp/web.app domains
+ * and any host added in the console are allowed. Loading the dashboard on
+ * anything else makes the Google popup fail — frequently as an unexplained 500
+ * from accounts.google.com, which gives the curator nothing to act on.
+ *
+ * The server already redirects 127.0.0.1 to localhost, so this catches the
+ * remaining cases: a LAN IP, or a machine name.
+ */
+function warnIfOriginNotAuthorised() {
+  const host = location.hostname;
+
+  // Hosts Firebase allows out of the box, plus anything the user configured.
+  const alwaysFine = ['localhost', ''];
+  if (alwaysFine.includes(host)) return;
+  if (host.endsWith('.firebaseapp.com') || host.endsWith('.web.app')) return;
+
+  // A bare IP address is never on the default authorised list.
+  const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
+  const localUrl = `http://localhost:${location.port || '3000'}${location.pathname}`;
+
+  showBanner('error', `Sign-in will fail on "${host}".`,
+    'Firebase only allows sign-in from domains on its authorised list, and an IP address is not one of ' +
+    'them. Open this dashboard at ' + localUrl + ' instead' +
+    (isIp ? '' : ', or add this host under Firebase Console → Authentication → Settings → Authorised domains') +
+    '. Opening it on the wrong host is what produces the "500. That\u2019s an error" page from Google.');
+}
+
 /** Turns a Firebase error code into something a curator can act on. */
 function friendlyAuthError(err) {
   const code = (err && err.code) || '';
   const table = {
+    // Firebase authorises sign-in per domain. Opening the dashboard on a LAN
+    // IP, or on 127.0.0.1 when only localhost is authorised, fails here — and
+    // Google's popup often surfaces it as a bare 500 rather than a clear error.
+    'auth/unauthorized-domain':
+      `This page is open on "${location.hostname}", which is not an authorised Firebase domain. ` +
+      'Open it at http://localhost:' + (location.port || '3000') + ' instead, or add this host under ' +
+      'Firebase Console → Authentication → Settings → Authorised domains.',
+    'auth/internal-error':
+      'Google rejected the sign-in request. This is almost always the domain: open the dashboard at ' +
+      'http://localhost:' + (location.port || '3000') + ' rather than an IP address. If you are already ' +
+      'on localhost, check that Google sign-in is enabled in Firebase Console → Authentication → Sign-in method.',
     'auth/invalid-credential': 'Email or password is incorrect.',
     'auth/wrong-password': 'Email or password is incorrect.',
     'auth/user-not-found': 'No account exists for that email.',
@@ -578,6 +620,8 @@ export async function initDashboard({ page, onReady }) {
     showToast('error', 'Cannot reach the local server. Start it with: npm run dashboard');
   }
 
+  warnIfOriginNotAuthorised();
+
   refreshConnectionStatus();
   // Re-check the sheet connection every couple of minutes.
   setInterval(refreshConnectionStatus, 120000);
@@ -678,7 +722,14 @@ export async function initDashboard({ page, onReady }) {
     try {
       await onReady(user);
     } catch (err) {
-      showToast('error', err.message, 10000);
+      if (/allowlist|not verified|Sign in required|Server auth is not configured/i.test(err.message)) {
+        // A permissions problem, not a transient failure — say it once, clearly,
+        // and leave it on screen.
+        showBanner('error', 'Signed in, but this account cannot use the dashboard.',
+          err.message + ' Add the address to CURATOR_EMAILS in the server\u2019s .env file and restart it.');
+      } else {
+        showToast('error', err.message, 10000);
+      }
       console.error('[dashboard] init failed', err);
     }
   });
