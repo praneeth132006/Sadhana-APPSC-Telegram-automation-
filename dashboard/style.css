@@ -8,56 +8,67 @@
 
 /* ---- CSS Custom Properties (Design Tokens) ---- */
 :root {
-  /* Core background colors — deep navy to dark slate spectrum */
-  --bg-primary: #0a0e1a;
-  --bg-secondary: #0f172a;
-  --bg-card: rgba(17, 24, 39, 0.85);
-  --bg-card-hover: rgba(30, 41, 59, 0.9);
-  --bg-glass: rgba(255, 255, 255, 0.03);
-  --bg-input: rgba(255, 255, 255, 0.05);
-  --bg-hover: rgba(255, 255, 255, 0.08);
+  /* ---- Surfaces ----------------------------------------------------------
+     A true-black base with progressively lighter near-black surfaces stacked
+     on top. Each step is a real elevation level, so panels, inputs and hovers
+     read as distinct layers instead of one flat wash. */
+  --bg-primary: #000000;      /* page background */
+  --bg-secondary: #0b0b0d;    /* modals, sunken areas */
+  --bg-card: #0f0f12;         /* panels and cards */
+  --bg-card-hover: #16161a;   /* card hover */
+  --bg-glass: #121216;        /* panel headers, filter bars */
+  --bg-input: #17171c;        /* inputs and tracks */
+  --bg-hover: #1e1e24;        /* generic hover */
+  --bg-elevated: #1a1a1f;     /* chips and pills */
 
-  /* Text colors — white and muted slate */
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --text-accent: #38bdf8;
+  /* ---- Text -------------------------------------------------------------- */
+  --text-primary: #f5f5f7;
+  --text-secondary: #a1a1aa;
+  --text-muted: #6f6f78;
+  --text-accent: #5eb3ff;
 
-  /* Accent colors — vibrant blue, emerald green, and warning amber */
+  /* ---- Accents ----------------------------------------------------------
+     Slightly brighter than on a navy base, because saturated colour loses
+     apparent contrast against pure black. */
   --accent-primary: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-glow: rgba(59, 130, 246, 0.3);
-  --accent-success: #10b981;
+  --accent-hover: #60a5fa;
+  --accent-glow: rgba(59, 130, 246, 0.35);
+  --accent-success: #22c55e;
   --accent-correct: #22c55e;
-  --accent-correct-bg: rgba(34, 197, 94, 0.12);
+  --accent-correct-bg: rgba(34, 197, 94, 0.14);
   --accent-correct-border: #22c55e;
-  --accent-danger: #ef4444;
-  --accent-warn: #f59e0b;
+  --accent-danger: #f05252;
+  --accent-warn: #f5a524;
 
-  /* Border colors */
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --border-card: rgba(255, 255, 255, 0.1);
-  --border-focus: rgba(59, 130, 246, 0.6);
+  /* ---- Borders ----------------------------------------------------------
+     On black, borders do the work gradients used to. They are the main way
+     one surface is separated from the next. */
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-card: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --border-focus: rgba(59, 130, 246, 0.65);
 
-  /* Shadows for layered glassmorphism */
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 10px 32px rgba(0, 0, 0, 0.5);
-  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.35);
+  /* ---- Shadows ----------------------------------------------------------
+     Drop shadows are nearly invisible against black, so depth comes from a
+     hairline top highlight plus a deep, wide shadow. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.8);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.85);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.9);
+  --shadow-card: 0 2px 14px rgba(0, 0, 0, 0.7);
 
-  /* Typography */
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  /* ---- Typography -------------------------------------------------------- */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
 
-  /* Border radius */
+  /* ---- Radii ------------------------------------------------------------- */
   --radius-sm: 6px;
   --radius-md: 10px;
-  --radius-lg: 16px;
-  --radius-xl: 22px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
 
-  /* Transitions */
-  --transition-fast: 150ms ease;
-  --transition-normal: 250ms ease;
+  /* ---- Motion ------------------------------------------------------------ */
+  --transition-fast: 140ms ease;
+  --transition-normal: 240ms ease;
 }
 
 /* ---- Reset & Base Elements ---- */
@@ -79,17 +90,17 @@ body {
   color: var(--text-primary);
   min-height: 100vh;
   overflow-x: hidden;
-  background: linear-gradient(135deg, #0a0e1a 0%, #0f172a 45%, #111827 100%);
+  background: var(--bg-primary);
 }
 
 /* Custom sleek dark scrollbar */
 ::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.18);
   border-radius: 4px;
 }
-::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.25); }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32); }
 
 /* ---- Layout: App Container ---- */
 .app-container {
@@ -122,7 +133,7 @@ body {
 .brand-title {
   font-size: 1.35rem;
   font-weight: 800;
-  background: linear-gradient(135deg, #ffffff 0%, #38bdf8 100%);
+  background: linear-gradient(135deg, #ffffff 0%, #7dd3fc 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   letter-spacing: -0.02em;
@@ -154,7 +165,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: rgba(15, 23, 42, 0.7);
+  background: var(--bg-elevated);
   border: 1px solid rgba(59, 130, 246, 0.25);
   padding: 7px 14px;
   border-radius: 24px;
@@ -319,7 +330,7 @@ body {
 /* What it brings: Premium dark-mode aesthetic that inspires confidence and security */
 /* Where changes can be seen: Centered card container on the login gate */
 .auth-gate-card {
-  background: rgba(15, 23, 42, 0.85);
+  background: var(--bg-secondary);
   border: 1px solid rgba(59, 130, 246, 0.28);
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 35px rgba(59, 130, 246, 0.12);
   backdrop-filter: blur(20px);
@@ -360,7 +371,7 @@ body {
   font-weight: 800;
   color: var(--text-primary);
   margin-bottom: 12px;
-  background: linear-gradient(135deg, #ffffff 0%, #94a3b8 100%);
+  background: linear-gradient(135deg, #ffffff 0%, #c4c4cc 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -383,7 +394,7 @@ body {
   flex-direction: column;
   gap: 12px;
   width: 100%;
-  background: rgba(10, 14, 26, 0.65);
+  background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
   padding: 16px 18px;
@@ -460,7 +471,7 @@ body {
 .auth-gate-tabs {
   display: flex;
   width: 100%;
-  background: rgba(10, 14, 26, 0.55);
+  background: var(--bg-input);
   border-radius: 8px;
   padding: 4px;
   margin-bottom: 18px;
@@ -580,7 +591,7 @@ body {
 }
 
 .field-select option {
-  background-color: #111827;
+  background-color: var(--bg-input);
   color: var(--text-primary);
 }
 
@@ -593,11 +604,11 @@ body {
 
 /* JSON Input Textarea */
 .json-textarea {
-  background: rgba(10, 14, 26, 0.7);
+  background: var(--bg-input);
   border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
   padding: 14px;
-  color: #e2e8f0;
+  color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 0.82rem;
   line-height: 1.5;
@@ -865,7 +876,7 @@ body {
 /* What it brings: Eliminates inner scrollbars so long multi-statement exam questions are fully visible without scrolling */
 /* Where changes can be seen: In every question card prompt area on http://localhost:3000 */
 .question-textarea-vertical {
-  background: rgba(10, 14, 26, 0.7);
+  background: var(--bg-input);
   border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
   padding: 14px 16px;
@@ -968,7 +979,7 @@ body {
 /* What it brings: Allows reading detailed multi-sentence explanations comfortably without inner scrollbars */
 /* Where changes can be seen: In every question card explanation section on http://localhost:3000 */
 .explanation-textarea-vertical {
-  background: rgba(10, 14, 26, 0.7);
+  background: var(--bg-input);
   border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
   padding: 14px 16px;

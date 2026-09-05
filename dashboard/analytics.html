@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Analytics — Sadhana APPSC</title>
+  <meta name="description" content="Question bank coverage, posting progress, curator activity and content runway for the Sadhana APPSC Telegram automation.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+  <!-- shared.js injects the top navigation and the sign-in gate above #pageRoot -->
+  <div class="app-container">
+    <!-- Everything inside #pageRoot stays hidden until a curator is signed in -->
+    <main id="pageRoot" class="page-root" style="display:none">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Analytics</h1>
+          <p class="page-subtitle">
+            How many questions exist in each subject, how many have gone out, what is still
+            waiting, and how long the pending stock will last at the current posting cadence.
+          </p>
+        </div>
+        <div class="page-actions">
+          <span id="generatedAt" class="hint-text"></span>
+          <button id="refreshBtn" class="btn btn-primary" title="Reload analytics from Google Sheets">Refresh</button>
+        </div>
+      </div>
+
+      <!-- Headline metric tiles -->
+      <div id="statGrid" class="stat-grid"></div>
+
+      <!-- All rendered panels are appended here by analytics.js -->
+      <div id="panels"></div>
+    </main>
+  </div>
+
+  <script type="module" src="analytics.js"></script>
+</body>
+</html>

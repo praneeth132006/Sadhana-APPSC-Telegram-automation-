@@ -1,243 +1,74 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <!-- Character encoding for standard UTF-8 text support -->
   <meta charset="UTF-8">
-  <!-- Responsive viewport configuration for desktop and mobile displays -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- Page title shown in the browser tab -->
-  <title>Sadhana APPSC — Question Dashboard</title>
-  <!-- Search engine meta description -->
-  <meta name="description" content="Dashboard to manage, edit, and push APPSC quiz questions to Google Sheets for Telegram automation with Firebase Authentication">
-  <!-- Preconnect to Google Fonts for accelerated font loading -->
+  <title>Upload — Sadhana APPSC</title>
+  <meta name="description" content="Paste APPSC quiz questions as JSON, review them as editable cards, and push them into the Google Sheets question bank.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <!-- Import Inter for UI typography and JetBrains Mono for code/JSON -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <!-- Link external stylesheet for glassmorphic dark theme and vertical card layout -->
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="shared.css">
 </head>
 <body>
-  <!-- ========================================================================
-       Main Application Container — wraps the entire dashboard interface
-       ======================================================================== -->
-  <div class="app-container" id="appContainer">
+  <!-- shared.js injects the navigation bar and the sign-in gate above #pageRoot -->
+  <div class="app-container">
 
-    <!-- ====================================================================
-         Top Navigation Bar — branding, Sheet API config & Firebase Auth
-         ==================================================================== -->
-    <header class="top-bar">
-      <!-- App branding area with title and subtitle badge -->
-      <div class="brand">
-        <h1 class="brand-title">Sadhana APPSC</h1>
-        <span class="brand-subtitle">Question Dashboard</span>
-      </div>
-
-      <!-- Right controls container: Embedded Sheet API connection badge and User Authentication -->
-      <div class="top-controls">
-        <!-- What this block does: Displays a read-only Google Sheets connection status pill with live ping indicator -->
-        <!-- What it brings: Embeds the API URL securely without allowing users to edit or modify it in the browser UI -->
-        <!-- Where changes can be seen: In the top right header bar on http://localhost:3000 -->
-        <div class="sheet-connection-pill" id="sheetConnectionPill" title="Embedded Google Sheets API connection">
-          <!-- What this line does: Displays a pulsating colored indicator dot reflecting live connectivity (green=online, red=offline) -->
-          <!-- What it brings: Real-time visual feedback confirming cloud spreadsheet connection -->
-          <!-- Where changes can be seen: Left edge of the connection pill in the header -->
-          <span id="connectionStatus" class="status-dot offline" title="Not connected"></span>
-          <!-- What this line does: Displays clear text showing connection state to Google Sheets -->
-          <!-- What it brings: Instant confidence that backend proxy and Google Sheets are linked -->
-          <!-- Where changes can be seen: Inside the connection pill next to the dot -->
-          <span id="connectionStatusText" class="connection-status-text">Google Sheets: Connecting...</span>
-        </div>
-
-        <!-- Firebase Authentication Section: Sign In button or logged-in User profile -->
-        <div class="user-auth-section" id="userAuthSection">
-          <!-- Sign In trigger button shown when logged out -->
-          <button id="openAuthBtn" class="btn btn-auth" title="Sign in to authenticate question submissions" style="display: none;">
-            <span class="auth-btn-icon">🔑</span>
-            <span class="auth-btn-text">Sign In</span>
-          </button>
-
-          <!-- User profile chip shown when user is authenticated -->
-          <div id="userProfileChip" class="user-profile-chip" style="display: none;">
-            <!-- User avatar with image or initial letter -->
-            <div class="user-avatar" id="userAvatar">U</div>
-            <!-- User details container -->
-            <div class="user-info">
-              <span class="user-email" id="userEmail">user@example.com</span>
-              <span class="user-role-badge">Verified</span>
-            </div>
-            <!-- Sign out button -->
-            <button id="signOutBtn" class="btn-signout" title="Sign out of your account">Sign Out</button>
-          </div>
-        </div>
-      </div>
-    </header>
-
-    <!-- ====================================================================
-         Authentication Gate Hero Section — Displayed when user is NOT logged in
-         What this does: Completely blocks unauthenticated users from seeing or accessing the question dashboard
-         What it brings: Satisfies requirement "without logging do not show the dashboard"
-         Where changes can be seen: Displayed prominently in the center of http://localhost:3000 when logged out
-         ==================================================================== -->
-    <div id="authGate" class="auth-gate-hero">
-      <!-- What this container does: Encloses the glassmorphic login card with glowing border and backdrop blur -->
-      <!-- What it brings: High-end, premium security gate aesthetic -->
-      <!-- Where changes can be seen: Centered card on the screen prior to login -->
-      <div class="auth-gate-card">
-        <!-- What this element does: Displays an icon and badge signaling secure access requirement -->
-        <!-- What it brings: Clear security context for the user -->
-        <!-- Where changes can be seen: Top of the login gate card -->
-        <div class="auth-gate-badge">
-          <span class="auth-badge-icon">🔒</span>
-          <span>Authentication Required</span>
-        </div>
-
-        <!-- What this line does: Displays the main heading for the application login gate -->
-        <!-- What it brings: Strong visual identity and branding -->
-        <!-- Where changes can be seen: Main title inside the login card -->
-        <h2 class="auth-gate-title">Sadhana APPSC Question Hub</h2>
-
-        <!-- What this paragraph does: Informs user that login is mandatory to access the curation dashboard -->
-        <!-- What it brings: Clear instructions on why authentication is needed -->
-        <!-- Where changes can be seen: Subtitle paragraph below the main title -->
-        <p class="auth-gate-subtitle">Please sign in to access the question curator workspace, preview formatted cards, and publish questions directly to Google Sheets.</p>
-
-        <!-- What this container does: Highlights key capabilities unlocked upon authentication -->
-        <!-- What it brings: Reassurance of platform value and modern feature set -->
-        <!-- Where changes can be seen: List of feature checkmarks inside the login card -->
-        <div class="auth-features-preview">
-          <!-- Feature item 1: Auto-expanding question cards -->
-          <div class="auth-feature-item">
-            <span class="auth-feature-check">✓</span>
-            <span>Spacious vertical question &amp; explanation cards (no inner scrollbars)</span>
-          </div>
-          <!-- Feature item 2: Live Google Sheets sync -->
-          <div class="auth-feature-item">
-            <span class="auth-feature-check">✓</span>
-            <span>Embedded Google Sheets sync with 16-column detailed tracking</span>
-          </div>
-          <!-- Feature item 3: Curator attribution -->
-          <div class="auth-feature-item">
-            <span class="auth-feature-check">✓</span>
-            <span>Automatic curator attribution and verification via Firebase Auth</span>
-          </div>
-        </div>
-
-        <!-- What this button does: Triggers Firebase 1-Click Google OAuth popup authentication -->
-        <!-- What it brings: Seamless, instantaneous single-click login with existing Google credentials -->
-        <!-- Where changes can be seen: Prominent full-width button in the login card -->
-        <button id="gateGoogleSignInBtn" class="btn btn-google btn-hero" title="Sign in with your Google account">
-          <svg class="google-icon" viewBox="0 0 24 24" width="22" height="22">
-            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-          </svg>
-          <span>Continue with Google</span>
-        </button>
-
-        <!-- What this element does: Renders a horizontal divider separating Google and Email login options -->
-        <!-- What it brings: Clear visual hierarchy between primary and secondary auth methods -->
-        <!-- Where changes can be seen: Horizontal line with text below Google button -->
-        <div class="auth-gate-divider">
-          <span>or continue with email</span>
-        </div>
-
-        <!-- What this container does: Provides tabs to toggle between Sign In and Account Registration -->
-        <!-- What it brings: Allows both existing curators and new staff to authenticate easily -->
-        <!-- Where changes can be seen: Tab buttons above the email/password form -->
-        <div class="auth-gate-tabs">
-          <button id="gateTabSignIn" class="auth-tab active" type="button">Sign In</button>
-          <button id="gateTabRegister" class="auth-tab" type="button">Create Account</button>
-        </div>
-
-        <!-- What this form does: Handles email and password submission for Firebase Authentication -->
-        <!-- What it brings: Alternative credentials-based login for users without Google OAuth -->
-        <!-- Where changes can be seen: Form fields inside login card -->
-        <form id="gateAuthForm" class="auth-form" onsubmit="return false;">
-          <div class="auth-field">
-            <label for="gateAuthEmail">Email Address</label>
-            <input type="email" id="gateAuthEmail" class="field-input" placeholder="curator@appsc.com" required autocomplete="email">
-          </div>
-          <div class="auth-field">
-            <label for="gateAuthPassword">Password</label>
-            <input type="password" id="gateAuthPassword" class="field-input" placeholder="••••••••" required autocomplete="current-password">
-          </div>
-          <!-- What this button does: Submits email/password to Firebase Auth service -->
-          <!-- What it brings: Completes standard credential authentication -->
-          <!-- Where changes can be seen: Action button at bottom of email form -->
-          <button type="submit" id="gateAuthSubmitBtn" class="btn btn-primary btn-block">Sign In</button>
-        </form>
-
-        <!-- What this container does: Displays any authentication error message from Firebase -->
-        <!-- What it brings: Clear troubleshooting feedback if password is incorrect or user not found -->
-        <!-- Where changes can be seen: Red alert box appearing at bottom of login card upon error -->
-        <div id="gateAuthError" class="auth-error-text" style="display: none;"></div>
-      </div>
-    </div>
-
-    <!-- ====================================================================
-         Main Content Area — Split view with JSON Input and Vertical Cards
-         What this does: Contains the entire question creation and management workspace
-         What it brings: Kept strictly HIDDEN until the user successfully authenticates
-         Where changes can be seen: Only shown when currentUser !== null
-         ==================================================================== -->
-    <main class="main-content" id="mainDashboard" style="display: none;">
+    <!-- Hidden until a curator is signed in -->
+    <main id="pageRoot" class="main-content" style="display:none">
 
       <!-- ================================================================
-           LEFT PANEL: JSON Input & Batch Configuration
+           LEFT: JSON input and the metadata applied across the batch
            ================================================================ -->
-      <section class="input-panel" id="inputPanel">
+      <section class="input-panel">
         <div class="panel-header">
           <h2 class="panel-title">Paste JSON Questions</h2>
-          <button id="sampleBtn" class="btn btn-sm btn-ghost" title="Load sample APPSC question JSON">
+          <button id="sampleBtn" class="btn btn-sm btn-ghost" title="Load a sample APPSC question batch">
             Load Sample JSON
           </button>
         </div>
 
-        <!-- Row of batch metadata fields applied across questions -->
+        <!-- Batch defaults. Anything left blank here can still be set per card. -->
         <div class="meta-fields">
-          <!-- Subject selector dropdown populated with all 16 APPSC subjects -->
           <div class="field-group">
             <label for="subjectSelect">Target Subject</label>
-            <select id="subjectSelect" class="field-select">
-              <option value="">— Select Subject —</option>
-              <option value="History">History</option>
-              <option value="AP History">AP History</option>
-              <option value="Geography">Geography</option>
-              <option value="AP Geography">AP Geography</option>
-              <option value="Economy">Economy</option>
-              <option value="AP Economy">AP Economy</option>
-              <option value="Polity">Polity</option>
-              <option value="Society">Society</option>
-              <option value="Current Affairs">Current Affairs</option>
-              <option value="Science and Technology">Science and Technology</option>
-              <option value="Biology">Biology</option>
-              <option value="Chemistry">Chemistry</option>
-              <option value="Physics">Physics</option>
-              <option value="Environment">Environment</option>
-              <option value="General Studies">General Studies</option>
-              <option value="Disaster Management">Disaster Management</option>
-            </select>
+            <select id="subjectSelect" class="field-select"></select>
           </div>
-          <!-- Default date input field -->
           <div class="field-group">
             <label for="defaultDate">Default Date</label>
-            <input type="text" id="defaultDate" class="field-input" placeholder="e.g., 05-09-2026">
+            <input type="text" id="defaultDate" class="field-input" placeholder="e.g. 05-09-2026">
           </div>
-          <!-- Default newspaper input field -->
           <div class="field-group">
             <label for="defaultNewspaper">Default Newspaper</label>
-            <input type="text" id="defaultNewspaper" class="field-input" placeholder="e.g., The Hindu">
+            <input type="text" id="defaultNewspaper" class="field-input" placeholder="e.g. The Hindu">
+          </div>
+          <div class="field-group">
+            <label for="defaultTopic">Default Topic</label>
+            <input type="text" id="defaultTopic" class="field-input" placeholder="e.g. Biodiversity">
+          </div>
+          <div class="field-group">
+            <label for="defaultDifficulty">Default Difficulty</label>
+            <select id="defaultDifficulty" class="field-select"></select>
+          </div>
+          <div class="field-group">
+            <label for="defaultStatus">Default Status</label>
+            <select id="defaultStatus" class="field-select"></select>
+          </div>
+          <div class="field-group">
+            <label for="defaultTags">Default Tags</label>
+            <input type="text" id="defaultTags" class="field-input" placeholder="comma, separated, keywords">
+          </div>
+          <div class="field-group">
+            <label for="defaultSourceUrl">Default Source URL</label>
+            <input type="text" id="defaultSourceUrl" class="field-input" placeholder="https://…">
           </div>
         </div>
 
-        <!-- Large JSON textarea with monospace font -->
         <textarea id="jsonInput" class="json-textarea" spellcheck="false"
-                  placeholder='Paste your questions JSON here...
+                  placeholder='Paste your questions JSON here…
 
-Supported formats:
-1. Object with questions array:
+Either an object with a questions array:
 {
   "subject": "Environment",
   "date": "05-09-2026",
@@ -248,136 +79,56 @@ Supported formats:
       "option_a": "1 and 2 only",
       "option_b": "2 and 3 only",
       "option_c": "1 and 3 only",
-      "option_d": "1, 2, and 3",
+      "option_d": "1, 2 and 3",
       "correct_answer": "D",
-      "explanation": "Detailed explanation here."
+      "explanation": "Detailed explanation here.",
+      "topic": "Biodiversity",
+      "difficulty": "Medium",
+      "tags": "wetlands, ramsar"
     }
   ]
 }
 
-2. Plain array of question objects:
-[
-  {
-    "question": "Question text...",
-    "option_a": "...",
-    "option_b": "...",
-    "option_c": "...",
-    "option_d": "...",
-    "correct_answer": "A",
-    "explanation": "..."
-  }
-]'></textarea>
+…or a plain array of question objects.'></textarea>
 
-        <!-- Primary action buttons for parsing and clearing -->
         <div class="action-buttons">
-          <!-- Parse JSON and render vertical question cards -->
-          <button id="parseBtn" class="btn btn-primary" title="Parse JSON and generate vertical question cards">
+          <button id="parseBtn" class="btn btn-primary" title="Parse the JSON into editable cards">
             🔍 Parse &amp; Preview
           </button>
-          <!-- Reset all inputs and cards -->
-          <button id="clearBtn" class="btn btn-ghost" title="Clear all inputs and cards">
+          <button id="clearBtn" class="btn btn-ghost" title="Clear the input and all cards">
             Clear All
           </button>
         </div>
 
-        <!-- Parse error message display container -->
-        <div id="parseError" class="error-box" style="display:none;"></div>
+        <div id="parseError" class="error-box" style="display:none"></div>
       </section>
 
       <!-- ================================================================
-           RIGHT PANEL: Question Cards (Vertical Layout)
+           RIGHT: editable question cards
            ================================================================ -->
-      <section class="cards-panel" id="cardsPanel">
-        <!-- Sticky cards header bar with counter and Push to Sheet action -->
+      <section class="cards-panel">
         <div class="cards-header">
           <div class="cards-header-info">
             <h2 class="panel-title">Question Cards <span id="cardCount" class="card-count">(0)</span></h2>
-            <span class="panel-subtitle">Vertical card view &bull; Click any option radio to select correct answer</span>
+            <span class="panel-subtitle">Edit anything before sending &bull; click a radio to set the correct answer</span>
           </div>
-          <!-- Send to Google Sheet button -->
-          <button id="sendToSheetBtn" class="btn btn-send" disabled
-                  title="Push all question cards to Google Sheets">
-            🚀 Send to Sheet
-          </button>
+          <div style="display:flex;gap:10px;align-items:center">
+            <label class="hint-text" style="display:flex;align-items:center;gap:6px" title="Skip questions whose text already exists anywhere in the bank">
+              <input type="checkbox" id="skipDuplicates" checked>
+              Skip duplicates
+            </label>
+            <button id="sendToSheetBtn" class="btn btn-send" disabled title="Push all cards to the Google Sheets question bank">
+              🚀 Send to Sheet
+            </button>
+          </div>
         </div>
 
-        <!-- Scrollable container holding the vertical question cards -->
-        <div id="cardsContainer" class="cards-container vertical-flow">
-          <!-- Empty state placeholder when no cards are loaded -->
-          <div class="empty-state" id="emptyState">
-            <div class="empty-icon">📋</div>
-            <p>Paste JSON on the left and click <strong>Parse &amp; Preview</strong></p>
-            <p class="empty-hint">Questions will appear here as rich, editable vertical cards</p>
-          </div>
-        </div>
+        <div id="cardsContainer" class="cards-container vertical-flow"></div>
       </section>
 
     </main>
-
-    <!-- ====================================================================
-         Firebase Authentication Modal (Google Sign In & Email/Password)
-         ==================================================================== -->
-    <div id="authModal" class="modal-backdrop" style="display: none;">
-      <div class="modal-card">
-        <!-- Close button to dismiss modal -->
-        <button id="closeAuthModal" class="modal-close-btn" title="Close modal">&times;</button>
-        
-        <!-- Modal title and subtitle -->
-        <div class="modal-header">
-          <div class="modal-icon">🔐</div>
-          <h3 class="modal-title">Sign In to Dashboard</h3>
-          <p class="modal-subtitle">Authenticate with Google or Email to upload questions</p>
-        </div>
-
-        <!-- Google 1-Click Sign-In Button -->
-        <button id="googleSignInBtn" class="btn btn-google" title="Sign in with your Google account">
-          <svg class="google-icon" viewBox="0 0 24 24" width="20" height="20">
-            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-          </svg>
-          <span>Continue with Google</span>
-        </button>
-
-        <!-- Visual divider between Google and Email authentication -->
-        <div class="modal-divider">
-          <span>or with email</span>
-        </div>
-
-        <!-- Tab switcher between Sign In and Register -->
-        <div class="auth-tabs">
-          <button id="tabSignIn" class="auth-tab active">Sign In</button>
-          <button id="tabRegister" class="auth-tab">Register</button>
-        </div>
-
-        <!-- Email and Password form -->
-        <form id="authForm" class="auth-form" onsubmit="return false;">
-          <div class="auth-field">
-            <label for="authEmail">Email Address</label>
-            <input type="email" id="authEmail" class="field-input" placeholder="name@example.com" required autocomplete="email">
-          </div>
-          <div class="auth-field">
-            <label for="authPassword">Password</label>
-            <input type="password" id="authPassword" class="field-input" placeholder="••••••••" required autocomplete="current-password">
-          </div>
-          <!-- Submit button dynamically labeled Sign In or Create Account -->
-          <button type="submit" id="authSubmitBtn" class="btn btn-primary btn-block">Sign In</button>
-        </form>
-
-        <!-- Authentication error feedback text container -->
-        <div id="authError" class="auth-error-text" style="display: none;"></div>
-      </div>
-    </div>
-
-    <!-- ====================================================================
-         Toast Notification Container — fixed at bottom-right
-         ==================================================================== -->
-    <div id="toastContainer" class="toast-container"></div>
-
   </div>
 
-  <!-- Load dashboard JavaScript application logic as an ES module for modular Firebase imports -->
   <script type="module" src="app.js"></script>
 </body>
 </html>

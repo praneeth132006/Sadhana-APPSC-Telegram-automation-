@@ -1,0 +1,864 @@
+/* ============================================================================
+   Sadhana APPSC — shared dashboard chrome (dashboard/shared.css)
+   ============================================================================
+   Loaded by all five dashboards after style.css. It supplies the pieces the
+   original single-page dashboard did not have: the top navigation, metric
+   tiles, bar charts, data tables, filter bars and modals. Colours come from
+   the design tokens already defined in style.css.
+   ========================================================================= */
+
+/* ---- Top navigation ---------------------------------------------------- */
+
+.main-nav {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex: 1 1 auto;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 15px;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.87rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  white-space: nowrap;
+}
+
+.nav-link:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.nav-link.active {
+  background: rgba(59, 130, 246, 0.16);
+  border-color: var(--border-focus);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 1px var(--accent-glow) inset;
+}
+
+.nav-icon { font-size: 1rem; line-height: 1; }
+
+@media (max-width: 1100px) {
+  .nav-label { display: none; }
+  .nav-link { padding: 8px 12px; }
+}
+
+/* ---- Page shell -------------------------------------------------------- */
+
+.page-root {
+  padding: 22px 26px 60px;
+  max-width: 1680px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+
+.page-title {
+  font-size: 1.55rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.page-subtitle {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-top: 4px;
+  max-width: 70ch;
+}
+
+.page-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* ---- Panels ------------------------------------------------------------ */
+
+.panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-glass);
+  flex-wrap: wrap;
+}
+
+.panel-title { font-size: 1.02rem; font-weight: 700; }
+.panel-subtitle { color: var(--text-muted); font-size: 0.82rem; margin-top: 3px; }
+.panel-body { padding: 18px 20px; }
+.panel-body.tight { padding: 0; }
+
+/* ---- Metric tiles ------------------------------------------------------ */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-left: 3px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+}
+
+.stat-card.tone-ok      { border-left-color: var(--accent-success); }
+.stat-card.tone-warn    { border-left-color: var(--accent-warn); }
+.stat-card.tone-danger  { border-left-color: var(--accent-danger); }
+.stat-card.tone-muted   { border-left-color: var(--text-muted); }
+
+.stat-value {
+  font-size: 1.85rem;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  /* Values are usually short numbers, but some are identities such as a
+     hostname. Wrap at word boundaries first, breaking inside a word only when
+     there is no other option, so a long value never widens the tile. */
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+
+/* Applied by the page when the value is a long string rather than a number. */
+.stat-value.long {
+  font-size: 1.02rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.stat-label {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 6px;
+}
+
+.stat-sub { color: var(--text-muted); font-size: 0.78rem; margin-top: 6px; }
+
+/* ---- Bar charts -------------------------------------------------------- */
+
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 210px) 1fr 74px;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 0;
+}
+
+.bar-label {
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar-track {
+  background: var(--bg-input);
+  border-radius: 999px;
+  height: 16px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent-primary);
+  transition: width 400ms ease;
+}
+
+.bar-fill.tone-ok     { background: var(--accent-success); }
+.bar-fill.tone-warn   { background: var(--accent-warn); }
+.bar-fill.tone-danger { background: var(--accent-danger); }
+.bar-fill.tone-muted  { background: var(--text-muted); }
+
+.bar-value {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  text-align: right;
+  color: var(--text-primary);
+}
+
+/* Stacked progress bar showing posted vs pending in one track. */
+.stack-track {
+  display: flex;
+  height: 16px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-input);
+}
+
+.stack-seg { height: 100%; }
+.stack-seg.posted  { background: var(--accent-success); }
+.stack-seg.pending { background: var(--accent-warn); }
+
+/* Sparkline-style column chart for the posting timeline. */
+.spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 110px;
+  padding-top: 8px;
+  overflow-x: auto;
+}
+
+.spark-col {
+  flex: 1 0 9px;
+  min-width: 9px;
+  background: var(--accent-primary);
+  border-radius: 3px 3px 0 0;
+  min-height: 2px;
+  opacity: 0.85;
+  transition: opacity var(--transition-fast);
+}
+
+.spark-col:hover { opacity: 1; }
+.spark-col.added { background: var(--accent-warn); }
+
+.spark-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  margin-top: 6px;
+}
+
+/* ---- Tables ------------------------------------------------------------ */
+
+.table-wrap { overflow-x: auto; }
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.data-table th {
+  text-align: left;
+  padding: 11px 14px;
+  background: var(--bg-glass);
+  color: var(--text-secondary);
+  font-weight: 700;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border-card);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+}
+
+.data-table tbody tr:hover { background: var(--bg-hover); }
+.data-table td.num { font-family: var(--font-mono); text-align: right; white-space: nowrap; }
+.data-table td.wrap { max-width: 520px; white-space: normal; line-height: 1.5; }
+.data-table .muted { color: var(--text-muted); }
+
+/* ---- Pills ------------------------------------------------------------- */
+
+.pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.73rem;
+  font-weight: 700;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.pill.tone-ok     { background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.35); }
+.pill.tone-info   { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border-color: rgba(59, 130, 246, 0.35); }
+.pill.tone-warn   { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border-color: rgba(245, 158, 11, 0.35); }
+.pill.tone-danger { background: rgba(239, 68, 68, 0.15);  color: #f87171; border-color: rgba(239, 68, 68, 0.35); }
+.pill.tone-muted  { background: rgba(148, 163, 184, 0.12); color: var(--text-secondary); border-color: var(--border-card); }
+
+/* ---- Filter bar -------------------------------------------------------- */
+
+.filter-bar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-glass);
+}
+
+.filter-item { display: flex; flex-direction: column; gap: 5px; min-width: 130px; }
+
+.filter-item label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.filter-item.grow { flex: 1 1 240px; }
+
+/* Buttons in a filter bar size to their label; only .grow fields expand.
+   Both selectors are direct-child only: `.filter-bar .hint-text` also matched
+   the caption nested inside a .filter-item, which is a column flex container,
+   so the basis became a 200px HEIGHT and blew a hole in the bar. */
+.filter-bar > .btn { flex: 0 0 auto; width: auto; }
+.filter-bar > .hint-text { flex: 1 1 200px; align-self: center; }
+
+/* ---- Pagination -------------------------------------------------------- */
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.pagination-info { color: var(--text-secondary); font-size: 0.84rem; }
+.pagination-controls { display: flex; gap: 8px; align-items: center; }
+
+/* ---- Loading / skeleton ------------------------------------------------ */
+
+.loading-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 34px 20px;
+  color: var(--text-secondary);
+  justify-content: center;
+  font-size: 0.9rem;
+}
+
+.spinner {
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--border-card);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+  flex: none;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- Health checklist -------------------------------------------------- */
+
+.check-list { display: flex; flex-direction: column; gap: 2px; }
+
+.check-item {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.check-item:last-child { border-bottom: none; }
+.check-icon { font-size: 1.05rem; line-height: 1.4; }
+.check-title { font-weight: 600; font-size: 0.9rem; }
+.check-detail { color: var(--text-muted); font-size: 0.81rem; margin-top: 3px; line-height: 1.5; }
+.check-detail code {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  background: var(--bg-input);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text-accent);
+}
+
+/* ---- Editor modal ------------------------------------------------------ */
+
+.editor-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 900;
+}
+
+.editor-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: min(860px, 100%);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.editor-body { padding: 18px 20px; overflow-y: auto; }
+
+.editor-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.editor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.editor-field { display: flex; flex-direction: column; gap: 6px; }
+
+.editor-field label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.editor-field.full { grid-column: 1 / -1; }
+
+.editor-field textarea {
+  min-height: 96px;
+  resize: vertical;
+  font-family: var(--font-sans);
+  line-height: 1.6;
+}
+
+/* ---- Misc -------------------------------------------------------------- */
+
+.row-actions { display: flex; gap: 6px; }
+
+.btn-icon {
+  background: var(--bg-input);
+  border: 1px solid var(--border-card);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 5px 9px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  transition: all var(--transition-fast);
+}
+
+.btn-icon:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-icon.danger:hover { background: rgba(239, 68, 68, 0.16); color: #f87171; border-color: var(--accent-danger); }
+
+.google-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  color: #4285F4;
+  font-weight: 800;
+  font-size: 0.95rem;
+  flex: none;
+}
+
+.hint-text { color: var(--text-muted); font-size: 0.82rem; line-height: 1.6; }
+
+.two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 20px;
+}
+
+.inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  background: var(--bg-input);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text-accent);
+}
+
+.log-output {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.7;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  max-height: 320px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-line.ok    { color: #34d399; }
+.log-line.fail  { color: #f87171; }
+.log-line.muted { color: var(--text-muted); }
+
+/* ---- Upload page adjustments ------------------------------------------- */
+/* The batch metadata row grew from three fields to eight, so it lays out as a
+   two-column grid instead of one tall stack. */
+
+.meta-fields {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+/* Keep the per-card metadata chips compact so seven of them still fit on a row. */
+.card-meta-inputs .card-meta-input {
+  max-width: 155px;
+  min-width: 92px;
+}
+
+.card-meta-inputs select.card-meta-input {
+  max-width: 120px;
+}
+
+/* On narrow screens the two-panel workspace stacks. */
+@media (max-width: 1000px) {
+  .main-content { grid-template-columns: 1fr !important; }
+  .meta-fields { grid-template-columns: 1fr; }
+}
+
+/* The top bar now carries navigation between the brand and the user controls. */
+.top-bar .brand { flex: 0 0 auto; }
+.top-bar .top-controls { flex: 0 0 auto; }
+
+/* ---- Persistent banners ------------------------------------------------ */
+/* Used for conditions the curator has to act on — an outdated Apps Script
+   deployment, or a Web App with no API token — rather than transient toasts. */
+
+.banner-host {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-card);
+  font-size: 0.87rem;
+  line-height: 1.6;
+}
+
+.banner.tone-warn {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fcd34d;
+}
+
+.banner.tone-error {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
+.banner.tone-info {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.4);
+  color: #93c5fd;
+}
+
+.banner-body { flex: 1; }
+.banner strong { font-weight: 700; }
+
+/* Amber connection dot for "reachable but needs attention". */
+.status-dot.warn {
+  background: var(--accent-warn);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+}
+
+/* ---- Narrow screens ---------------------------------------------------- */
+/* The header carries a brand, five nav links, a connection pill and a profile
+   chip. Below ~720px those cannot sit on one line, so they wrap and the
+   longest labels collapse rather than pushing the page into a sideways scroll.
+   Wide tables keep their own .table-wrap scroller — only the page body must
+   never scroll horizontally. */
+
+@media (max-width: 720px) {
+  .app-container { padding-left: 12px; padding-right: 12px; }
+
+  .top-bar {
+    justify-content: center;
+    gap: 12px;
+  }
+
+  /* Stack the header controls instead of trying to fit a 460px row into a
+     351px column — flex shrinking cannot help here because the pill and the
+     profile chip both have irreducible content. */
+  .top-controls {
+    flex: 1 1 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .sheet-connection-pill {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+  }
+
+  .connection-status-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .user-profile-chip {
+    width: 100%;
+    min-width: 0;
+    justify-content: space-between;
+  }
+
+  .user-info { min-width: 0; overflow: hidden; }
+
+  .user-email {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .page-root { padding-left: 12px; padding-right: 12px; }
+  .stat-grid { grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }
+  .bar-row { grid-template-columns: minmax(90px, 1fr) 2fr 60px; }
+  .filter-item { min-width: 0; flex: 1 1 140px; }
+}
+
+/* ============================================================================
+   Boot screen
+   ============================================================================
+   Covers the page while Firebase restores the session from local storage.
+   Without it the sign-in gate filled that gap, so every move between
+   dashboards looked like being signed out again.
+   ========================================================================= */
+
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-primary);
+  transition: opacity 240ms ease;
+}
+
+.boot-screen.done { opacity: 0; pointer-events: none; }
+
+.boot-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.boot-spinner {
+  width: 34px;
+  height: 34px;
+  border: 2.5px solid var(--border-card);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 750ms linear infinite;
+}
+
+.boot-title {
+  font-size: 1.12rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.boot-hint {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* ============================================================================
+   Fluid layout
+   ============================================================================
+   Every container below is a flex box that wraps, and every child declares a
+   sensible basis with `min-width: 0`. That combination is what lets the whole
+   app reflow to any width without a fixed breakpoint deciding for it: items
+   sit side by side while they fit and drop to the next line when they do not.
+
+   `min-width: 0` matters more than it looks. A flex item defaults to
+   `min-width: auto`, which refuses to shrink below its content — that is what
+   pushed the header past the viewport before.
+   ========================================================================= */
+
+/* ---- Metric tiles -------------------------------------------------------
+   The one place that stays a grid rather than a flex row. Flex has no way to
+   make a short final row match the column widths above it, so eight tiles on a
+   wide screen ended up as six normal ones plus two stretched to half the page.
+   `auto-fit` + `minmax` reflows to any width AND keeps every tile the same
+   size, which is what this row actually needs. */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+}
+
+.stat-card { min-width: 0; }
+
+/* ---- Two-up panel rows -------------------------------------------------- */
+.two-col {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.two-col > * {
+  flex: 1 1 380px;
+  min-width: 0;
+}
+
+/* ---- Upload workspace --------------------------------------------------- */
+/* The JSON pane keeps a comfortable reading width and the card pane takes the
+   rest; below roughly 1000px they stack because neither can hold its basis. */
+.main-content {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 22px;
+  align-items: flex-start;
+}
+
+.input-panel {
+  flex: 1 1 400px;
+  min-width: 0;
+  max-width: 560px;
+}
+
+.cards-panel {
+  flex: 3 1 520px;
+  min-width: 0;
+}
+
+@media (max-width: 1000px) {
+  .input-panel { max-width: none; }
+}
+
+/* ---- Upload batch metadata ---------------------------------------------- */
+.meta-fields {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.meta-fields .field-group {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+/* ---- Editor modal ------------------------------------------------------- */
+.editor-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.editor-grid > .editor-field {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.editor-grid > .editor-field.full { flex-basis: 100%; }
+
+/* ---- Editor modal sizing ------------------------------------------------ */
+.editor-card {
+  width: min(860px, 100%);
+  max-height: min(88vh, 900px);
+}
+
+/* ---- Cards header ------------------------------------------------------- */
+.cards-header { flex-wrap: wrap; gap: 12px; }
+.cards-header-info { flex: 1 1 240px; min-width: 0; }
+
+/* ---- Card header bar ---------------------------------------------------- */
+.card-header-bar { flex-wrap: wrap; gap: 10px; }
+.card-meta-inputs { flex: 1 1 100%; }
+
+/* ---- Health checklist --------------------------------------------------- */
+/* Below ~560px the trailing status pill moves under the text rather than
+   squeezing the description into a two-word column. */
+@media (max-width: 560px) {
+  .check-item {
+    grid-template-columns: 26px 1fr;
+  }
+  .check-item > .pill {
+    grid-column: 2;
+    justify-self: start;
+    margin-top: 6px;
+  }
+}
+
+/* ---- Bar rows ----------------------------------------------------------- */
+@media (max-width: 480px) {
+  .bar-row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas: "label value" "track track";
+    row-gap: 4px;
+  }
+  .bar-label { grid-area: label; }
+  .bar-value { grid-area: value; }
+  .bar-track { grid-area: track; }
+}
+
+/* ---- Page header -------------------------------------------------------- */
+.page-header > div:first-child { flex: 1 1 320px; min-width: 0; }
+.page-actions { flex: 0 1 auto; }

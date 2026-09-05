@@ -1,14 +1,15 @@
 {
   "name": "sadhana-appsc-telegram-automation",
-  "version": "1.0.0",
-  "description": "APPSC quiz automation with question dashboard, Google Sheets integration, and Telegram forum posting",
+  "version": "2.0.0",
+  "description": "APPSC quiz automation: five-dashboard curation web app, 30-column Google Sheets tracking, and Telegram forum posting",
   "main": "send.js",
   "scripts": {
     "send": "node send.js",
     "setup": "node setup.js",
     "schedule": "node schedule.js",
     "create-sample": "node create-sample.js",
-    "dashboard": "node server.js"
+    "dashboard": "node server.js",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
     "dotenv": "^16.4.5",
@@ -16,7 +17,13 @@
     "node-telegram-bot-api": "^0.66.0",
     "xlsx": "^0.18.5"
   },
-  "keywords": ["appsc", "telegram", "quiz", "automation", "excel"],
+  "keywords": [
+    "appsc",
+    "telegram",
+    "quiz",
+    "automation",
+    "excel"
+  ],
   "author": "praneeth132006",
   "license": "ISC"
 }

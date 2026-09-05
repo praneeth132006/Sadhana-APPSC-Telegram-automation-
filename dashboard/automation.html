@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Automation — Sadhana APPSC</title>
+  <meta name="description" content="Post APPSC quiz questions to Telegram directly from the browser, schedule batches, and review each subject's posting cadence.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+  <div class="app-container">
+    <main id="pageRoot" class="page-root" style="display:none">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Automation</h1>
+          <p class="page-subtitle">
+            Publish quiz polls to Telegram straight from the browser, queue questions for a
+            planned time, and see the cron cadence and content runway for every subject.
+          </p>
+        </div>
+        <div class="page-actions">
+          <span id="botStatus" class="hint-text">Checking bot…</span>
+          <button id="refreshBtn" class="btn btn-ghost">Refresh</button>
+        </div>
+      </div>
+
+      <div id="statGrid" class="stat-grid"></div>
+
+      <div class="two-col">
+        <!-- Immediate posting -->
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="panel-title">Post to Telegram Now</h2>
+              <p class="panel-subtitle">Sends the next pending questions for a subject as quiz polls</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="editor-grid">
+              <div class="editor-field">
+                <label for="postSubject">Subject</label>
+                <select id="postSubject" class="field-select"></select>
+              </div>
+              <div class="editor-field">
+                <label for="postCount">How many</label>
+                <select id="postCount" class="field-select">
+                  <option value="1">1 question</option>
+                  <option value="3">3 questions</option>
+                  <option value="5" selected>5 questions</option>
+                  <option value="10">10 questions</option>
+                  <option value="20">20 questions (max)</option>
+                </select>
+              </div>
+              <div class="editor-field full">
+                <label for="requireApproved">Eligibility</label>
+                <select id="requireApproved" class="field-select">
+                  <option value="true" selected>Only Approved or Scheduled questions (recommended)</option>
+                  <option value="false">Any unposted question, including Drafts</option>
+                </select>
+              </div>
+            </div>
+
+            <p id="subjectSummary" class="hint-text" style="margin-bottom:14px"></p>
+
+            <button id="postNowBtn" class="btn btn-send" style="width:100%">🚀 Post to Telegram</button>
+
+            <p class="hint-text" style="margin-top:12px">
+              Posts go to the forum topic configured for the subject in the Config tab. Each question
+              is sent as a quiz poll plus a spoiler-tagged answer, with a 1.5&nbsp;second gap to stay
+              inside Telegram's rate limits. Rejected and Archived questions are never eligible.
+            </p>
+
+            <div id="postLog" class="log-output" style="display:none;margin-top:14px"></div>
+          </div>
+        </section>
+
+        <!-- Scheduling -->
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="panel-title">Queue for Later</h2>
+              <p class="panel-subtitle">Marks questions Scheduled with a target time so the cron run picks them first</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="editor-grid">
+              <div class="editor-field">
+                <label for="scheduleSubject">Subject</label>
+                <select id="scheduleSubject" class="field-select"></select>
+              </div>
+              <div class="editor-field">
+                <label for="scheduleCount">How many to queue</label>
+                <select id="scheduleCount" class="field-select">
+                  <option value="5" selected>Next 5 pending</option>
+                  <option value="10">Next 10 pending</option>
+                  <option value="20">Next 20 pending</option>
+                </select>
+              </div>
+              <div class="editor-field full">
+                <label for="scheduleWhen">Target time (free text, stored in Scheduled For)</label>
+                <input type="text" id="scheduleWhen" class="field-input" placeholder="e.g. 07-09-2026 09:00 IST">
+              </div>
+            </div>
+
+            <button id="scheduleBtn" class="btn btn-primary" style="width:100%">📅 Queue Questions</button>
+
+            <p class="hint-text" style="margin-top:12px">
+              Queueing sets <span class="inline-code">Status = Scheduled</span> and fills the
+              <span class="inline-code">Scheduled For</span> column. It does not post anything by itself —
+              <span class="inline-code">node schedule.js</span> or the button on the left does the sending.
+            </p>
+
+            <div id="scheduleLog" class="log-output" style="display:none;margin-top:14px"></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Cadence overview across all subjects -->
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">Posting Cadence &amp; Runway</h2>
+            <p class="panel-subtitle">Cron schedule, batch size and how long each subject's pending stock will last</p>
+          </div>
+        </div>
+        <div class="panel-body tight">
+          <div id="cadenceArea" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <!-- CLI reference -->
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">Command Line Equivalents</h2>
+            <p class="panel-subtitle">The same operations from a terminal, for cron jobs and scripting</p>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="check-list" id="cliList"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="automation.js"></script>
+</body>
+</html>

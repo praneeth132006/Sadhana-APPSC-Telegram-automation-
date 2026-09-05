@@ -1,218 +1,325 @@
 // ============================================================================
-// Google Sheets Service — API client communicating with Google Apps Script Web App
+// Google Sheets Service — client for the Apps Script Web App (v5 / 30 columns)
 // ============================================================================
-// This module provides functions to interact with Google Sheets via the Apps Script Web App URL:
-// - readConfig: Fetches subject list, emojis, forum topic thread IDs, and cron settings
-// - writeConfig: Updates forum topic thread IDs in Google Sheets
-// - getUnpostedQuestions: Retrieves batch of unposted questions for a specific subject
-// - markAsPosted: Marks question rows in Google Sheets as posted with an IST timestamp
-// - getStats: Fetches counts of total, posted, and pending questions per subject
+// Every call goes through `request()`, which is the single place that:
+//   - resolves the Web App URL from the environment (never from user input),
+//   - attaches the shared API token from SHEET_API_TOKEN,
+//   - enforces a timeout so a hung Apps Script cannot pin a Node worker,
+//   - detects the Google sign-in HTML that comes back from a mis-deployed
+//     script and turns it into an actionable error instead of a JSON parse
+//     failure.
 //
-// Changes are reflected in real-time in the user's online Google Spreadsheet.
+// Callers pass an action plus parameters. They never pass a URL — that is what
+// made the previous version SSRF-able from the browser.
+// ============================================================================
+
+/** Hard ceiling on how long we wait for Apps Script before giving up. */
+const REQUEST_TIMEOUT_MS = 30000;
+
+/** Largest upstream response we will buffer (Apps Script pages are far smaller). */
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 /**
- * getWebAppUrl — Retrieves and validates the Google Sheets Web App URL from environment variables.
+ * getWebAppUrl — resolves and validates the deployed Apps Script URL.
+ * Only script.google.com endpoints are accepted, so a mistyped or hostile
+ * value in .env cannot redirect our server-side fetches somewhere else.
  *
- * @returns {string} The configured Google Apps Script Web App URL
+ * @returns {string} The validated Web App URL
  */
 function getWebAppUrl() {
-  // Read the environment variable holding the deployed Web App URL
-  const url = process.env.GOOGLE_SHEET_WEBAPP_URL;
-  // Ensure the variable is set and not empty
-  if (!url || !url.trim()) {
+  const raw = process.env.GOOGLE_SHEET_WEBAPP_URL;
+  if (!raw || !raw.trim()) {
     throw new Error(
       'GOOGLE_SHEET_WEBAPP_URL is not defined in .env.\n' +
-      'Please deploy the Google Apps Script (see google_apps_script.js) and add the URL to .env.'
+      'Deploy google_apps_script.js as a Web App and put the /exec URL in .env.'
     );
   }
-  // Return the cleaned URL
-  return url.trim();
+
+  const url = raw.trim();
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (err) {
+    throw new Error('GOOGLE_SHEET_WEBAPP_URL is not a valid URL: ' + url);
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error('GOOGLE_SHEET_WEBAPP_URL must use https.');
+  }
+  if (parsed.hostname !== 'script.google.com' && parsed.hostname !== 'script.googleusercontent.com') {
+    throw new Error(
+      'GOOGLE_SHEET_WEBAPP_URL must point at script.google.com. Got: ' + parsed.hostname
+    );
+  }
+  if (!parsed.pathname.endsWith('/exec')) {
+    throw new Error(
+      'GOOGLE_SHEET_WEBAPP_URL must end in /exec (the deployment URL), not /edit or /dev.'
+    );
+  }
+
+  return url;
+}
+
+/** Returns the shared secret that authenticates us to the Apps Script. */
+function getApiToken() {
+  return String(process.env.SHEET_API_TOKEN || '').trim();
+}
+
+/** True when the sheet backend is configured well enough to be used. */
+function isConfigured() {
+  try {
+    getWebAppUrl();
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
 /**
- * readConfig — Reads the "Config" tab in Google Sheets via HTTP GET.
+ * request — performs one Apps Script call and returns the parsed JSON body.
  *
- * @returns {Promise<Array<Object>>} Array of subject configurations
+ * @param {'GET'|'POST'} method HTTP method
+ * @param {Object} params Query parameters (GET) or body fields (POST)
+ * @returns {Promise<Object>} Parsed response payload
  */
-async function readConfig() {
-  // Get the base Web App endpoint URL
+async function request(method, params) {
   const baseUrl = getWebAppUrl();
-  // Construct URL with action=getConfig query parameter
-  const requestUrl = `${baseUrl}?action=getConfig`;
+  const token = getApiToken();
 
-  // Send HTTP GET request using Node's native fetch API
-  const response = await fetch(requestUrl, { redirect: 'follow' });
-  // Check for successful HTTP status code
+  // AbortController gives us a hard timeout; without it a stalled Apps Script
+  // would hold the request open indefinitely.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let response;
+  try {
+    if (method === 'GET') {
+      const query = new URLSearchParams();
+      Object.keys(params).forEach((key) => {
+        if (params[key] !== undefined && params[key] !== null && params[key] !== '') {
+          query.set(key, String(params[key]));
+        }
+      });
+      if (token) query.set('token', token);
+
+      response = await fetch(`${baseUrl}?${query.toString()}`, {
+        redirect: 'follow',
+        signal: controller.signal
+      });
+    } else {
+      const body = Object.assign({}, params);
+      if (token) body.token = token;
+
+      response = await fetch(baseUrl, {
+        method: 'POST',
+        redirect: 'follow',
+        // Apps Script only receives e.postData.contents intact with text/plain;
+        // application/json triggers a CORS preflight it cannot answer.
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+    }
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') {
+      throw new Error(`Google Sheets request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
+    }
+    throw new Error('Google Sheets request failed: ' + err.message);
+  }
+  clearTimeout(timer);
+
   if (!response.ok) {
-    throw new Error(`Google Sheets request failed with status: ${response.status} ${response.statusText}`);
+    throw new Error(`Google Sheets request failed with status ${response.status} ${response.statusText}`);
   }
 
-  // Parse JSON response body
-  const result = await response.json();
-  // Check if the backend reported success
-  if (!result.success) {
-    throw new Error(`Google Sheets API error: ${result.error || 'Unknown error'}`);
+  const text = await response.text();
+  if (text.length > MAX_RESPONSE_BYTES) {
+    throw new Error('Google Sheets response exceeded the size limit.');
   }
 
-  // Return the array of subject configuration objects
+  // A script deployed with "Who has access: Me" answers with a login page.
+  if (/accounts\.google\.com|<!doctype html/i.test(text)) {
+    throw new Error(
+      'Google Apps Script returned a sign-in page. Redeploy the Web App with "Who has access: Anyone".'
+    );
+  }
+
+  let result;
+  try {
+    result = JSON.parse(text);
+  } catch (err) {
+    throw new Error('Google Sheets returned a non-JSON response: ' + text.slice(0, 180));
+  }
+
+  if (result.success === false) {
+    throw new Error(result.error || 'Unknown Google Sheets API error');
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Read operations
+// ---------------------------------------------------------------------------
+
+/** Liveness probe. Also reports whether the script expects a token. */
+async function ping() {
+  return request('GET', { action: 'ping' });
+}
+
+/** Reads the Config tab (subjects, emojis, thread ids, cron, batch size). */
+async function readConfig() {
+  const result = await request('GET', { action: 'getConfig' });
+  return result.data || [];
+}
+
+/** Lists the sheet tabs that hold questions. */
+async function getSubjects() {
+  const result = await request('GET', { action: 'getSubjects' });
   return result.data || [];
 }
 
 /**
- * writeConfig — Updates topic thread IDs in Google Sheets via HTTP POST.
+ * getUnpostedQuestions — next batch of questions eligible for posting.
  *
- * @param {Array<Object>} configData — Array of updated config objects
- * @returns {Promise<boolean>} True if update succeeded
+ * @param {string} subject Subject tab name
+ * @param {number} count Maximum questions to return
+ * @param {boolean} requireApproved Only return Approved/Scheduled rows
  */
-async function writeConfig(configData) {
-  // Get the base Web App endpoint URL
-  const baseUrl = getWebAppUrl();
-
-  // Send HTTP POST request with action=updateConfig and the config payload
-  const response = await fetch(baseUrl, {
-    method: 'POST',
-    redirect: 'follow',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action: 'updateConfig',
-      config: configData
-    })
+async function getUnpostedQuestions(subject, count = 1, requireApproved = false) {
+  const result = await request('GET', {
+    action: 'getQuestions',
+    subject,
+    limit: count,
+    requireApproved: requireApproved ? 'true' : ''
   });
+  return result.data || [];
+}
 
-  // Verify HTTP status code
-  if (!response.ok) {
-    throw new Error(`Google Sheets updateConfig request failed with status: ${response.status}`);
-  }
+/** Per-subject total / posted / pending counts. */
+async function getStats() {
+  const result = await request('GET', { action: 'getStats' });
+  return result.data || [];
+}
 
-  // Parse response JSON
-  const result = await response.json();
-  // Throw error if operation failed
-  if (!result.success) {
-    throw new Error(`Google Sheets updateConfig failed: ${result.error || 'Unknown error'}`);
-  }
+/** Full analytics payload consumed by the Analytics dashboard. */
+async function getAnalytics() {
+  const result = await request('GET', { action: 'getAnalytics' });
+  return result.data || null;
+}
 
-  // Return success status
+/** Filtered, paginated question browse. */
+async function listQuestions(filters = {}) {
+  const result = await request('GET', Object.assign({ action: 'listQuestions' }, filters));
+  return result.data || { total: 0, questions: [], page: 1, totalPages: 1 };
+}
+
+/** Reports which of the supplied duplicate hashes already exist. */
+async function checkDuplicates(hashes = []) {
+  if (!hashes.length) return { existing: [] };
+  const result = await request('GET', { action: 'checkDuplicates', hashes: hashes.join(',') });
+  return result.data || { existing: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Write operations
+// ---------------------------------------------------------------------------
+
+/** Writes topic thread ids back into the Config tab. */
+async function writeConfig(configData) {
+  await request('POST', { action: 'updateConfig', config: configData });
   return true;
 }
 
 /**
- * getUnpostedQuestions — Retrieves unposted questions for a subject from Google Sheets.
+ * markAsPosted — records the full posting trail for a batch of rows.
  *
- * @param {string} subject — Name of the subject tab (e.g., "Polity")
- * @param {number} count — Maximum number of questions to retrieve
- * @returns {Promise<Array<Object>>} Array of question objects with excel_row
+ * @param {string} subject Subject tab name
+ * @param {Array<number>} rowIndices Row indices returned by getUnpostedQuestions
+ * @param {string|number} [messageId] Telegram message id of the poll
+ * @param {string|number} [threadId] Forum topic thread the poll went to
+ * @param {Object} [pollIds] Optional { sheetRowNumber: pollId } map
  */
-async function getUnpostedQuestions(subject, count = 1) {
-  // Get base endpoint URL
-  const baseUrl = getWebAppUrl();
-  // Encode query parameters safely
-  const params = new URLSearchParams({
-    action: 'getQuestions',
-    subject: subject,
-    limit: String(count)
-  });
-  // Build full request URL
-  const requestUrl = `${baseUrl}?${params.toString()}`;
-
-  // Execute HTTP GET request
-  const response = await fetch(requestUrl, { redirect: 'follow' });
-  // Ensure response was successful
-  if (!response.ok) {
-    throw new Error(`Google Sheets getQuestions failed with status: ${response.status}`);
-  }
-
-  // Parse JSON response body
-  const result = await response.json();
-  // Check for logical success from backend
-  if (!result.success) {
-    throw new Error(`Google Sheets getQuestions error: ${result.error || 'Unknown error'}`);
-  }
-
-  // Return list of unposted questions
-  return result.data || [];
-}
-
-/**
- * markAsPosted — Marks specified question rows as posted in Google Sheets.
- * What it does: Sends HTTP POST request with action=markPosted, rowIndices, and optional Telegram messageId.
- * What it brings: Records 'YES', IST timestamp, and Telegram Message ID into the 16-column Google Sheet.
- * Where changes can be seen: Columns L, M, and P of the subject Google Sheet tab.
- *
- * @param {string} subject — Subject sheet tab name
- * @param {Array<number>} rowIndices — Array of 1-based row numbers or 0-based data row indices
- * @param {string|number} [messageId] — Optional Telegram message ID from the posted quiz
- * @returns {Promise<number>} Number of updated rows
- */
-async function markAsPosted(subject, rowIndices, messageId = null) {
-  // If rowIndices array is empty, nothing to update
+async function markAsPosted(subject, rowIndices, messageId = null, threadId = null, pollIds = null) {
   if (!rowIndices || rowIndices.length === 0) return 0;
-
-  // Get base endpoint URL from .env
-  const baseUrl = getWebAppUrl();
-
-  // Send HTTP POST request with action=markPosted payload
-  const response = await fetch(baseUrl, {
-    method: 'POST',
-    redirect: 'follow',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action: 'markPosted',
-      subject: subject,
-      rowIndices: rowIndices,
-      messageId: messageId ? String(messageId) : ''
-    })
+  const result = await request('POST', {
+    action: 'markPosted',
+    subject,
+    rowIndices,
+    messageId: messageId ? String(messageId) : '',
+    threadId: threadId ? String(threadId) : '',
+    pollIds: pollIds || {}
   });
-
-  // Check HTTP response status
-  if (!response.ok) {
-    throw new Error(`Google Sheets markPosted failed with status: ${response.status}`);
-  }
-
-  // Parse response JSON
-  const result = await response.json();
-  // Ensure update succeeded on the spreadsheet
-  if (!result.success) {
-    throw new Error(`Google Sheets markPosted error: ${result.error || 'Unknown error'}`);
-  }
-
-  // Return count of updated rows
   return result.updatedCount || rowIndices.length;
 }
 
-/**
- * getStats — Fetches summary statistics across all configured subjects.
- *
- * @returns {Promise<Array<Object>>} Array of stats objects: { subject, total, posted, pending }
- */
-async function getStats() {
-  // Get base endpoint URL
-  const baseUrl = getWebAppUrl();
-  // Construct URL for stats action
-  const requestUrl = `${baseUrl}?action=getStats`;
-
-  // Fetch stats from Google Sheets Web App
-  const response = await fetch(requestUrl, { redirect: 'follow' });
-  // Verify HTTP status
-  if (!response.ok) {
-    throw new Error(`Google Sheets getStats failed with status: ${response.status}`);
-  }
-
-  // Parse JSON response
-  const result = await response.json();
-  // Verify logical success
-  if (!result.success) {
-    throw new Error(`Google Sheets getStats error: ${result.error || 'Unknown error'}`);
-  }
-
-  // Return stats list
-  return result.data || [];
+/** Appends questions from the dashboard, skipping duplicates by default. */
+async function addQuestions(subject, questions, addedBy, skipDuplicates = true) {
+  return request('POST', {
+    action: 'addQuestions',
+    subject,
+    questions,
+    added_by: addedBy,
+    skipDuplicates
+  });
 }
 
-// Export all Google Sheets functions for use by the data layer
+/** Applies an allowlisted field patch to one question. */
+async function updateQuestion(subject, questionId, fields, updatedBy) {
+  return request('POST', {
+    action: 'updateQuestion',
+    subject,
+    questionId,
+    fields,
+    updated_by: updatedBy
+  });
+}
+
+/** Permanently removes one question row. */
+async function deleteQuestion(subject, questionId) {
+  return request('POST', { action: 'deleteQuestion', subject, questionId });
+}
+
+/** Sets Status on many questions at once. */
+async function bulkStatus(subject, questionIds, status, updatedBy) {
+  const result = await request('POST', {
+    action: 'bulkStatus',
+    subject,
+    questionIds,
+    status,
+    updated_by: updatedBy
+  });
+  return result.updatedCount || 0;
+}
+
+/** Stamps Scheduled For and flips Status to Scheduled. */
+async function scheduleQuestions(subject, questionIds, scheduledFor, updatedBy) {
+  const result = await request('POST', {
+    action: 'scheduleQuestions',
+    subject,
+    questionIds,
+    scheduledFor,
+    updated_by: updatedBy
+  });
+  return result.updatedCount || 0;
+}
+
 module.exports = {
+  isConfigured,
+  getWebAppUrl,
+  ping,
   readConfig,
+  getSubjects,
   writeConfig,
   getUnpostedQuestions,
   markAsPosted,
-  getStats
+  getStats,
+  getAnalytics,
+  listQuestions,
+  checkDuplicates,
+  addQuestions,
+  updateQuestion,
+  deleteQuestion,
+  bulkStatus,
+  scheduleQuestions
 };

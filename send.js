@@ -101,8 +101,10 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
 
   console.log(`   📤 Sending ${questions.length} question(s)...`);
 
-  // Track which rows were successfully posted and the latest Telegram message ID
+  // Track which rows were successfully posted, the latest Telegram message ID,
+  // and the poll id per row so vote attribution stays possible later.
   const postedRowIndices = [];
+  const pollIds = {};
   let lastMessageId = null;
 
   // Send each question one by one with a delay between them
@@ -116,6 +118,11 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
       // Extract and save Telegram message ID if available
       if (sentPoll && sentPoll.message_id) {
         lastMessageId = sentPoll.message_id;
+      }
+
+      // Capture the poll id keyed by sheet row, recorded in the Poll ID column
+      if (sentPoll && sentPoll.poll && sentPoll.poll.id) {
+        pollIds[String(q.excel_row)] = sentPoll.poll.id;
       }
 
       // Track 0-based data row index for marking as posted in Excel or Google Sheets
@@ -141,8 +148,14 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
 
   // Mark all successfully posted questions in Google Sheets or local Excel
   if (postedRowIndices.length > 0) {
-    // Call unified markAsPosted to update "Posted", "Posted At", and "Telegram Msg ID"
-    await data.markAsPosted(subjectConfig.subject, postedRowIndices, lastMessageId);
+    // Update Posted, Posted At, Status, Times Posted, Thread ID, Msg ID and Poll ID
+    await data.markAsPosted(
+      subjectConfig.subject,
+      postedRowIndices,
+      lastMessageId,
+      subjectConfig.topic_thread_id,
+      pollIds
+    );
     console.log(`   📝 ${postedRowIndices.length} question(s) marked as posted in ${data.getDataSourceName()}`);
   }
 }

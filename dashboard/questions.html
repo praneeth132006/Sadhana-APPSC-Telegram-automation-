@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Question Bank — Sadhana APPSC</title>
+  <meta name="description" content="Browse, search, edit, approve and delete every APPSC question in the bank, subject by subject.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+  <div class="app-container">
+    <main id="pageRoot" class="page-root" style="display:none">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Question Bank</h1>
+          <p class="page-subtitle">
+            Every question in every subject. Search the text, filter by status or difficulty,
+            fix mistakes in place, and approve or reject in bulk before anything reaches Telegram.
+          </p>
+        </div>
+        <div class="page-actions">
+          <span id="resultSummary" class="hint-text"></span>
+        </div>
+      </div>
+
+      <div id="statGrid" class="stat-grid"></div>
+
+      <section class="panel">
+        <!-- Filter controls; every change refetches page 1 from the server -->
+        <div class="filter-bar">
+          <div class="filter-item">
+            <label for="filterSubject">Subject</label>
+            <select id="filterSubject" class="field-select"></select>
+          </div>
+          <div class="filter-item">
+            <label for="filterStatus">Status</label>
+            <select id="filterStatus" class="field-select"></select>
+          </div>
+          <div class="filter-item">
+            <label for="filterPosted">Posted</label>
+            <select id="filterPosted" class="field-select">
+              <option value="">Any</option>
+              <option value="YES">Posted</option>
+              <option value="NO">Not posted</option>
+            </select>
+          </div>
+          <div class="filter-item">
+            <label for="filterDifficulty">Difficulty</label>
+            <select id="filterDifficulty" class="field-select"></select>
+          </div>
+          <div class="filter-item grow">
+            <label for="filterSearch">Search text, tags, topic or question id</label>
+            <input type="search" id="filterSearch" class="field-input" placeholder="e.g. Preamble, ENV-20260905-0003, monsoon">
+          </div>
+          <div class="filter-item">
+            <label for="filterPageSize">Per page</label>
+            <select id="filterPageSize" class="field-select">
+              <option value="25">25</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+            </select>
+          </div>
+          <button id="applyBtn" class="btn btn-primary">Apply</button>
+          <button id="resetBtn" class="btn btn-ghost">Reset</button>
+        </div>
+
+        <!-- Bulk action bar, only meaningful when rows are selected -->
+        <div class="filter-bar" id="bulkBar">
+          <div class="filter-item">
+            <label>Selection</label>
+            <span id="selectionCount" class="hint-text">0 selected</span>
+          </div>
+          <div class="filter-item">
+            <label for="bulkStatus">Set status to</label>
+            <select id="bulkStatus" class="field-select"></select>
+          </div>
+          <button id="bulkApplyBtn" class="btn btn-primary" disabled>Apply to selection</button>
+          <span class="hint-text">Bulk changes apply only within one subject — pick a subject filter first.</span>
+        </div>
+
+        <div class="panel-body tight">
+          <div id="tableArea" class="table-wrap"></div>
+        </div>
+
+        <div class="pagination">
+          <span id="paginationInfo" class="pagination-info"></span>
+          <div class="pagination-controls">
+            <button id="prevBtn" class="btn btn-ghost btn-sm">← Previous</button>
+            <span id="pageLabel" class="hint-text"></span>
+            <button id="nextBtn" class="btn btn-ghost btn-sm">Next →</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- The edit modal is created on demand by questions.js -->
+  <div id="editorHost"></div>
+
+  <script type="module" src="questions.js"></script>
+</body>
+</html>

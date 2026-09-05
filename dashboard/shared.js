@@ -1,0 +1,723 @@
+// ============================================================================
+// Shared dashboard runtime (dashboard/shared.js)
+// ============================================================================
+// Every dashboard page imports this module. It owns:
+//   - Firebase sign-in and the auth gate that covers the page until you are in
+//   - the top navigation shared by all five dashboards
+//   - `api()`, which attaches a fresh Firebase ID token to every request
+//   - toasts, DOM helpers and formatting used across pages
+//
+// Security note: the gate here is convenience, not protection. The server
+// verifies the same ID token on every call (src/auth.js), so an unauthenticated
+// browser sees nothing even if it skips this file entirely.
+// ============================================================================
+
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js';
+import {
+  getAuth,
+  setPersistence,
+  browserLocalPersistence,
+  signInWithPopup,
+  GoogleAuthProvider,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  signOut,
+  onAuthStateChanged
+} from 'https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js';
+
+// ---------------------------------------------------------------------------
+// Firebase configuration
+// ---------------------------------------------------------------------------
+// These values are public identifiers, not secrets — Firebase web apps are
+// designed to ship them. What actually protects the data is the server-side
+// token check plus the CURATOR_EMAILS allowlist in .env.
+const firebaseConfig = {
+  apiKey: 'AIzaSyDlL3dw-FY2bdNQDCm4Rtp0ZhrDTCSJHfQ',
+  authDomain: 'ap-gurukul-43050.firebaseapp.com',
+  projectId: 'ap-gurukul-43050',
+  storageBucket: 'ap-gurukul-43050.firebasestorage.app',
+  messagingSenderId: '797079176348',
+  appId: '1:797079176348:web:f20cccdedb8f1ca3fa9959'
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const auth = getAuth(firebaseApp);
+const googleProvider = new GoogleAuthProvider();
+
+/** The signed-in Firebase user, or null. */
+export let currentUser = null;
+
+/** Server bootstrap data from /api/config. */
+export let serverConfig = {};
+
+// ---------------------------------------------------------------------------
+// Navigation definition
+// ---------------------------------------------------------------------------
+
+/** The five dashboards, in the order they appear in the nav bar. */
+const PAGES = [
+  { id: 'upload',     href: 'index.html',      icon: '📤', label: 'Upload',     hint: 'Paste JSON and push questions to the sheet' },
+  { id: 'analytics',  href: 'analytics.html',  icon: '📊', label: 'Analytics',  hint: 'Counts, coverage, runway and curator activity' },
+  { id: 'questions',  href: 'questions.html',  icon: '📚', label: 'Questions',  hint: 'Browse, search and edit the whole question bank' },
+  { id: 'automation', href: 'automation.html', icon: '🤖', label: 'Automation', hint: 'Post to Telegram now and manage schedules' },
+  { id: 'health',     href: 'health.html',     icon: '🩺', label: 'Health',     hint: 'System status and security posture' }
+];
+
+/** The 16 APPSC subjects offered in every subject dropdown. */
+export const SUBJECTS = [
+  'History', 'AP History', 'Geography', 'AP Geography', 'Economy', 'AP Economy',
+  'Polity', 'Society', 'Current Affairs', 'Science and Technology', 'Biology',
+  'Chemistry', 'Physics', 'Environment', 'General Studies', 'Disaster Management'
+];
+
+/** Workflow states a question can be in. */
+export const STATUSES = ['Draft', 'Review', 'Approved', 'Scheduled', 'Posted', 'Rejected', 'Archived'];
+
+/** Difficulty levels. */
+export const DIFFICULTIES = ['Easy', 'Medium', 'Hard'];
+
+// ---------------------------------------------------------------------------
+// DOM helpers
+// ---------------------------------------------------------------------------
+
+/** Shorthand for document.getElementById. */
+export const $ = (id) => document.getElementById(id);
+
+/**
+ * el — creates an element with attributes and children in one call.
+ * Text children are appended as text nodes, never parsed as HTML, which is why
+ * none of these dashboards need innerHTML for user-supplied data.
+ *
+ * @param {string} tag Tag name
+ * @param {Object} [attrs] Attributes; `class`, `text`, `html` and `on*` handled specially
+ * @param {Array} [children] Child nodes or strings
+ * @returns {HTMLElement}
+ */
+export function el(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+
+  Object.entries(attrs).forEach(([key, value]) => {
+    if (value === null || value === undefined || value === false) return;
+    if (key === 'class') node.className = value;
+    else if (key === 'text') node.textContent = value;
+    else if (key === 'html') node.innerHTML = value; // Only ever called with literals we author.
+    else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2), value);
+    else if (key === 'dataset') Object.assign(node.dataset, value);
+    else node.setAttribute(key, value);
+  });
+
+  (Array.isArray(children) ? children : [children]).forEach((child) => {
+    if (child === null || child === undefined || child === false) return;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  });
+
+  return node;
+}
+
+/** Replaces every child of `node` with the supplied nodes. */
+export function replaceChildren(node, ...children) {
+  node.replaceChildren(...children.flat().filter(Boolean));
+}
+
+/** Escapes a string for safe use inside HTML we build by hand. */
+export function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/** Formats a number with thousands separators, or an em dash when absent. */
+export function num(value) {
+  return (value === null || value === undefined || Number.isNaN(Number(value)))
+    ? '—'
+    : Number(value).toLocaleString('en-IN');
+}
+
+/** Formats a percentage to one decimal place. */
+export function pct(part, whole) {
+  if (!whole) return '0%';
+  return (Math.round((part / whole) * 1000) / 10) + '%';
+}
+
+/** Shortens long text for table cells, with an ellipsis. */
+export function truncate(text, max = 120) {
+  const s = String(text ?? '');
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+// ---------------------------------------------------------------------------
+// Toasts
+// ---------------------------------------------------------------------------
+
+/**
+ * showToast — floating notification in the bottom-right corner.
+ *
+ * @param {'success'|'error'|'info'|'warn'} type Visual style
+ * @param {string} message Text to display
+ * @param {number} [durationMs] Auto-dismiss delay
+ */
+export function showToast(type, message, durationMs = 5000) {
+  let container = $('toastContainer');
+  if (!container) {
+    container = el('div', { id: 'toastContainer', class: 'toast-container' });
+    document.body.append(container);
+  }
+
+  const icons = { success: '✅', error: '❌', info: 'ℹ️', warn: '⚠️' };
+  const toast = el('div', { class: 'toast ' + type }, [
+    el('span', { class: 'toast-icon', text: icons[type] || 'ℹ️' }),
+    el('span', { class: 'toast-message', text: message }),
+    el('button', { class: 'toast-close', title: 'Dismiss', text: '×', onclick: () => toast.remove() })
+  ]);
+
+  container.append(toast);
+  setTimeout(() => {
+    toast.style.animation = 'slideOutRight 0.3s ease forwards';
+    setTimeout(() => toast.remove(), 300);
+  }, durationMs);
+}
+
+// ---------------------------------------------------------------------------
+// API client
+// ---------------------------------------------------------------------------
+
+/**
+ * api — calls the local server with a fresh Firebase ID token attached.
+ * Tokens are short lived, so `getIdToken()` is called per request and the SDK
+ * refreshes it transparently when needed.
+ *
+ * @param {string} path API path, e.g. '/api/analytics'
+ * @param {Object} [options] { method, body, query }
+ * @returns {Promise<Object>} The `data` field of the response
+ */
+export async function api(path, options = {}) {
+  const { method = 'GET', body = null, query = null } = options;
+
+  let url = path;
+  if (query) {
+    const params = new URLSearchParams();
+    Object.entries(query).forEach(([k, v]) => {
+      if (v !== null && v !== undefined && v !== '') params.set(k, String(v));
+    });
+    const qs = params.toString();
+    if (qs) url += '?' + qs;
+  }
+
+  const headers = {};
+  if (currentUser) {
+    headers['Authorization'] = 'Bearer ' + (await currentUser.getIdToken());
+  }
+  if (body) headers['Content-Type'] = 'application/json';
+
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    // Never send this request anywhere but our own origin.
+    credentials: 'same-origin'
+  });
+
+  let payload;
+  try {
+    payload = await res.json();
+  } catch (err) {
+    throw new Error(`Server returned a non-JSON response (HTTP ${res.status})`);
+  }
+
+  if (!res.ok || payload.success === false) {
+    throw new Error(payload.error || `Request failed with HTTP ${res.status}`);
+  }
+  return payload.data !== undefined ? payload.data : payload;
+}
+
+// ---------------------------------------------------------------------------
+// Chrome: nav bar and auth gate
+// ---------------------------------------------------------------------------
+
+/** Builds the top bar: brand, page nav, connection pill, profile chip. */
+function buildTopBar(activePage) {
+  const nav = el('nav', { class: 'main-nav' },
+    PAGES.map((page) => el('a', {
+      class: 'nav-link' + (page.id === activePage ? ' active' : ''),
+      href: page.href,
+      title: page.hint
+    }, [
+      el('span', { class: 'nav-icon', text: page.icon }),
+      el('span', { class: 'nav-label', text: page.label })
+    ]))
+  );
+
+  const connectionPill = el('div', { class: 'sheet-connection-pill', id: 'sheetConnectionPill' }, [
+    el('span', { id: 'connectionStatus', class: 'status-dot offline' }),
+    el('span', { id: 'connectionStatusText', class: 'connection-status-text', text: 'Sheets: connecting…' })
+  ]);
+
+  const profileChip = el('div', { id: 'userProfileChip', class: 'user-profile-chip', style: 'display:none' }, [
+    el('div', { class: 'user-avatar', id: 'userAvatar', text: 'U' }),
+    el('div', { class: 'user-info' }, [
+      el('span', { class: 'user-email', id: 'userEmail', text: '' }),
+      el('span', { class: 'user-role-badge', text: 'Curator' })
+    ]),
+    el('button', {
+      class: 'btn-signout',
+      title: 'Sign out',
+      text: 'Sign Out',
+      onclick: () => signOut(auth)
+    })
+  ]);
+
+  return el('header', { class: 'top-bar' }, [
+    el('div', { class: 'brand' }, [
+      el('h1', { class: 'brand-title', text: 'Sadhana APPSC' }),
+      el('span', { class: 'brand-subtitle', text: 'Question Ops' })
+    ]),
+    nav,
+    el('div', { class: 'top-controls' }, [connectionPill, profileChip])
+  ]);
+}
+
+/** Builds the full-screen sign-in gate shown to logged-out visitors. */
+function buildAuthGate() {
+  const emailInput = el('input', {
+    type: 'email', id: 'gateAuthEmail', class: 'field-input',
+    placeholder: 'curator@example.com', required: 'required', autocomplete: 'email'
+  });
+  const passwordInput = el('input', {
+    type: 'password', id: 'gateAuthPassword', class: 'field-input',
+    placeholder: '••••••••', required: 'required', autocomplete: 'current-password'
+  });
+  const errorBox = el('div', { id: 'gateAuthError', class: 'auth-error-text', style: 'display:none' });
+  const submitBtn = el('button', { type: 'submit', class: 'btn btn-primary btn-block', text: 'Sign In' });
+
+  let mode = 'signin';
+
+  const showAuthError = (message) => {
+    errorBox.textContent = message;
+    errorBox.style.display = 'block';
+  };
+  const clearAuthError = () => {
+    errorBox.textContent = '';
+    errorBox.style.display = 'none';
+  };
+
+  const tabSignIn = el('button', { class: 'auth-tab active', type: 'button', text: 'Sign In' });
+  const tabRegister = el('button', { class: 'auth-tab', type: 'button', text: 'Create Account' });
+
+  const setMode = (next) => {
+    mode = next;
+    tabSignIn.classList.toggle('active', next === 'signin');
+    tabRegister.classList.toggle('active', next === 'register');
+    submitBtn.textContent = next === 'signin' ? 'Sign In' : 'Create Account';
+    passwordInput.setAttribute('autocomplete', next === 'signin' ? 'current-password' : 'new-password');
+    clearAuthError();
+  };
+  tabSignIn.addEventListener('click', () => setMode('signin'));
+  tabRegister.addEventListener('click', () => setMode('register'));
+
+  const googleBtn = el('button', { class: 'btn btn-google btn-hero', title: 'Sign in with Google' }, [
+    el('span', { class: 'google-mark', text: 'G' }),
+    el('span', { text: 'Continue with Google' })
+  ]);
+
+  googleBtn.addEventListener('click', async () => {
+    clearAuthError();
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      showAuthError(friendlyAuthError(err));
+    }
+  });
+
+  const form = el('form', { class: 'auth-form' }, [
+    el('div', { class: 'auth-field' }, [el('label', { for: 'gateAuthEmail', text: 'Email Address' }), emailInput]),
+    el('div', { class: 'auth-field' }, [el('label', { for: 'gateAuthPassword', text: 'Password' }), passwordInput]),
+    submitBtn
+  ]);
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    clearAuthError();
+    submitBtn.disabled = true;
+    try {
+      if (mode === 'signin') {
+        await signInWithEmailAndPassword(auth, emailInput.value.trim(), passwordInput.value);
+      } else {
+        const credential = await createUserWithEmailAndPassword(auth, emailInput.value.trim(), passwordInput.value);
+        // A brand-new password account has an unverified address, and the
+        // server rejects those unless the email is on the curator allowlist.
+        await sendEmailVerification(credential.user);
+        showToast('info', 'Account created. Check your inbox to verify the address before curating.');
+      }
+    } catch (err) {
+      showAuthError(friendlyAuthError(err));
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  const registerTabWrapper = el('div', { class: 'auth-gate-tabs', id: 'gateTabs' }, [tabSignIn, tabRegister]);
+
+  return el('div', { id: 'authGate', class: 'auth-gate-hero' }, [
+    el('div', { class: 'auth-gate-card' }, [
+      el('div', { class: 'auth-gate-badge' }, [
+        el('span', { class: 'auth-badge-icon', text: '🔒' }),
+        el('span', { text: 'Authentication Required' })
+      ]),
+      el('h2', { class: 'auth-gate-title', text: 'Sadhana APPSC Question Hub' }),
+      el('p', {
+        class: 'auth-gate-subtitle',
+        text: 'Sign in to reach the upload, analytics, question bank, automation and health dashboards.'
+      }),
+      el('div', { class: 'auth-features-preview' }, [
+        ['📤', 'Upload and validate question batches'],
+        ['📊', 'Track coverage, runway and curator activity'],
+        ['🤖', 'Publish to Telegram without touching the CLI']
+      ].map(([icon, label]) => el('div', { class: 'auth-feature-item' }, [
+        el('span', { class: 'auth-feature-check', text: icon }),
+        el('span', { text: label })
+      ]))),
+      googleBtn,
+      el('div', { class: 'auth-gate-divider' }, [el('span', { text: 'or continue with email' })]),
+      registerTabWrapper,
+      form,
+      errorBox
+    ])
+  ]);
+}
+
+/**
+ * buildBootScreen — the neutral splash shown while Firebase restores the
+ * session from local storage.
+ *
+ * Without this the sign-in gate is what fills the screen during that gap, so
+ * every navigation between dashboards looked like being logged out again. The
+ * gate is now only revealed once Firebase has actually confirmed there is no
+ * user.
+ */
+function buildBootScreen() {
+  return el('div', { id: 'bootScreen', class: 'boot-screen' }, [
+    el('div', { class: 'boot-inner' }, [
+      el('div', { class: 'boot-spinner' }),
+      el('div', { class: 'boot-title', text: 'Sadhana APPSC' }),
+      el('div', { class: 'boot-hint', text: 'Restoring your session…' })
+    ])
+  ]);
+}
+
+/** Turns a Firebase error code into something a curator can act on. */
+function friendlyAuthError(err) {
+  const code = (err && err.code) || '';
+  const table = {
+    'auth/invalid-credential': 'Email or password is incorrect.',
+    'auth/wrong-password': 'Email or password is incorrect.',
+    'auth/user-not-found': 'No account exists for that email.',
+    'auth/email-already-in-use': 'That email already has an account — use Sign In.',
+    'auth/weak-password': 'Password must be at least 6 characters.',
+    'auth/invalid-email': 'That email address is not valid.',
+    'auth/popup-closed-by-user': 'Sign-in popup was closed before finishing.',
+    'auth/popup-blocked': 'Your browser blocked the popup. Allow popups and try again.',
+    'auth/too-many-requests': 'Too many attempts. Wait a minute and try again.',
+    'auth/network-request-failed': 'Network error reaching Firebase. Check your connection.',
+    'auth/unauthorized-domain': 'This domain is not authorised in the Firebase console.',
+    'auth/operation-not-allowed': 'That sign-in method is disabled in the Firebase console.'
+  };
+  return table[code] || (err && err.message) || 'Sign-in failed.';
+}
+
+/** Updates the Google Sheets status pill. */
+function setConnectionStatus(state, text) {
+  const dot = $('connectionStatus');
+  const label = $('connectionStatusText');
+  if (dot) { dot.className = 'status-dot ' + state; dot.title = text; }
+  if (label) label.textContent = text;
+}
+
+/**
+ * showBanner — a persistent, full-width notice pinned above the page content.
+ * Used for conditions the curator must act on rather than dismiss, such as an
+ * out-of-date Apps Script deployment.
+ *
+ * @param {'warn'|'error'|'info'} tone Visual style
+ * @param {string} title Short headline
+ * @param {string} detail Explanation and the fix
+ */
+export function showBanner(tone, title, detail) {
+  let host = $('bannerHost');
+  if (!host) {
+    host = el('div', { id: 'bannerHost', class: 'banner-host' });
+    const container = document.querySelector('.app-container') || document.body;
+    // Sit directly under the nav, above the sign-in gate — the gate fills the
+    // viewport, so a banner placed after it would never be seen while logged out.
+    const anchor = $('authGate') || $('pageRoot');
+    container.insertBefore(host, anchor || null);
+  }
+
+  // One banner per title, so a periodic re-check does not stack duplicates.
+  if (host.querySelector(`[data-banner="${CSS.escape(title)}"]`)) return;
+
+  host.append(el('div', { class: 'banner tone-' + tone, dataset: { banner: title } }, [
+    el('div', { class: 'banner-body' }, [
+      el('strong', { text: title }),
+      el('span', { text: ' ' + detail })
+    ]),
+    el('button', { class: 'btn-icon', text: '×', title: 'Dismiss', onclick: (e) => e.target.closest('.banner').remove() })
+  ]));
+}
+
+/** Pings the sheet backend and reflects the result in the header pill. */
+async function refreshConnectionStatus() {
+  setConnectionStatus('loading', 'Sheets: connecting…');
+  try {
+    const res = await fetch('/api/ping');
+    const payload = await res.json();
+
+    if (!payload.success) {
+      setConnectionStatus('offline', 'Sheets: ' + (payload.error || 'offline'));
+      return;
+    }
+
+    if (payload.unbound) {
+      // v5 is deployed but it cannot see any spreadsheet.
+      setConnectionStatus('warn', 'Sheets: script not attached to a sheet');
+      showBanner('error', 'The Apps Script is not attached to your spreadsheet.',
+        'It was created as a standalone project rather than from inside the Sheet. Open your Google ' +
+        'Sheet → Extensions → Apps Script, paste google_apps_script.js there, run upgradeSpreadsheet, ' +
+        'and deploy a new version of that project.');
+      return;
+    }
+
+    if (payload.outdated) {
+      // Reachable, but running an older script than these dashboards need.
+      setConnectionStatus('warn', `Sheets: ${payload.version} — upgrade needed`);
+      showBanner('warn', 'Google Apps Script needs upgrading.',
+        payload.upgradeHint ||
+        `The deployed backend is ${payload.version}, but the dashboards need ${payload.requiredVersion}.`);
+    } else {
+      setConnectionStatus('online', `Sheets: connected · ${payload.version}`);
+    }
+
+    if (payload.tokenRequired === false) {
+      showBanner('warn', 'Your Google Sheet Web App has no API token.',
+        'It is deployed as "Anyone", so the /exec URL alone grants full read and write access to your ' +
+        'question bank. Set API_TOKEN in Apps Script > Project Settings > Script properties to the value ' +
+        'already in your .env, then redeploy. See the Health dashboard for details.');
+    }
+  } catch (err) {
+    setConnectionStatus('offline', 'Sheets: local server unreachable');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Page bootstrap
+// ---------------------------------------------------------------------------
+
+/**
+ * initDashboard — call once per page.
+ * Injects the nav and auth gate, waits for Firebase, then runs `onReady(user)`
+ * exactly once when a curator is signed in. Everything inside `#pageRoot` stays
+ * hidden until then.
+ *
+ * @param {Object} options
+ * @param {string} options.page Page id, used to highlight the nav link
+ * @param {Function} options.onReady Called with the signed-in user
+ */
+export async function initDashboard({ page, onReady }) {
+  const container = document.querySelector('.app-container') || document.body;
+  const pageRoot = $('pageRoot');
+
+  container.prepend(buildTopBar(page));
+
+  // The gate starts hidden. Showing it before Firebase has restored the
+  // session is what made every tab change look like a fresh logout.
+  const gate = buildAuthGate();
+  gate.style.display = 'none';
+  container.insertBefore(gate, pageRoot || null);
+
+  // The splash covers the page until the first auth state resolves.
+  document.body.append(buildBootScreen());
+
+  if (!$('toastContainer')) {
+    document.body.append(el('div', { id: 'toastContainer', class: 'toast-container' }));
+  }
+
+  // Persist the session in local storage so it survives navigation between
+  // dashboards, reloads and browser restarts. This is Firebase's default, but
+  // stating it explicitly means a change of default cannot silently log
+  // everyone out on every page load.
+  try {
+    await setPersistence(auth, browserLocalPersistence);
+  } catch (err) {
+    console.warn('[auth] could not set local persistence:', err.message);
+  }
+
+  // Bootstrap config drives the gate's behaviour (e.g. hiding registration).
+  try {
+    const res = await fetch('/api/config');
+    serverConfig = await res.json();
+
+    if (serverConfig.firebaseProjectId && serverConfig.firebaseProjectId !== firebaseConfig.projectId) {
+      showToast('error',
+        `Firebase project mismatch: page uses "${firebaseConfig.projectId}" but the server expects ` +
+        `"${serverConfig.firebaseProjectId}". Sign-in will be rejected.`, 15000);
+    }
+    if (!serverConfig.authEnforced) {
+      showToast('warn', 'Server auth is not configured (FIREBASE_PROJECT_ID missing) — the API is locked.', 12000);
+    }
+    if (!serverConfig.allowRegistration) {
+      const tabs = $('gateTabs');
+      if (tabs) tabs.style.display = 'none';
+    }
+  } catch (err) {
+    showToast('error', 'Cannot reach the local server. Start it with: npm run dashboard');
+  }
+
+  refreshConnectionStatus();
+  // Re-check the sheet connection every couple of minutes.
+  setInterval(refreshConnectionStatus, 120000);
+
+  let started = false;
+
+  /** Removes the splash once we know whether anyone is signed in. */
+  function dismissBootScreen() {
+    const boot = $('bootScreen');
+    if (!boot) return;
+    boot.classList.add('done');
+    setTimeout(() => boot.remove(), 260);
+  }
+
+  onAuthStateChanged(auth, async (user) => {
+    const authGate = $('authGate');
+
+    if (!user) {
+      currentUser = null;
+      started = false;
+      if (authGate) authGate.style.display = 'flex';
+      if (pageRoot) pageRoot.style.display = 'none';
+      const chip = $('userProfileChip');
+      if (chip) chip.style.display = 'none';
+      dismissBootScreen();
+      return;
+    }
+
+    currentUser = user;
+    if (authGate) authGate.style.display = 'none';
+    if (pageRoot) pageRoot.style.display = '';
+    dismissBootScreen();
+
+    const chip = $('userProfileChip');
+    const avatar = $('userAvatar');
+    const emailLabel = $('userEmail');
+    if (chip) chip.style.display = 'flex';
+    if (emailLabel) emailLabel.textContent = user.displayName || user.email || '';
+    if (avatar) {
+      if (user.photoURL) {
+        replaceChildren(avatar, el('img', { src: user.photoURL, alt: '' }));
+      } else {
+        avatar.textContent = (user.displayName || user.email || 'U').charAt(0).toUpperCase();
+      }
+    }
+
+    if (started) return;
+    started = true;
+
+    try {
+      await onReady(user);
+    } catch (err) {
+      showToast('error', err.message, 10000);
+      console.error('[dashboard] init failed', err);
+    }
+  });
+}
+
+/** Signs the current curator out. */
+export function logout() {
+  return signOut(auth);
+}
+
+// ---------------------------------------------------------------------------
+// Small shared UI builders
+// ---------------------------------------------------------------------------
+
+/**
+ * statCard — the large headline metric tile used on Analytics and Health.
+ *
+ * @param {string} label Caption under the value
+ * @param {string|number} value The metric
+ * @param {Object} [opts] { sub, tone } — tone is ok | warn | danger | info
+ */
+export function statCard(label, value, opts = {}) {
+  const text = String(value);
+  // Long values are identities (an email, a hostname), not headline numbers,
+  // so they get a smaller, wrappable treatment.
+  const valueClass = 'stat-value' + (text.length > 14 ? ' long' : '');
+
+  return el('div', { class: 'stat-card tone-' + (opts.tone || 'info') }, [
+    el('div', { class: valueClass, text }),
+    el('div', { class: 'stat-label', text: label }),
+    opts.sub ? el('div', { class: 'stat-sub', text: opts.sub }) : null
+  ]);
+}
+
+/**
+ * barRow — one horizontal bar in a simple CSS bar chart.
+ *
+ * @param {string} label Row label
+ * @param {number} value Value for this row
+ * @param {number} max Largest value in the series, used to scale the bar
+ * @param {Object} [opts] { tone, suffix }
+ */
+export function barRow(label, value, max, opts = {}) {
+  const width = max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0;
+  return el('div', { class: 'bar-row' }, [
+    el('div', { class: 'bar-label', text: label, title: label }),
+    el('div', { class: 'bar-track' }, [
+      el('div', { class: 'bar-fill tone-' + (opts.tone || 'info'), style: `width:${width}%` })
+    ]),
+    el('div', { class: 'bar-value', text: num(value) + (opts.suffix || '') })
+  ]);
+}
+
+/** A labelled section panel with an optional right-hand action area. */
+export function panel(title, subtitle, body, actions = null) {
+  return el('section', { class: 'panel' }, [
+    el('div', { class: 'panel-head' }, [
+      el('div', {}, [
+        el('h2', { class: 'panel-title', text: title }),
+        subtitle ? el('p', { class: 'panel-subtitle', text: subtitle }) : null
+      ]),
+      actions
+    ]),
+    el('div', { class: 'panel-body' }, body)
+  ]);
+}
+
+/** A centred "nothing here yet" placeholder. */
+export function emptyState(icon, message, hint) {
+  return el('div', { class: 'empty-state' }, [
+    el('div', { class: 'empty-icon', text: icon }),
+    el('p', { text: message }),
+    hint ? el('p', { class: 'empty-hint', text: hint }) : null
+  ]);
+}
+
+/** A small coloured pill, used for Status and Difficulty values. */
+export function pill(text, tone) {
+  return el('span', { class: 'pill tone-' + (tone || 'info'), text });
+}
+
+/** Maps a Status value to a pill tone. */
+export function statusTone(status) {
+  return {
+    Approved: 'ok', Posted: 'info', Scheduled: 'warn',
+    Review: 'warn', Rejected: 'danger', Archived: 'muted', Draft: 'muted'
+  }[status] || 'muted';
+}
+
+/** Maps a Difficulty value to a pill tone. */
+export function difficultyTone(difficulty) {
+  return { Easy: 'ok', Medium: 'warn', Hard: 'danger' }[difficulty] || 'muted';
+}
