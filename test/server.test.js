@@ -89,7 +89,9 @@ let baseUrl;
 
 test.before(async () => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
+  // localhost, not 127.0.0.1: the server canonicalises the latter, and
+  // localhost is the origin Firebase authorises and users actually load.
+  baseUrl = `http://localhost:${server.address().port}`;
 });
 
 test.after(() => server.close());
@@ -458,6 +460,47 @@ test('static assets inside dashboard/ are served normally', async () => {
   for (const asset of ['/', '/index.html', '/analytics.html', '/questions.html', '/automation.html', '/health.html', '/shared.js', '/style.css', '/shared.css']) {
     const res = await call(asset);
     assert.equal(res.status, 200, `${asset} was not served`);
+  }
+});
+
+test('a 127.0.0.1 page load is redirected to localhost', async () => {
+  // Firebase treats localhost and 127.0.0.1 as different domains and only
+  // localhost is authorised by default, so signing in from 127.0.0.1 fails —
+  // often as an opaque 500 from accounts.google.com.
+  const port = server.address().port;
+  const res = await fetch(`http://127.0.0.1:${port}/analytics.html`, { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.get('location'), `http://localhost:${port}/analytics.html`);
+});
+
+test('the redirect preserves the path and query string', async () => {
+  const port = server.address().port;
+  const res = await fetch(`http://127.0.0.1:${port}/questions.html?subject=Polity&page=2`, { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.get('location'), `http://localhost:${port}/questions.html?subject=Polity&page=2`);
+});
+
+test('API calls are never redirected — only page loads', async () => {
+  // Redirecting an API call would break the fetch that carries the auth token.
+  const port = server.address().port;
+  const res = await fetch(`http://127.0.0.1:${port}/api/config`, { redirect: 'manual' });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('location'), null);
+});
+
+test('a localhost page load is served directly, not redirected', async () => {
+  const res = await call('/index.html');
+  assert.equal(res.status, 200);
+});
+
+test('the redirect can be disabled for a deliberate 127.0.0.1 setup', async () => {
+  process.env.CANONICAL_HOST_REDIRECT = 'false';
+  try {
+    const port = server.address().port;
+    const res = await fetch(`http://127.0.0.1:${port}/index.html`, { redirect: 'manual' });
+    assert.equal(res.status, 200);
+  } finally {
+    delete process.env.CANONICAL_HOST_REDIRECT;
   }
 });
 

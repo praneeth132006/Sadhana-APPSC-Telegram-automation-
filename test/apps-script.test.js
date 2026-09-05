@@ -548,6 +548,142 @@ test('updateQuestionRow only writes allowlisted fields', () => {
   assert.equal(sheet.values[1][map['Question ID']], ids[0], 'Question ID was writable from the patch');
 });
 
+test('a row with no Question ID can still be edited and deleted', () => {
+  // The reported bug: deleting from the dashboard reported success but the row
+  // stayed in the sheet, because rows written before the migration have an
+  // empty Question ID and lookup was by id only.
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [
+    s.QUESTION_HEADERS.slice(),
+    ['', '', '05-09-2026', 'The Hindu', 'Polity', '', 'Legacy question with no id?',
+     'a', 'b', 'c', 'd', 'A', 'why', '', '', '', '', 'NO', '', '', '', '', '', 0, '', '', '', '', '', '']
+  ]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+  const map = script.headerMap(sheet);
+
+  // Addressing by id alone finds nothing, as before.
+  assert.equal(script.findRowByQuestionId(sheet, map, ''), -1);
+
+  // The row-number fallback resolves it when the text matches.
+  assert.equal(script.locateRow(sheet, map, '', 2, 'Legacy question with no id?'), 2);
+
+  // An edit succeeds and backfills an id so later edits address it directly.
+  assert.equal(script.updateQuestionRow('Polity', '', { topic: 'Judiciary' }, 'Editor', 2,
+    'Legacy question with no id?'), true);
+  assert.equal(sheet.values[1][map['Topic']], 'Judiciary');
+  assert.match(sheet.values[1][map['Question ID']], /^POL-\d{8}-\d{4}$/, 'id was not backfilled');
+
+  // And the delete actually removes the row.
+  assert.equal(script.deleteQuestionRow('Polity', '', 2, 'Legacy question with no id?'), true);
+  assert.equal(sheet.getLastRow(), 1, 'the row was reported deleted but is still there');
+});
+
+test('the row-number fallback refuses to act on the wrong row', () => {
+  // If another row was inserted or removed since the dashboard read the page,
+  // the row number now points at a different question. Acting on it would
+  // destroy the wrong record, so a text mismatch must abort.
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [
+    s.QUESTION_HEADERS.slice(),
+    ['', '', '', '', 'Polity', '', 'A completely different question?',
+     'a', 'b', 'c', 'd', 'A', '', '', '', '', '', 'NO', '', '', '', '', '', 0, '', '', '', '', '', '']
+  ]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+  const map = script.headerMap(sheet);
+
+  assert.equal(script.locateRow(sheet, map, '', 2, 'The question I thought was here?'), -1,
+    'a mismatched row was accepted');
+  assert.equal(script.deleteQuestionRow('Polity', '', 2, 'The question I thought was here?'), false);
+  assert.equal(sheet.getLastRow(), 2, 'the wrong row was deleted');
+
+  // A bare row number with no text to verify against is also refused.
+  assert.equal(script.locateRow(sheet, map, '', 2, ''), -1, 'an unverified row number was accepted');
+});
+
+test('setupSpreadsheet keeps existing Telegram thread ids', () => {
+  // Re-running setup must never replace real thread ids created by setup.js
+  // with the placeholders in SUBJECT_CONFIG_LIST — that silently points every
+  // subject at a topic that may not exist.
+  const config = new FakeSheet('Config', [
+    ['Subject', 'Emoji', 'Topic_Thread_ID', 'Schedule_Cron', 'Questions_Per_Batch', 'Active'],
+    ['History', '📜', 9421, '0 9 * * *', 3, 'YES'],
+    ['Polity', '', 9422, '0 */2 * * *', 5, 'NO']
+  ]);
+  const script = loadScript(new FakeSpreadsheet([config]));
+  script.setupSpreadsheet();
+
+  const rows = config.values.slice(1);
+  const byName = {};
+  rows.forEach((r) => { byName[r[0]] = r; });
+
+  assert.equal(byName['History'][2], 9421, 'a real thread id was overwritten with a default');
+  assert.equal(byName['Polity'][2], 9422, 'a real thread id was overwritten with a default');
+  assert.equal(byName['History'][1], '📜', 'the emoji was lost');
+  assert.equal(byName['History'][3], '0 9 * * *', 'the cron was reset');
+  assert.equal(byName['Polity'][5], 'NO', 'the Active flag was reset');
+
+  // A subject that was not in Config before still gets its default.
+  assert.equal(byName['Biology'][2], 16);
+});
+
+test('clearAllQuestions empties every tab but leaves Config alone', () => {
+  const s = freshScript();
+  const polity = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const config = new FakeSheet('Config', [
+    ['Subject', 'Emoji', 'Topic_Thread_ID', 'Schedule_Cron', 'Questions_Per_Batch', 'Active'],
+    ['Polity', '', 9422, '0 */2 * * *', 5, 'YES']
+  ]);
+  const script = loadScript(new FakeSpreadsheet([polity, config]));
+
+  script.appendQuestionsToSheet('Polity', [
+    { question: 'One?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A' },
+    { question: 'Two?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A' }
+  ], 'Curator', true);
+  assert.equal(polity.getLastRow(), 3);
+
+  const report = script.clearAllQuestions();
+
+  assert.equal(polity.getLastRow(), 1, 'questions were not cleared');
+  assert.deepEqual(Array.from(polity.values[0]), Array.from(script.QUESTION_HEADERS),
+    'the canonical header row was not restored');
+  assert.ok(report.some((line) => line.indexOf('Polity: cleared 2') === 0));
+
+  // Config, and the thread id in it, must survive untouched.
+  assert.equal(config.getLastRow(), 2, 'Config was cleared');
+  assert.equal(config.values[1][2], 9422, 'the Telegram thread id was lost');
+});
+
+test('clearAllQuestions is not reachable over HTTP', () => {
+  // A destructive whole-bank wipe must never be triggerable by a request.
+  const s = freshScript();
+  for (const action of ['clearAllQuestions', 'clearSubjectQuestions', 'backfillQuestionIds']) {
+    const viaGet = JSON.parse(s.doGet({ parameter: { action } }).text);
+    assert.equal(viaGet.success, false, `${action} was reachable via doGet`);
+
+    const viaPost = JSON.parse(s.doPost({ postData: { contents: JSON.stringify({ action }) } }).text);
+    assert.equal(viaPost.success, false, `${action} was reachable via doPost`);
+  }
+});
+
+test('backfillQuestionIds fills only what is missing', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [
+    s.QUESTION_HEADERS.slice(),
+    ['', 'POL-EXISTING-0001', '', '', 'Polity', '', 'Already has an id?',
+     'a', 'b', 'c', 'd', 'A', '', '', '', '', '', 'NO', '', '', '', '', '', 0, '', '', '', '', 'keepme', ''],
+    ['', '', '', '', 'Polity', '', 'Needs an id?',
+     'a', 'b', 'c', 'd', 'A', '', '', '', '', '', 'NO', '', '', '', '', '', 0, '', '', '', '', '', '']
+  ]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+  const map = script.headerMap(sheet);
+
+  assert.equal(script.backfillQuestionIds(), 1, 'should fill exactly one id');
+  assert.equal(sheet.values[1][map['Question ID']], 'POL-EXISTING-0001', 'an existing id was overwritten');
+  assert.equal(sheet.values[1][map['Dup Hash']], 'keepme', 'an existing hash was overwritten');
+  assert.match(sheet.values[2][map['Question ID']], /^POL-\d{8}-\d{4}$/);
+  assert.equal(sheet.values[2][map['Dup Hash']].length, 16);
+});
+
 test('editing the question text refreshes the duplicate fingerprint', () => {
   const s = freshScript();
   const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);

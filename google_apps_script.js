@@ -305,12 +305,13 @@ function doPost(e) {
     }
 
     if (action === 'updateQuestion') {
-      if (!payload.subject || !payload.questionId) {
-        return jsonResponse({ success: false, error: 'Missing subject or questionId' });
+      if (!payload.subject || (!payload.questionId && !payload.rowNumber)) {
+        return jsonResponse({ success: false, error: 'Missing subject, and neither questionId nor rowNumber given' });
       }
       var ok = updateQuestionRow(
         payload.subject, payload.questionId, payload.fields || {},
-        payload.updated_by || payload.updatedBy || 'Dashboard User'
+        payload.updated_by || payload.updatedBy || 'Dashboard User',
+        payload.rowNumber, payload.verifyText
       );
       return jsonResponse(ok
         ? { success: true, message: 'Question ' + payload.questionId + ' updated' }
@@ -318,10 +319,12 @@ function doPost(e) {
     }
 
     if (action === 'deleteQuestion') {
-      if (!payload.subject || !payload.questionId) {
-        return jsonResponse({ success: false, error: 'Missing subject or questionId' });
+      if (!payload.subject || (!payload.questionId && !payload.rowNumber)) {
+        return jsonResponse({ success: false, error: 'Missing subject, and neither questionId nor rowNumber given' });
       }
-      var deleted = deleteQuestionRow(payload.subject, payload.questionId);
+      var deleted = deleteQuestionRow(
+        payload.subject, payload.questionId, payload.rowNumber, payload.verifyText
+      );
       return jsonResponse(deleted
         ? { success: true, message: 'Question ' + payload.questionId + ' deleted' }
         : { success: false, error: 'Question ' + payload.questionId + ' not found' });
@@ -1051,12 +1054,49 @@ function appendQuestionsToSheet(subject, questions, addedBy, skipDuplicates) {
 function findRowByQuestionId(sheet, map, questionId) {
   var lastRow = sheet.getLastRow();
   if (lastRow <= 1) return -1;
+  var target = String(questionId || '').trim();
+  if (!target) return -1;
+
   var ids = sheet.getRange(2, colNum(map, 'Question ID'), lastRow - 1, 1).getValues();
-  var target = String(questionId).trim();
   for (var i = 0; i < ids.length; i++) {
     if (String(ids[i][0] || '').trim() === target) return i + 2;
   }
   return -1;
+}
+
+/**
+ * locateRow — resolves which sheet row an edit or delete refers to.
+ *
+ * Question ID is the primary key, but a row can legitimately have none: rows
+ * written before the 30-column migration, or pasted in by hand, have that cell
+ * empty. Addressing by ID alone meant every edit and delete on such a row
+ * silently failed to find anything — the dashboard said it deleted a question
+ * and the sheet kept it.
+ *
+ * So: try the ID, then fall back to the row number the dashboard read the row
+ * from. The fallback is only trusted when the question text still matches, so
+ * a row that shifted (because something else was inserted or deleted in the
+ * meantime) can never cause the WRONG question to be edited or destroyed.
+ *
+ * @param {Sheet} sheet Target sheet
+ * @param {Object} map Header map for that sheet
+ * @param {string} questionId Question ID, may be empty
+ * @param {number} [rowNumber] 1-based sheet row the client believes it is on
+ * @param {string} [verifyText] Question text the client believes is there
+ * @returns {number} The row number, or -1 when it cannot be resolved safely
+ */
+function locateRow(sheet, map, questionId, rowNumber, verifyText) {
+  var byId = findRowByQuestionId(sheet, map, questionId);
+  if (byId !== -1) return byId;
+
+  var row = parseInt(rowNumber, 10);
+  if (isNaN(row) || row < 2 || row > sheet.getLastRow()) return -1;
+
+  // Without a text fingerprint we refuse to act on a bare row number.
+  if (!verifyText) return -1;
+
+  var actual = String(sheet.getRange(row, colNum(map, 'Question')).getValue() || '');
+  return hashQuestion(actual) === hashQuestion(verifyText) ? row : -1;
 }
 
 /** Fields the dashboard is allowed to edit — an allowlist, so a crafted payload
@@ -1070,13 +1110,21 @@ var EDITABLE_FIELDS = {
 };
 
 /** Applies an allowlisted field patch to one question row. */
-function updateQuestionRow(subject, questionId, fields, updatedBy) {
+function updateQuestionRow(subject, questionId, fields, updatedBy, rowHint, verifyText) {
   var sheet = book().getSheetByName(subject);
   if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
 
   var map = headerMap(sheet);
-  var rowNumber = findRowByQuestionId(sheet, map, questionId);
+  var rowNumber = locateRow(sheet, map, questionId, rowHint, verifyText);
   if (rowNumber === -1) return false;
+
+  // A row that had no Question ID gets one now, so later edits address it
+  // directly instead of relying on the row-number fallback again.
+  if (!String(sheet.getRange(rowNumber, colNum(map, 'Question ID')).getValue() || '').trim()) {
+    sheet.getRange(rowNumber, colNum(map, 'Question ID'))
+      .setValue(subjectCode(subject) + '-' + Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyyMMdd') +
+                '-' + padNumber(rowNumber - 1, 4));
+  }
 
   Object.keys(fields).forEach(function (key) {
     var header = EDITABLE_FIELDS[key];
@@ -1103,11 +1151,11 @@ function updateQuestionRow(subject, questionId, fields, updatedBy) {
 }
 
 /** Deletes one question row by Question ID. */
-function deleteQuestionRow(subject, questionId) {
+function deleteQuestionRow(subject, questionId, rowHint, verifyText) {
   var sheet = book().getSheetByName(subject);
   if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
   var map = headerMap(sheet);
-  var rowNumber = findRowByQuestionId(sheet, map, questionId);
+  var rowNumber = locateRow(sheet, map, questionId, rowHint, verifyText);
   if (rowNumber === -1) return false;
   sheet.deleteRow(rowNumber);
   return true;
@@ -1382,6 +1430,29 @@ function setupSpreadsheet() {
   var ss = book();
 
   var config = ss.getSheetByName('Config');
+
+  // Read any thread ids and cron settings that already exist BEFORE clearing.
+  // These are the real Telegram forum topic ids created by `node setup.js`;
+  // overwriting them with the defaults in SUBJECT_CONFIG_LIST would point every
+  // subject at a topic that may not exist, which looks exactly like the topics
+  // having been deleted.
+  var existing = {};
+  if (config && config.getLastRow() > 1) {
+    var prior = config.getRange(2, 1, config.getLastRow() - 1, 6).getValues();
+    for (var e = 0; e < prior.length; e++) {
+      var name = String(prior[e][0] || '').trim();
+      if (name) {
+        existing[name] = {
+          emoji: prior[e][1],
+          threadId: prior[e][2],
+          cron: String(prior[e][3] || '').trim(),
+          count: prior[e][4],
+          active: String(prior[e][5] || '').trim()
+        };
+      }
+    }
+  }
+
   if (!config) config = ss.insertSheet('Config');
   config.clear();
 
@@ -1391,7 +1462,16 @@ function setupSpreadsheet() {
   config.setFrozenRows(1);
 
   var configRows = SUBJECT_CONFIG_LIST.map(function (s) {
-    return [s.subject, '', s.threadId, s.cron, s.count, 'YES'];
+    var prev = existing[s.subject];
+    return [
+      s.subject,
+      prev && prev.emoji ? prev.emoji : '',
+      // Keep whatever thread id is already there; only fall back to the default.
+      prev && prev.threadId ? prev.threadId : s.threadId,
+      prev && prev.cron ? prev.cron : s.cron,
+      prev && prev.count ? prev.count : s.count,
+      prev && prev.active ? prev.active : 'YES'
+    ];
   });
   config.getRange(2, 1, configRows.length, configHeaders.length).setValues(configRows);
   [160, 70, 130, 150, 170, 80].forEach(function (w, i) { config.setColumnWidth(i + 1, w); });
@@ -1441,6 +1521,108 @@ function upgradeSpreadsheet() {
   Logger.log('Upgrade report:\n' + report.join('\n'));
   ss.toast('Upgraded ' + report.length + ' tabs to the 30-column schema. See Logs for detail.', 'Sadhana APPSC', 15);
   return report;
+}
+
+/**
+ * clearAllQuestions — DELETES EVERY QUESTION from every subject tab.
+ *
+ * Run this manually from the Apps Script editor when you want a clean start.
+ * It is deliberately NOT reachable over HTTP: no doGet or doPost action calls
+ * it, so no dashboard button and no stray request can ever wipe your bank.
+ *
+ * Each tab is rebuilt with the canonical 30-column header row, dropdowns and
+ * colour rules, so this doubles as a schema reset. The Config tab, and the
+ * Telegram thread ids in it, are left completely untouched.
+ *
+ * @returns {Array<string>} Per-tab report of how many rows were removed
+ */
+function clearAllQuestions() {
+  var ss = book();
+  var names = listSubjectSheets();
+  var report = [];
+  var removed = 0;
+
+  for (var i = 0; i < names.length; i++) {
+    var sheet = ss.getSheetByName(names[i]);
+    var rows = Math.max(sheet.getLastRow() - 1, 0);
+    removed += rows;
+
+    sheet.clear();
+    sheet.setConditionalFormatRules([]);
+    formatSheetHeaders(sheet);
+
+    report.push(names[i] + ': cleared ' + rows + ' row(s)');
+  }
+
+  Logger.log('clearAllQuestions:\n' + report.join('\n'));
+  ss.toast('Cleared ' + removed + ' question(s) across ' + names.length + ' tabs. Config untouched.',
+           'Sadhana APPSC', 15);
+  return report;
+}
+
+/**
+ * clearSubjectQuestions — deletes every question in ONE subject tab.
+ * Editor only, for the same reason as clearAllQuestions.
+ *
+ * @param {string} subject Tab name, e.g. 'Polity'
+ */
+function clearSubjectQuestions(subject) {
+  var sheet = book().getSheetByName(subject);
+  if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
+
+  var rows = Math.max(sheet.getLastRow() - 1, 0);
+  sheet.clear();
+  sheet.setConditionalFormatRules([]);
+  formatSheetHeaders(sheet);
+
+  book().toast('Cleared ' + rows + ' question(s) from "' + subject + '".', 'Sadhana APPSC', 10);
+  return rows;
+}
+
+/**
+ * backfillQuestionIds — gives a Question ID and duplicate hash to any row that
+ * is missing one, without touching anything else.
+ *
+ * Rows added before the 30-column migration, or pasted in by hand, have those
+ * cells empty, which is what made editing and deleting them from the dashboard
+ * fail to stick. Run this once if you have such rows and want them addressable
+ * by id rather than relying on the row-number fallback.
+ *
+ * @returns {number} How many rows were given an id
+ */
+function backfillQuestionIds() {
+  var ss = book();
+  var names = listSubjectSheets();
+  var filled = 0;
+
+  for (var i = 0; i < names.length; i++) {
+    var sheet = ss.getSheetByName(names[i]);
+    var lastRow = sheet.getLastRow();
+    if (lastRow <= 1) continue;
+
+    var map = headerMap(sheet);
+    var idCol = colNum(map, 'Question ID');
+    var hashCol = colNum(map, 'Dup Hash');
+    var qCol = colNum(map, 'Question');
+    var code = subjectCode(names[i]);
+    var stamp = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyyMMdd');
+
+    for (var r = 2; r <= lastRow; r++) {
+      var text = String(sheet.getRange(r, qCol).getValue() || '').trim();
+      if (!text) continue;
+
+      if (!String(sheet.getRange(r, idCol).getValue() || '').trim()) {
+        sheet.getRange(r, idCol).setValue(code + '-' + stamp + '-' + padNumber(r - 1, 4));
+        filled++;
+      }
+      if (!String(sheet.getRange(r, hashCol).getValue() || '').trim()) {
+        sheet.getRange(r, hashCol).setValue(hashQuestion(text));
+      }
+    }
+  }
+
+  ss.toast('Backfilled ' + filled + ' Question ID(s).', 'Sadhana APPSC', 10);
+  return filled;
 }
 
 // ============================================================================

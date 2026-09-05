@@ -358,12 +358,14 @@ function createCard(question, index) {
       ]),
       el('button', {
         class: 'btn-card-delete',
-        title: 'Remove this question from the batch',
-        text: '🗑️ Delete',
+        title: 'Remove this card from the batch you are about to upload. ' +
+               'Nothing has been written to Google Sheets yet, so this does not delete anything from the sheet. ' +
+               'To delete a question that is already in the sheet, use the Questions dashboard.',
+        text: '✕ Remove from batch',
         onclick: () => {
           questions.splice(index, 1);
           renderCards();
-          showToast('info', 'Question removed from the batch.');
+          showToast('info', 'Removed from this batch. Nothing in Google Sheets was changed.');
         }
       })
     ]),
