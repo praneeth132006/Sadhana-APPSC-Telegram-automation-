@@ -14,8 +14,10 @@
 <body>
   <!-- shared.js injects the top navigation and the sign-in gate above #pageRoot -->
   <div class="app-container">
-    <!-- Everything inside #pageRoot stays hidden until a curator is signed in -->
-    <main id="pageRoot" class="page-root" style="display:none">
+    <!-- What this element does: Analytics container, strictly locked until curator is logged in -->
+    <!-- What it brings: Safeguards pipeline metrics, runway stats, and curator velocity from public exposure -->
+    <!-- Where changes can be seen: On the Analytics dashboard before signing in -->
+    <main id="pageRoot" class="page-root is-auth-hidden" style="display:none !important">
       <div class="page-header">
         <div>
           <h1 class="page-title">Analytics</h1>

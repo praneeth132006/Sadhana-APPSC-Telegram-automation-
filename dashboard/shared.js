@@ -422,7 +422,10 @@ function friendlyAuthError(err) {
     'auth/popup-blocked': 'Your browser blocked the popup. Allow popups and try again.',
     'auth/too-many-requests': 'Too many attempts. Wait a minute and try again.',
     'auth/network-request-failed': 'Network error reaching Firebase. Check your connection.',
-    'auth/unauthorized-domain': 'This domain is not authorised in the Firebase console.',
+    /* What this property does: Provides specific instructions with the current hostname when domain is not whitelisted */
+    /* What it brings: Eliminates confusion when deploying to custom domains or preview URLs on Vercel */
+    /* Where changes can be seen: In the error box below the Sign In button */
+    'auth/unauthorized-domain': `This domain (${typeof window !== 'undefined' && window.location ? window.location.hostname : 'current'}) is not authorised in Firebase console. Add it under Authentication > Settings > Authorized domains.`,
     'auth/operation-not-allowed': 'That sign-in method is disabled in the Firebase console.'
   };
   return table[code] || (err && err.message) || 'Sign-in failed.';
@@ -593,19 +596,67 @@ export async function initDashboard({ page, onReady }) {
     const authGate = $('authGate');
 
     if (!user) {
+      /* What this line does: Clears the current active curator session reference */
+      /* What it brings: Revokes client access to signed API requests */
+      /* Where changes can be seen: Client-side session state */
       currentUser = null;
+      /* What this line does: Resets started flag to false */
+      /* What it brings: Allows re-running initialization when user signs in */
+      /* Where changes can be seen: Re-executing page onReady callback upon login */
       started = false;
+      /* What this line does: Makes the authentication gate modal visible with flex centering */
+      /* What it brings: Prompts visitor with sign-in controls */
+      /* Where changes can be seen: Center of the screen */
       if (authGate) authGate.style.display = 'flex';
-      if (pageRoot) pageRoot.style.display = 'none';
+      /* What this line does: Strictly hides pageRoot with !important priority and adds is-auth-hidden class */
+      /* What it brings: Prevents any dashboard content from peeking out or leaking behind the modal */
+      /* Where changes can be seen: Bottom or background of the screen */
+      if (pageRoot) {
+        /* What this line does: Applies inline display none with important priority */
+        /* What it brings: Overrides any CSS rules trying to display the workspace */
+        /* Where changes can be seen: Workspace panel container */
+        pageRoot.style.setProperty('display', 'none', 'important');
+        /* What this line does: Adds the is-auth-hidden CSS class to pageRoot */
+        /* What it brings: Redundant CSS-level concealment safeguard */
+        /* Where changes can be seen: DOM tree class list of #pageRoot */
+        pageRoot.classList.add('is-auth-hidden');
+      }
+      /* What this line does: Hides the authenticated user profile chip in the top navigation */
+      /* What it brings: Ensures navigation bar reflects logged-out state */
+      /* Where changes can be seen: Top right corner of header */
       const chip = $('userProfileChip');
       if (chip) chip.style.display = 'none';
+      /* What this line does: Dismisses the dark loading splash screen */
+      /* What it brings: Smooth transition to the login gate */
+      /* Where changes can be seen: Splash fade-out */
       dismissBootScreen();
       return;
     }
 
+    /* What this line does: Stores verified Firebase user session */
+    /* What it brings: Supplies auth tokens to all backend API calls */
+    /* Where changes can be seen: Active user credentials */
     currentUser = user;
+    /* What this line does: Hides the authentication gate modal */
+    /* What it brings: Dismisses login card upon successful sign-in */
+    /* Where changes can be seen: Center modal disappears */
     if (authGate) authGate.style.display = 'none';
-    if (pageRoot) pageRoot.style.display = '';
+    /* What this line does: Unhides pageRoot and removes is-auth-hidden class */
+    /* What it brings: Smoothly reveals the full curation workspace */
+    /* Where changes can be seen: Main dashboard panels appear */
+    if (pageRoot) {
+      /* What this line does: Clears inline display override */
+      /* What it brings: Restores normal layout flow */
+      /* Where changes can be seen: Main dashboard panels */
+      pageRoot.style.display = '';
+      /* What this line does: Removes is-auth-hidden class */
+      /* What it brings: Lifts CSS lockdown */
+      /* Where changes can be seen: Workspace visibility */
+      pageRoot.classList.remove('is-auth-hidden');
+    }
+    /* What this line does: Dismisses the dark loading splash screen */
+    /* What it brings: Smooth transition to dashboard content */
+    /* Where changes can be seen: Full workspace display */
     dismissBootScreen();
 
     const chip = $('userProfileChip');

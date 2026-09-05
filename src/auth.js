@@ -47,7 +47,14 @@ function getProjectId() {
  * have disabled self-registration in the Firebase console.
  */
 function getCuratorAllowlist() {
-  return String(process.env.CURATOR_EMAILS || '')
+  /* What this line does: Reads comma-separated email allowlist from CURATOR_EMAILS or ALLOWED_CURATOR_EMAILS */
+  /* What it brings: Seamless support across different cloud provider variable naming patterns */
+  /* Where changes can be seen: Backend curator authentication verification */
+  const raw = process.env.CURATOR_EMAILS || process.env.ALLOWED_CURATOR_EMAILS || '';
+  /* What this line does: Converts raw value to string, splits by commas, trims whitespace, lowercases, and discards empty values */
+  /* What it brings: Normalizes email list so user email matching is robust and case-insensitive */
+  /* Where changes can be seen: Authenticated curator check in verifyToken */
+  return String(raw)
     .split(',')
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);

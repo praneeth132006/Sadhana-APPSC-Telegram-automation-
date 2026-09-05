@@ -13,7 +13,10 @@
 </head>
 <body>
   <div class="app-container">
-    <main id="pageRoot" class="page-root" style="display:none">
+    <!-- What this element does: Question bank container, locked by default until curator is authenticated -->
+    <!-- What it brings: Shields stored questions from being viewed by unauthorized visitors -->
+    <!-- Where changes can be seen: On the Questions repository page before sign-in -->
+    <main id="pageRoot" class="page-root is-auth-hidden" style="display:none !important">
       <div class="page-header">
         <div>
           <h1 class="page-title">Question Bank</h1>
