@@ -234,9 +234,10 @@ const server = http.createServer(async function(req, res) {
           redirect: 'follow',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({
-            action: 'addQuestions',       // Action identifier for Apps Script doPost handler
-            subject: payload.subject,     // Target subject sheet tab
-            questions: payload.questions  // Array of question objects with 9 data fields
+            action: 'addQuestions',                                  // Action identifier for Apps Script doPost handler
+            subject: payload.subject,                                // Target subject sheet tab
+            questions: payload.questions,                            // Array of question objects
+            added_by: payload.added_by || payload.addedBy || ''      // Uploader user identity from Firebase Auth
           })
         });
 

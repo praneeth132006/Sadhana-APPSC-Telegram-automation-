@@ -15,9 +15,10 @@
 //     GOOGLE_SHEET_WEBAPP_URL=https://script.google.com/macros/s/.../exec
 // ============================================================================
 //
-// COLUMN LAYOUT (v2) — 10 columns per subject sheet:
-// A: Date | B: Newspaper | C: Question | D: Option A | E: Option B |
-// F: Option C | G: Option D | H: Correct Answer | I: Explanation | J: Posted
+// COLUMN LAYOUT (v3) — 14 columns per subject sheet:
+// A: S.No | B: Date | C: Newspaper | D: Question | E: Option A | F: Option B |
+// G: Option C | H: Option D | I: Correct Answer | J: Explanation | K: Posted |
+// L: Posted At | M: Added At | N: Added By
 // ============================================================================
 
 /**
@@ -130,6 +131,8 @@ function doPost(e) {
       const subject = payload.subject;
       // Extract array of question objects
       const questions = payload.questions || [];
+      // Extract user identification who uploaded the questions (from Firebase Auth)
+      const addedBy = payload.added_by || payload.addedBy || 'Dashboard User';
 
       // Validate that subject and questions exist
       if (!subject) {
@@ -139,8 +142,8 @@ function doPost(e) {
         return jsonResponse({ success: false, error: 'No questions provided in the payload' });
       }
 
-      // Append questions to the correct subject tab
-      const addedCount = appendQuestionsToSheet(subject, questions);
+      // Append questions to the correct subject tab with S.No, timestamps, and uploader email
+      const addedCount = appendQuestionsToSheet(subject, questions, addedBy);
       return jsonResponse({ success: true, addedCount: addedCount, message: addedCount + ' questions added to ' + subject });
     }
 
@@ -199,15 +202,16 @@ function fetchConfigFromSheet() {
 }
 
 /**
- * fetchUnpostedQuestions — Reads a subject sheet and returns questions where Posted (Col J, index 9) is blank.
- * v2 column layout: Date(0) | Newspaper(1) | Question(2) | OptA(3) | OptB(4) | OptC(5) | OptD(6) | Answer(7) | Explanation(8) | Posted(9)
+ * fetchUnpostedQuestions — Reads a subject sheet and returns questions where Posted (Col K, index 10) is not 'YES'.
+ * v3 column layout (14 cols):
+ * S.No(0) | Date(1) | Newspaper(2) | Question(3) | OptA(4) | OptB(5) | OptC(6) | OptD(7) | Answer(8) | Explanation(9) | Posted(10) | Posted At(11) | Added At(12) | Added By(13)
  *
  * @param {string} subject - Name of the subject tab (e.g., "Polity")
  * @param {number} limit - Maximum number of questions to return
  * @returns {Array<Object>} List of unposted questions with 1-based sheet row index
  */
 function fetchUnpostedQuestions(subject, limit) {
-  // Open active spreadsheet
+  // Open active spreadsheet container
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   // Locate the subject-specific sheet tab
   const sheet = ss.getSheetByName(subject);
@@ -217,39 +221,44 @@ function fetchUnpostedQuestions(subject, limit) {
 
   // Count total rows including header
   const lastRow = sheet.getLastRow();
-  // Return empty if only header or empty
+  // Return empty array if sheet contains only header or is empty
   if (lastRow <= 1) return [];
 
-  // Read all 10 columns (A through J) starting from row 2
-  const data = sheet.getRange(2, 1, lastRow - 1, 10).getValues();
+  // Read all 14 columns (A through N) starting from row 2
+  const data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
   // Array to collect unposted question objects
   const results = [];
 
   // Iterate over each data row checking posted status
   for (let i = 0; i < data.length; i++) {
     const row = data[i];
-    // Column J (index 9) holds the posted status timestamp
-    const postedValue = String(row[9] || '').trim();
+    // Column K (index 10) holds the posted status flag ('YES' or 'NO')
+    const postedValue = String(row[10] || '').trim();
 
-    // If "Posted" does not start with YES, this question is pending
-    if (!postedValue.toUpperCase().startsWith('YES')) {
-      // Column C (index 2) holds the question text
-      const qText = String(row[2] || '').trim();
+    // If "Posted" is not "YES", this question is pending
+    if (postedValue.toUpperCase() !== 'YES') {
+      // Column D (index 3) holds the question text
+      const qText = String(row[3] || '').trim();
       // Skip blank rows where question text is empty
       if (qText.length > 0) {
-        // Build structured question object with all metadata fields
+        // Build structured question object with all 14 metadata fields
         results.push({
-          date: String(row[0] || '').trim(),              // Column A: Publication date string
-          newspaper: String(row[1] || '').trim(),          // Column B: Source newspaper name
-          question_text: qText,                             // Column C: Full question prompt
-          option_a: String(row[3] || '').trim(),           // Column D: Option A text
-          option_b: String(row[4] || '').trim(),           // Column E: Option B text
-          option_c: String(row[5] || '').trim(),           // Column F: Option C text
-          option_d: String(row[6] || '').trim(),           // Column G: Option D text
-          correct_answer: String(row[7] || 'A').trim().toUpperCase(), // Column H: Correct option letter
-          explanation: String(row[8] || '').trim(),         // Column I: Detailed explanation
-          row_index: i,                                     // 0-based data row index within sheet
-          excel_row: i + 2                                  // 1-based sheet row number (header offset)
+          s_no: row[0],                                                   // Column A: Serial number
+          date: String(row[1] || '').trim(),                              // Column B: Publication date string (e.g. 05-09-2026)
+          newspaper: String(row[2] || '').trim(),                         // Column C: Source newspaper name
+          question_text: qText,                                           // Column D: Full question text
+          option_a: String(row[4] || '').trim(),                          // Column E: Option A text
+          option_b: String(row[5] || '').trim(),                          // Column F: Option B text
+          option_c: String(row[6] || '').trim(),                          // Column G: Option C text
+          option_d: String(row[7] || '').trim(),                          // Column H: Option D text
+          correct_answer: String(row[8] || 'A').trim().toUpperCase(),    // Column I: Correct option letter (A, B, C, D)
+          explanation: String(row[9] || '').trim(),                       // Column J: Detailed explanation
+          posted: String(row[10] || 'NO').trim(),                         // Column K: Posted status ('YES' or 'NO')
+          posted_at: String(row[11] || '').trim(),                        // Column L: Posted timestamp
+          added_at: String(row[12] || '').trim(),                         // Column M: Added timestamp
+          added_by: String(row[13] || '').trim(),                         // Column N: Added by user
+          row_index: i,                                                   // 0-based data row index within sheet
+          excel_row: i + 2                                                // 1-based sheet row number (header offset)
         });
 
         // Break once limit is reached to prevent fetching excess data
@@ -265,7 +274,7 @@ function fetchUnpostedQuestions(subject, limit) {
 }
 
 /**
- * markRowsAsPostedInSheet — Updates the "Posted" column (Column J, 10th col) with a timestamp.
+ * markRowsAsPostedInSheet — Updates "Posted" to 'YES' (Column K, col 11) and "Posted At" with timestamp (Column L, col 12).
  * Supports both 0-based row_index (0, 1...) and 1-based sheet row numbers (2, 3...).
  *
  * @param {string} subject - Name of the subject tab
@@ -281,17 +290,17 @@ function markRowsAsPostedInSheet(subject, rowIndices) {
     throw new Error('Sheet tab "' + subject + '" not found in spreadsheet.');
   }
 
-  // Format Indian Standard Time (IST) timestamp for posted status
-  const now = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'dd/MM/yyyy, hh:mm:ss a');
-  // Combine YES flag with human-readable timestamp
-  const postedStamp = 'YES | ' + now;
+  // Format Indian Standard Time (IST) timestamp for posted timestamp column
+  const now = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'dd-MM-yyyy, hh:mm:ss a') + ' IST';
 
-  // Update Column 10 (Column J — Posted) for each specified row
+  // Update Column 11 (Column K — Posted = 'YES') and Column 12 (Column L — Posted At = timestamp)
   for (let i = 0; i < rowIndices.length; i++) {
     // If index is less than 2, it's 0-based, so add 2 to convert to sheet row number
     const rowNumber = rowIndices[i] < 2 ? rowIndices[i] + 2 : rowIndices[i];
-    // Write the posted timestamp stamp to Column J (column 10)
-    sheet.getRange(rowNumber, 10).setValue(postedStamp);
+    // Write 'YES' to Column K (column 11)
+    sheet.getRange(rowNumber, 11).setValue('YES');
+    // Write formatted IST timestamp to Column L (column 12)
+    sheet.getRange(rowNumber, 12).setValue(now);
   }
 
   // Return the count of rows that were marked
@@ -338,16 +347,17 @@ function updateConfigInSheet(configData) {
 
 /**
  * appendQuestionsToSheet — Appends new questions from the web dashboard to a subject tab.
- * What it does: Takes an array of question objects and writes them as new rows in 10-column layout.
- * What it brings: Enables the web dashboard "Send to Sheet" button to batch-push questions.
+ * What it does: Takes an array of question objects and writes them as new rows in 14-column layout.
+ * What it brings: Enables the web dashboard "Send to Sheet" button to batch-push questions with S.No, timestamps, and uploader tracking.
  * Where changes can be seen: New rows appended at the bottom of the subject-specific Google Sheet tab.
  *
  * @param {string} subject - Name of the subject sheet tab (e.g., "Polity")
  * @param {Array<Object>} questions - Array of question objects with date, newspaper, question, options, answer, explanation
+ * @param {string} addedBy - Email or name of the user who pushed the questions (from Firebase Auth)
  * @returns {number} Count of questions successfully appended
  */
-function appendQuestionsToSheet(subject, questions) {
-  // Open active spreadsheet
+function appendQuestionsToSheet(subject, questions, addedBy) {
+  // Open active spreadsheet container
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   // Locate the subject-specific sheet tab
   const sheet = ss.getSheetByName(subject);
@@ -355,24 +365,44 @@ function appendQuestionsToSheet(subject, questions) {
     throw new Error('Sheet tab "' + subject + '" not found. Run setupSpreadsheet() first.');
   }
 
+  // Determine starting S.No based on current last row
+  const lastRow = sheet.getLastRow();
+  let startSNo = 1;
+  // If rows already exist past the header, calculate the next consecutive S.No
+  if (lastRow > 1) {
+    const lastSNoVal = sheet.getRange(lastRow, 1).getValue();
+    startSNo = (Number(lastSNoVal) || (lastRow - 1)) + 1;
+  }
+
+  // Format current IST timestamp for Added At column
+  const addedAt = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'dd-MM-yyyy, hh:mm:ss a') + ' IST';
+  // Standardize uploader email or display name
+  const uploader = String(addedBy || 'Dashboard User').trim();
+
   // Track number of successfully appended questions
   let addedCount = 0;
 
   // Iterate through each question object and append as a new row
   for (let i = 0; i < questions.length; i++) {
-    var q = questions[i];
-    // Build the 10-column row array matching the v2 column layout
-    var newRow = [
-      String(q.date || '').trim(),             // Column A: Date (e.g., "05-09-2026")
-      String(q.newspaper || '').trim(),        // Column B: Newspaper source name
-      String(q.question || '').trim(),         // Column C: Full question text
-      String(q.option_a || '').trim(),         // Column D: Option A
-      String(q.option_b || '').trim(),         // Column E: Option B
-      String(q.option_c || '').trim(),         // Column F: Option C
-      String(q.option_d || '').trim(),         // Column G: Option D
-      String(q.correct_answer || 'A').trim().toUpperCase(), // Column H: Correct answer letter
-      String(q.explanation || '').trim(),       // Column I: Detailed explanation
-      ''                                        // Column J: Posted — left blank for pending
+    const q = questions[i];
+    const sNo = startSNo + i;
+
+    // Build the 14-column row array matching the v3 column layout
+    const newRow = [
+      sNo,                                                    // Column A: S.No (Serial Number)
+      String(q.date || '').trim(),                            // Column B: Date (e.g., "05-09-2026")
+      String(q.newspaper || '').trim(),                       // Column C: Newspaper source name
+      String(q.question || '').trim(),                        // Column D: Full question text
+      String(q.option_a || '').trim(),                        // Column E: Option A
+      String(q.option_b || '').trim(),                        // Column F: Option B
+      String(q.option_c || '').trim(),                        // Column G: Option C
+      String(q.option_d || '').trim(),                        // Column H: Option D
+      String(q.correct_answer || 'A').trim().toUpperCase(),   // Column I: Correct answer letter (A, B, C, D)
+      String(q.explanation || '').trim(),                     // Column J: Detailed explanation
+      'NO',                                                   // Column K: Posted status ('NO' initially)
+      '',                                                     // Column L: Posted At (empty until posted)
+      addedAt,                                                // Column M: Added At timestamp (when pushed to sheet)
+      uploader                                                // Column N: Added By (who pushed the questions)
     ];
     // Append the row to the bottom of the sheet
     sheet.appendRow(newRow);
@@ -386,7 +416,7 @@ function appendQuestionsToSheet(subject, questions) {
 
 /**
  * fetchSummaryStats — Computes total, posted, and pending questions across all subjects.
- * v2: Reads 10 columns; Posted status is in Column J (index 9).
+ * v3: Reads 14 columns; Question text is in Column D (index 3), Posted status is in Column K (index 10).
  *
  * @returns {Array<Object>} Array of statistics objects per subject
  */
@@ -418,20 +448,20 @@ function fetchSummaryStats() {
       continue;
     }
 
-    // Read all 10 columns: question in Col C (index 2), posted in Col J (index 9)
-    var values = sheet.getRange(2, 1, lastRow - 1, 10).getValues();
+    // Read all 14 columns: question in Col D (index 3), posted in Col K (index 10)
+    var values = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
     var total = 0;
     var posted = 0;
 
     // Count valid questions and posted status
     for (var j = 0; j < values.length; j++) {
-      // Check Column C (index 2) for non-empty question text
-      var qText = String(values[j][2] || '').trim();
+      // Check Column D (index 3) for non-empty question text
+      var qText = String(values[j][3] || '').trim();
       if (qText.length > 0) {
         total++;
-        // Check Column J (index 9) for posted timestamp
-        var postedVal = String(values[j][9] || '').trim();
-        if (postedVal.toUpperCase().startsWith('YES')) {
+        // Check Column K (index 10) for posted status
+        var postedVal = String(values[j][10] || '').trim();
+        if (postedVal.toUpperCase() === 'YES') {
           posted++;
         }
       }
@@ -522,8 +552,23 @@ function setupSpreadsheet() {
   // Freeze the top header row in Config sheet
   configSheet.setFrozenRows(1);
 
-  // v2 question column headers — now 10 columns with Date and Newspaper at the start
-  const questionHeaders = ['Date', 'Newspaper', 'Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Answer', 'Explanation', 'Posted'];
+  // v3 question column headers — 14 columns with S.No, timestamps, and uploader tracking
+  const questionHeaders = [
+    'S.No',
+    'Date',
+    'Newspaper',
+    'Question',
+    'Option A',
+    'Option B',
+    'Option C',
+    'Option D',
+    'Correct Answer',
+    'Explanation',
+    'Posted',
+    'Posted At',
+    'Added At',
+    'Added By'
+  ];
 
   // Create or refresh each of the 16 subject question tabs
   for (let i = 0; i < configList.length; i++) {
@@ -538,24 +583,28 @@ function setupSpreadsheet() {
       subjSheet.clear();
     }
 
-    // Write the 10-column header row
+    // Write the 14-column header row
     subjSheet.appendRow(questionHeaders);
-    // Style header row with bold font and light background
+    // Style header row with bold font and clean light blue-gray background
     subjSheet.getRange(1, 1, 1, questionHeaders.length).setFontWeight('bold').setBackground('#F0F4F8');
     // Freeze the top header row for easy scrolling
     subjSheet.setFrozenRows(1);
 
-    // Set column widths for comfortable viewing
-    subjSheet.setColumnWidth(1, 120);   // Date
-    subjSheet.setColumnWidth(2, 150);   // Newspaper
-    subjSheet.setColumnWidth(3, 400);   // Question
-    subjSheet.setColumnWidth(4, 200);   // Option A
-    subjSheet.setColumnWidth(5, 200);   // Option B
-    subjSheet.setColumnWidth(6, 200);   // Option C
-    subjSheet.setColumnWidth(7, 200);   // Option D
-    subjSheet.setColumnWidth(8, 120);   // Correct Answer
-    subjSheet.setColumnWidth(9, 350);   // Explanation
-    subjSheet.setColumnWidth(10, 200);  // Posted
+    // Set column widths for optimal readability
+    subjSheet.setColumnWidth(1, 70);    // S.No
+    subjSheet.setColumnWidth(2, 120);   // Date
+    subjSheet.setColumnWidth(3, 150);   // Newspaper
+    subjSheet.setColumnWidth(4, 400);   // Question
+    subjSheet.setColumnWidth(5, 200);   // Option A
+    subjSheet.setColumnWidth(6, 200);   // Option B
+    subjSheet.setColumnWidth(7, 200);   // Option C
+    subjSheet.setColumnWidth(8, 200);   // Option D
+    subjSheet.setColumnWidth(9, 120);   // Correct Answer
+    subjSheet.setColumnWidth(10, 350);  // Explanation
+    subjSheet.setColumnWidth(11, 90);   // Posted (YES/NO)
+    subjSheet.setColumnWidth(12, 180);  // Posted At
+    subjSheet.setColumnWidth(13, 180);  // Added At
+    subjSheet.setColumnWidth(14, 220);  // Added By
   }
 
   // Remove the default blank "Sheet1" tab if it exists
@@ -565,5 +614,5 @@ function setupSpreadsheet() {
   }
 
   // Log completion message in Apps Script execution log
-  Logger.log('✅ Spreadsheet setup complete! Config and 16 subject tabs created with v2 (10-column) layout.');
+  Logger.log('✅ Spreadsheet setup complete! Config and 16 subject tabs created with v3 (14-column) layout.');
 }

@@ -1,61 +1,95 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <!-- Page title shown in browser tab -->
+  <!-- Character encoding for standard UTF-8 text support -->
   <meta charset="UTF-8">
+  <!-- Responsive viewport configuration for desktop and mobile displays -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Page title shown in the browser tab -->
   <title>Sadhana APPSC — Question Dashboard</title>
-  <!-- Meta description for SEO -->
-  <meta name="description" content="Dashboard to manage and push APPSC quiz questions to Google Sheets for Telegram automation">
-  <!-- Import Google Fonts — Inter for clean, modern typography -->
+  <!-- Search engine meta description -->
+  <meta name="description" content="Dashboard to manage, edit, and push APPSC quiz questions to Google Sheets for Telegram automation with Firebase Authentication">
+  <!-- Preconnect to Google Fonts for accelerated font loading -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Import Inter for UI typography and JetBrains Mono for code/JSON -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <!-- Load external CSS stylesheet for all dashboard styling -->
+  <!-- Link external stylesheet for glassmorphic dark theme and vertical card layout -->
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <!-- ========================================================================
-       Main Application Container — holds the entire single-page dashboard
+       Main Application Container — wraps the entire dashboard interface
        ======================================================================== -->
   <div class="app-container" id="appContainer">
 
     <!-- ====================================================================
-         Top Navigation Bar — branding + Google Sheet URL config
+         Top Navigation Bar — branding, Sheet API config & Firebase Auth
          ==================================================================== -->
     <header class="top-bar">
-      <!-- App brand name and logo area -->
+      <!-- App branding area with title and subtitle badge -->
       <div class="brand">
         <h1 class="brand-title">Sadhana APPSC</h1>
         <span class="brand-subtitle">Question Dashboard</span>
       </div>
-      <!-- Google Sheet Web App URL configuration field -->
-      <div class="sheet-url-config">
-        <label for="sheetUrl" class="config-label">Sheet API URL</label>
-        <input type="url" id="sheetUrl" class="config-input"
-               placeholder="https://script.google.com/macros/s/.../exec"
-               title="Paste your Google Apps Script Web App URL here">
-        <!-- Visual indicator for connection status -->
-        <span id="connectionStatus" class="status-dot offline" title="Not connected"></span>
+
+      <!-- Right controls container: Sheet API URL config and User Authentication -->
+      <div class="top-controls">
+        <!-- Google Sheets Web App URL input configuration with status indicator -->
+        <div class="sheet-url-config">
+          <label for="sheetUrl" class="config-label">Sheet API URL</label>
+          <input type="url" id="sheetUrl" class="config-input"
+                 placeholder="https://script.google.com/macros/s/.../exec"
+                 title="Paste your Google Apps Script Web App URL ending in /exec">
+          <!-- Live connection indicator dot (green=online, yellow=loading, red=offline) -->
+          <span id="connectionStatus" class="status-dot offline" title="Not connected"></span>
+        </div>
+
+        <!-- Firebase Authentication Section: Sign In button or logged-in User profile -->
+        <div class="user-auth-section" id="userAuthSection">
+          <!-- Sign In trigger button shown when logged out -->
+          <button id="openAuthBtn" class="btn btn-auth" title="Sign in to authenticate question submissions">
+            <span class="auth-btn-icon">🔑</span>
+            <span class="auth-btn-text">Sign In</span>
+          </button>
+
+          <!-- User profile chip shown when user is authenticated -->
+          <div id="userProfileChip" class="user-profile-chip" style="display: none;">
+            <!-- User avatar with image or initial letter -->
+            <div class="user-avatar" id="userAvatar">U</div>
+            <!-- User details container -->
+            <div class="user-info">
+              <span class="user-email" id="userEmail">user@example.com</span>
+              <span class="user-role-badge">Verified</span>
+            </div>
+            <!-- Sign out button -->
+            <button id="signOutBtn" class="btn-signout" title="Sign out of your account">Sign Out</button>
+          </div>
+        </div>
       </div>
     </header>
 
     <!-- ====================================================================
-         Main Content Area — split into JSON input panel and card output panel
+         Main Content Area — Split view with JSON Input and Vertical Cards
          ==================================================================== -->
     <main class="main-content">
 
       <!-- ================================================================
-           LEFT PANEL: JSON Input & Controls
+           LEFT PANEL: JSON Input & Batch Configuration
            ================================================================ -->
       <section class="input-panel" id="inputPanel">
-        <h2 class="panel-title">Paste JSON Questions</h2>
+        <div class="panel-header">
+          <h2 class="panel-title">Paste JSON Questions</h2>
+          <button id="sampleBtn" class="btn btn-sm btn-ghost" title="Load sample APPSC question JSON">
+            Load Sample JSON
+          </button>
+        </div>
 
-        <!-- Row of metadata fields above the JSON textarea -->
+        <!-- Row of batch metadata fields applied across questions -->
         <div class="meta-fields">
-          <!-- Subject dropdown populated with all 16 APPSC subjects -->
+          <!-- Subject selector dropdown populated with all 16 APPSC subjects -->
           <div class="field-group">
-            <label for="subjectSelect">Subject</label>
+            <label for="subjectSelect">Target Subject</label>
             <select id="subjectSelect" class="field-select">
               <option value="">— Select Subject —</option>
               <option value="History">History</option>
@@ -76,85 +110,94 @@
               <option value="Disaster Management">Disaster Management</option>
             </select>
           </div>
-          <!-- Default date field applied to all questions unless overridden per-card -->
+          <!-- Default date input field -->
           <div class="field-group">
-            <label for="defaultDate">Date</label>
+            <label for="defaultDate">Default Date</label>
             <input type="text" id="defaultDate" class="field-input" placeholder="e.g., 05-09-2026">
           </div>
-          <!-- Default newspaper field applied to all questions unless overridden per-card -->
+          <!-- Default newspaper input field -->
           <div class="field-group">
-            <label for="defaultNewspaper">Newspaper</label>
+            <label for="defaultNewspaper">Default Newspaper</label>
             <input type="text" id="defaultNewspaper" class="field-input" placeholder="e.g., The Hindu">
           </div>
         </div>
 
-        <!-- Large JSON textarea for pasting question batches -->
+        <!-- Large JSON textarea with monospace font -->
         <textarea id="jsonInput" class="json-textarea" spellcheck="false"
                   placeholder='Paste your questions JSON here...
 
-Example format:
+Supported formats:
+1. Object with questions array:
 {
-  "subject": "Polity",
+  "subject": "Environment",
   "date": "05-09-2026",
   "newspaper": "The Hindu",
   "questions": [
     {
-      "question": "Your question text here?",
-      "option_a": "Option A",
-      "option_b": "Option B",
-      "option_c": "Option C",
-      "option_d": "Option D",
-      "correct_answer": "B",
-      "explanation": "Explanation here."
+      "question": "Question text here?",
+      "option_a": "1 and 2 only",
+      "option_b": "2 and 3 only",
+      "option_c": "1 and 3 only",
+      "option_d": "1, 2, and 3",
+      "correct_answer": "D",
+      "explanation": "Detailed explanation here."
     }
   ]
 }
 
-Or paste just an array of questions:
+2. Plain array of question objects:
 [
   {
-    "question": "...",
+    "question": "Question text...",
     "option_a": "...",
-    ...
+    "option_b": "...",
+    "option_c": "...",
+    "option_d": "...",
+    "correct_answer": "A",
+    "explanation": "..."
   }
 ]'></textarea>
 
-        <!-- Action buttons row -->
+        <!-- Primary action buttons for parsing and clearing -->
         <div class="action-buttons">
-          <!-- Parse JSON and generate editable cards -->
-          <button id="parseBtn" class="btn btn-primary" title="Parse JSON and generate question cards">
-            Parse & Preview
+          <!-- Parse JSON and render vertical question cards -->
+          <button id="parseBtn" class="btn btn-primary" title="Parse JSON and generate vertical question cards">
+            🔍 Parse &amp; Preview
           </button>
-          <!-- Clear JSON textarea and all cards -->
+          <!-- Reset all inputs and cards -->
           <button id="clearBtn" class="btn btn-ghost" title="Clear all inputs and cards">
             Clear All
           </button>
         </div>
 
-        <!-- Error display area for invalid JSON or missing fields -->
+        <!-- Parse error message display container -->
         <div id="parseError" class="error-box" style="display:none;"></div>
       </section>
 
       <!-- ================================================================
-           RIGHT PANEL: Question Cards (rendered from parsed JSON)
+           RIGHT PANEL: Question Cards (Vertical Layout)
            ================================================================ -->
       <section class="cards-panel" id="cardsPanel">
+        <!-- Sticky cards header bar with counter and Push to Sheet action -->
         <div class="cards-header">
-          <h2 class="panel-title">Question Cards <span id="cardCount" class="card-count">(0)</span></h2>
-          <!-- Send to Sheet button — pushes all visible cards to Google Sheets -->
+          <div class="cards-header-info">
+            <h2 class="panel-title">Question Cards <span id="cardCount" class="card-count">(0)</span></h2>
+            <span class="panel-subtitle">Vertical card view &bull; Click any option radio to select correct answer</span>
+          </div>
+          <!-- Send to Google Sheet button -->
           <button id="sendToSheetBtn" class="btn btn-send" disabled
                   title="Push all question cards to Google Sheets">
-            Send to Sheet
+            🚀 Send to Sheet
           </button>
         </div>
 
-        <!-- Scrollable container for dynamically generated question cards -->
-        <div id="cardsContainer" class="cards-container">
-          <!-- Placeholder shown when no cards exist -->
+        <!-- Scrollable container holding the vertical question cards -->
+        <div id="cardsContainer" class="cards-container vertical-flow">
+          <!-- Empty state placeholder when no cards are loaded -->
           <div class="empty-state" id="emptyState">
             <div class="empty-icon">📋</div>
-            <p>Paste JSON on the left and click <strong>Parse & Preview</strong></p>
-            <p class="empty-hint">Questions will appear here as editable cards</p>
+            <p>Paste JSON on the left and click <strong>Parse &amp; Preview</strong></p>
+            <p class="empty-hint">Questions will appear here as rich, editable vertical cards</p>
           </div>
         </div>
       </section>
@@ -162,13 +205,69 @@ Or paste just an array of questions:
     </main>
 
     <!-- ====================================================================
-         Toast Notification Container — positioned bottom-right
+         Firebase Authentication Modal (Google Sign In & Email/Password)
+         ==================================================================== -->
+    <div id="authModal" class="modal-backdrop" style="display: none;">
+      <div class="modal-card">
+        <!-- Close button to dismiss modal -->
+        <button id="closeAuthModal" class="modal-close-btn" title="Close modal">&times;</button>
+        
+        <!-- Modal title and subtitle -->
+        <div class="modal-header">
+          <div class="modal-icon">🔐</div>
+          <h3 class="modal-title">Sign In to Dashboard</h3>
+          <p class="modal-subtitle">Authenticate with Google or Email to upload questions</p>
+        </div>
+
+        <!-- Google 1-Click Sign-In Button -->
+        <button id="googleSignInBtn" class="btn btn-google" title="Sign in with your Google account">
+          <svg class="google-icon" viewBox="0 0 24 24" width="20" height="20">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+          </svg>
+          <span>Continue with Google</span>
+        </button>
+
+        <!-- Visual divider between Google and Email authentication -->
+        <div class="modal-divider">
+          <span>or with email</span>
+        </div>
+
+        <!-- Tab switcher between Sign In and Register -->
+        <div class="auth-tabs">
+          <button id="tabSignIn" class="auth-tab active">Sign In</button>
+          <button id="tabRegister" class="auth-tab">Register</button>
+        </div>
+
+        <!-- Email and Password form -->
+        <form id="authForm" class="auth-form" onsubmit="return false;">
+          <div class="auth-field">
+            <label for="authEmail">Email Address</label>
+            <input type="email" id="authEmail" class="field-input" placeholder="name@example.com" required autocomplete="email">
+          </div>
+          <div class="auth-field">
+            <label for="authPassword">Password</label>
+            <input type="password" id="authPassword" class="field-input" placeholder="••••••••" required autocomplete="current-password">
+          </div>
+          <!-- Submit button dynamically labeled Sign In or Create Account -->
+          <button type="submit" id="authSubmitBtn" class="btn btn-primary btn-block">Sign In</button>
+        </form>
+
+        <!-- Authentication error feedback text container -->
+        <div id="authError" class="auth-error-text" style="display: none;"></div>
+      </div>
+    </div>
+
+    <!-- ====================================================================
+         Toast Notification Container — fixed at bottom-right
          ==================================================================== -->
     <div id="toastContainer" class="toast-container"></div>
 
   </div>
 
-  <!-- Load the dashboard JavaScript application logic -->
-  <script src="app.js"></script>
+  <!-- Load dashboard JavaScript application logic as an ES module for modular Firebase imports -->
+  <script type="module" src="app.js"></script>
 </body>
 </html>
