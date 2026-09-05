@@ -142,7 +142,6 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
 }
 
 /**
-/**
  * showStatsOnly — Prints a summary of question counts per subject.
  * Fetches stats asynchronously from the active data source (Google Sheets or Excel).
  */

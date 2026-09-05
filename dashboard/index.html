@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Page title shown in browser tab -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sadhana APPSC — Question Dashboard</title>
+  <!-- Meta description for SEO -->
+  <meta name="description" content="Dashboard to manage and push APPSC quiz questions to Google Sheets for Telegram automation">
+  <!-- Import Google Fonts — Inter for clean, modern typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- Load external CSS stylesheet for all dashboard styling -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ========================================================================
+       Main Application Container — holds the entire single-page dashboard
+       ======================================================================== -->
+  <div class="app-container" id="appContainer">
+
+    <!-- ====================================================================
+         Top Navigation Bar — branding + Google Sheet URL config
+         ==================================================================== -->
+    <header class="top-bar">
+      <!-- App brand name and logo area -->
+      <div class="brand">
+        <h1 class="brand-title">Sadhana APPSC</h1>
+        <span class="brand-subtitle">Question Dashboard</span>
+      </div>
+      <!-- Google Sheet Web App URL configuration field -->
+      <div class="sheet-url-config">
+        <label for="sheetUrl" class="config-label">Sheet API URL</label>
+        <input type="url" id="sheetUrl" class="config-input"
+               placeholder="https://script.google.com/macros/s/.../exec"
+               title="Paste your Google Apps Script Web App URL here">
+        <!-- Visual indicator for connection status -->
+        <span id="connectionStatus" class="status-dot offline" title="Not connected"></span>
+      </div>
+    </header>
+
+    <!-- ====================================================================
+         Main Content Area — split into JSON input panel and card output panel
+         ==================================================================== -->
+    <main class="main-content">
+
+      <!-- ================================================================
+           LEFT PANEL: JSON Input & Controls
+           ================================================================ -->
+      <section class="input-panel" id="inputPanel">
+        <h2 class="panel-title">Paste JSON Questions</h2>
+
+        <!-- Row of metadata fields above the JSON textarea -->
+        <div class="meta-fields">
+          <!-- Subject dropdown populated with all 16 APPSC subjects -->
+          <div class="field-group">
+            <label for="subjectSelect">Subject</label>
+            <select id="subjectSelect" class="field-select">
+              <option value="">— Select Subject —</option>
+              <option value="History">History</option>
+              <option value="AP History">AP History</option>
+              <option value="Geography">Geography</option>
+              <option value="AP Geography">AP Geography</option>
+              <option value="Economy">Economy</option>
+              <option value="AP Economy">AP Economy</option>
+              <option value="Polity">Polity</option>
+              <option value="Society">Society</option>
+              <option value="Current Affairs">Current Affairs</option>
+              <option value="Science and Technology">Science and Technology</option>
+              <option value="Biology">Biology</option>
+              <option value="Chemistry">Chemistry</option>
+              <option value="Physics">Physics</option>
+              <option value="Environment">Environment</option>
+              <option value="General Studies">General Studies</option>
+              <option value="Disaster Management">Disaster Management</option>
+            </select>
+          </div>
+          <!-- Default date field applied to all questions unless overridden per-card -->
+          <div class="field-group">
+            <label for="defaultDate">Date</label>
+            <input type="text" id="defaultDate" class="field-input" placeholder="e.g., 05-09-2026">
+          </div>
+          <!-- Default newspaper field applied to all questions unless overridden per-card -->
+          <div class="field-group">
+            <label for="defaultNewspaper">Newspaper</label>
+            <input type="text" id="defaultNewspaper" class="field-input" placeholder="e.g., The Hindu">
+          </div>
+        </div>
+
+        <!-- Large JSON textarea for pasting question batches -->
+        <textarea id="jsonInput" class="json-textarea" spellcheck="false"
+                  placeholder='Paste your questions JSON here...
+
+Example format:
+{
+  "subject": "Polity",
+  "date": "05-09-2026",
+  "newspaper": "The Hindu",
+  "questions": [
+    {
+      "question": "Your question text here?",
+      "option_a": "Option A",
+      "option_b": "Option B",
+      "option_c": "Option C",
+      "option_d": "Option D",
+      "correct_answer": "B",
+      "explanation": "Explanation here."
+    }
+  ]
+}
+
+Or paste just an array of questions:
+[
+  {
+    "question": "...",
+    "option_a": "...",
+    ...
+  }
+]'></textarea>
+
+        <!-- Action buttons row -->
+        <div class="action-buttons">
+          <!-- Parse JSON and generate editable cards -->
+          <button id="parseBtn" class="btn btn-primary" title="Parse JSON and generate question cards">
+            Parse & Preview
+          </button>
+          <!-- Clear JSON textarea and all cards -->
+          <button id="clearBtn" class="btn btn-ghost" title="Clear all inputs and cards">
+            Clear All
+          </button>
+        </div>
+
+        <!-- Error display area for invalid JSON or missing fields -->
+        <div id="parseError" class="error-box" style="display:none;"></div>
+      </section>
+
+      <!-- ================================================================
+           RIGHT PANEL: Question Cards (rendered from parsed JSON)
+           ================================================================ -->
+      <section class="cards-panel" id="cardsPanel">
+        <div class="cards-header">
+          <h2 class="panel-title">Question Cards <span id="cardCount" class="card-count">(0)</span></h2>
+          <!-- Send to Sheet button — pushes all visible cards to Google Sheets -->
+          <button id="sendToSheetBtn" class="btn btn-send" disabled
+                  title="Push all question cards to Google Sheets">
+            Send to Sheet
+          </button>
+        </div>
+
+        <!-- Scrollable container for dynamically generated question cards -->
+        <div id="cardsContainer" class="cards-container">
+          <!-- Placeholder shown when no cards exist -->
+          <div class="empty-state" id="emptyState">
+            <div class="empty-icon">📋</div>
+            <p>Paste JSON on the left and click <strong>Parse & Preview</strong></p>
+            <p class="empty-hint">Questions will appear here as editable cards</p>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- ====================================================================
+         Toast Notification Container — positioned bottom-right
+         ==================================================================== -->
+    <div id="toastContainer" class="toast-container"></div>
+
+  </div>
+
+  <!-- Load the dashboard JavaScript application logic -->
+  <script src="app.js"></script>
+</body>
+</html>

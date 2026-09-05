@@ -45,6 +45,81 @@ function escapeHtml(text) {
 }
 
 /**
+ * MONTH_NAMES — Short 3-letter month name lookup for hashtag date formatting.
+ * Index 0 = January, Index 11 = December.
+ * Used by formatDateHashtag() to convert numeric months to readable abbreviated names.
+ */
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * formatDateHashtag — Converts a date string to a Telegram-clickable hashtag.
+ * What it does: Parses "05-09-2026" (DD-MM-YYYY) and converts it to "#Sep05_2026".
+ * What it brings: Users can tap the hashtag in Telegram to find all questions from that date.
+ * Where changes can be seen: Appended as a footer below each quiz poll in Telegram topics.
+ *
+ * @param {string} dateStr — Date string in DD-MM-YYYY, YYYY-MM-DD, or similar format
+ * @returns {string} Formatted hashtag like "#Sep05_2026", or empty string if invalid
+ */
+function formatDateHashtag(dateStr) {
+  // Return empty if no date provided
+  if (!dateStr || !dateStr.trim()) return '';
+  // Clean the input string
+  const clean = dateStr.trim();
+
+  // Try DD-MM-YYYY or DD/MM/YYYY format first (most common in Indian context)
+  const ddmmyyyy = clean.match(/^(\d{1,2})[\-\/](\d{1,2})[\-\/](\d{4})$/);
+  if (ddmmyyyy) {
+    const day = ddmmyyyy[1].padStart(2, '0');          // Zero-pad day to 2 digits
+    const monthIndex = parseInt(ddmmyyyy[2], 10) - 1;  // Convert 1-based month to 0-based index
+    const year = ddmmyyyy[3];                           // Full 4-digit year
+    // Validate month index is within range
+    if (monthIndex >= 0 && monthIndex < 12) {
+      return '#' + MONTH_NAMES[monthIndex] + day + '_' + year; // e.g., #Sep05_2026
+    }
+  }
+
+  // Try YYYY-MM-DD format (ISO standard)
+  const yyyymmdd = clean.match(/^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})$/);
+  if (yyyymmdd) {
+    const year = yyyymmdd[1];
+    const monthIndex = parseInt(yyyymmdd[2], 10) - 1;
+    const day = yyyymmdd[3].padStart(2, '0');
+    if (monthIndex >= 0 && monthIndex < 12) {
+      return '#' + MONTH_NAMES[monthIndex] + day + '_' + year;
+    }
+  }
+
+  // Fallback: remove all non-alphanumeric characters and prepend #
+  const fallback = clean.replace(/[^a-zA-Z0-9]/g, '');
+  return fallback ? '#' + fallback : '';
+}
+
+/**
+ * formatNewspaperHashtag — Converts a newspaper name to a Telegram-clickable hashtag.
+ * What it does: Removes spaces and special characters, joining words in PascalCase.
+ * What it brings: Users can tap the hashtag in Telegram to find all questions from that newspaper.
+ * Where changes can be seen: Appended as a footer below each quiz poll in Telegram topics.
+ *
+ * Examples: "The Hindu" → "#TheHindu", "Indian Express" → "#IndianExpress", "Eenadu" → "#Eenadu"
+ *
+ * @param {string} name — Newspaper name string
+ * @returns {string} Formatted hashtag like "#TheHindu", or empty string if invalid
+ */
+function formatNewspaperHashtag(name) {
+  // Return empty if no name provided
+  if (!name || !name.trim()) return '';
+  // Split into words, capitalize first letter of each, join without spaces
+  const words = name.trim().split(/\s+/);
+  const pascal = words.map(function(w) {
+    // Capitalize first letter, keep rest as-is
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }).join('');
+  // Remove any remaining non-alphanumeric characters (e.g., periods, hyphens)
+  const clean = pascal.replace(/[^a-zA-Z0-9]/g, '');
+  return clean ? '#' + clean : '';
+}
+
+/**
  * testConnection — Verifies the bot token is valid and the group is accessible.
  * Prints bot info and group info to the console.
  *
@@ -195,6 +270,25 @@ async function sendQuizPoll(threadId, question) {
     await bot.sendMessage(groupId, spoilerMessage, {
       message_thread_id: threadId,
       parse_mode: 'HTML'
+    });
+  }
+
+  // ---- Hashtag Footer: Date and Newspaper metadata ----
+  // Format date and newspaper as clickable Telegram hashtags for filtering
+  const dateTag = formatDateHashtag(question.date || '');         // e.g., #Sep05_2026
+  const newspaperTag = formatNewspaperHashtag(question.newspaper || ''); // e.g., #TheHindu
+
+  // Only send hashtag footer if at least one tag is available
+  if (dateTag || newspaperTag) {
+    // Build the hashtag footer line with calendar and newspaper icons
+    const parts = [];                                               // Array to collect non-empty tag parts
+    if (dateTag) parts.push('📅 ' + dateTag);                      // Add date hashtag with calendar emoji
+    if (newspaperTag) parts.push('📰 ' + newspaperTag);            // Add newspaper hashtag with newspaper emoji
+    const hashtagFooter = parts.join('  ');                        // Join tags with double space separator
+
+    // Send the hashtag footer as a separate message in the topic thread
+    await bot.sendMessage(groupId, hashtagFooter, {
+      message_thread_id: threadId                                   // Target the same forum topic
     });
   }
 
