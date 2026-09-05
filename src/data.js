@@ -68,10 +68,12 @@ async function writeConfig(configData) {
  * @param {number} count — Number of questions to retrieve
  * @returns {Promise<Array<Object>>} Array of unposted question objects
  */
-async function getUnpostedQuestions(subject, count) {
+async function getUnpostedQuestions(subject, count, requireApproved = false) {
   // If Google Sheets is enabled, delegate to sheets.getUnpostedQuestions()
+  // requireApproved restricts the batch to rows whose Status is Approved or
+  // Scheduled, so a Draft or Rejected question can never reach the channel.
   if (isGoogleSheetsEnabled()) {
-    return await sheets.getUnpostedQuestions(subject, count);
+    return await sheets.getUnpostedQuestions(subject, count, requireApproved);
   }
   // Otherwise, delegate to local excel.getUnpostedQuestions()
   return excel.getUnpostedQuestions(subject, count);
@@ -86,12 +88,15 @@ async function getUnpostedQuestions(subject, count) {
  * @param {string} subject — Subject name
  * @param {Array<number>} rowIndices — Row indices to mark as posted
  * @param {string|number} [messageId] — Optional Telegram message ID returned by bot API
+ * @param {string|number} [threadId] — Optional forum topic thread the poll went to
+ * @param {Object} [pollIds] — Optional { sheetRowNumber: pollId } map
  * @returns {Promise<number>} Number of marked rows
  */
-async function markAsPosted(subject, rowIndices, messageId = null) {
-  // If Google Sheets is enabled, delegate to sheets.markAsPosted() with optional messageId
+async function markAsPosted(subject, rowIndices, messageId = null, threadId = null, pollIds = null) {
+  // If Google Sheets is enabled, record the full posting trail: timestamp,
+  // status, thread id, message id, poll id and repost count.
   if (isGoogleSheetsEnabled()) {
-    return await sheets.markAsPosted(subject, rowIndices, messageId);
+    return await sheets.markAsPosted(subject, rowIndices, messageId, threadId, pollIds);
   }
   // Otherwise, delegate to local excel.markAsPosted()
   return excel.markAsPosted(subject, rowIndices);

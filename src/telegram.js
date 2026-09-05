@@ -163,6 +163,43 @@ async function testConnection() {
 }
 
 /**
+ * getBotInfo — Returns structured bot and group details for the dashboard.
+ * What it does: Calls getMe and getChat and returns the results as an object
+ * instead of printing them, so the Health and Automation dashboards can show
+ * the real values rather than a bare true/false.
+ * What it brings: A machine-readable health probe alongside the CLI-oriented
+ * testConnection().
+ * Where changes can be seen: The Telegram tiles on /health.html and /automation.html.
+ *
+ * @returns {Promise<Object>} { username, firstName, groupTitle, groupType, isForum }
+ * @throws {Error} When the bot is uninitialised or Telegram rejects the call
+ */
+async function getBotInfo() {
+  if (!bot) throw new Error('Bot not initialized');
+
+  // Verify the token is valid and identify the bot.
+  const botInfo = await bot.getMe();
+
+  // Group access is a separate permission, so a failure here is reported
+  // without hiding the fact that the token itself is fine.
+  let chat = null;
+  try {
+    chat = await bot.getChat(groupId);
+  } catch (err) {
+    chat = null;
+  }
+
+  return {
+    username: botInfo.username,
+    firstName: botInfo.first_name,
+    groupTitle: chat ? chat.title : null,
+    groupType: chat ? chat.type : null,
+    isForum: chat ? Boolean(chat.is_forum) : false,
+    groupReachable: Boolean(chat)
+  };
+}
+
+/**
  * createForumTopic — Creates a new forum topic (thread) in the supergroup.
  * Each APPSC subject gets its own topic so questions are organized.
  *
@@ -405,6 +442,7 @@ async function detectGroupId() {
 
 // Export all functions for use by send.js, setup.js, and scheduler.js
 module.exports = {
+  getBotInfo,
   init,
   testConnection,
   createForumTopic,

@@ -1,315 +1,879 @@
 // ============================================================================
-// Sadhana APPSC Question Dashboard — Local Server & API Proxy (server.js)
+// Sadhana APPSC — Dashboard server & API (server.js)
 // ============================================================================
-// What this file does:
-// 1. Serves the web dashboard static assets (HTML, CSS, JS) from the dashboard/ directory.
-// 2. Provides /api/config to automatically supply the Google Apps Script URL from .env.
-// 3. Provides /api/ping to check Google Apps Script connection health directly from Node.
-// 4. Provides /api/send to proxy question additions directly to Google Apps Script.
+// Serves the five dashboards out of dashboard/ and exposes the JSON API they
+// run on. It is the only process that holds secrets (the Telegram bot token and
+// the Sheets API token), so it is also the security boundary:
 //
-// What it brings:
-// - Completely eliminates browser CORS (Cross-Origin Resource Sharing) restrictions.
-// - Bypasses adblockers and browser extensions that interfere with googleusercontent.com.
-// - Auto-fills the Sheet API URL so users do not need to manually paste it every time.
+//   - Every mutating and data-reading endpoint requires a Firebase ID token
+//     that is verified server-side (src/auth.js). The browser-side login gate
+//     is cosmetic; this is the control that actually holds.
+//   - It binds to 127.0.0.1 by default, so nothing on the local network can
+//     reach it.
+//   - It sends no permissive CORS headers, so another origin cannot drive it
+//     from a page the curator happens to have open.
+//   - Callers cannot supply a URL to fetch. The Sheets endpoint comes from
+//     .env only, which closes the SSRF hole the previous /api/ping?url= had.
+//   - Request bodies are size capped and requests are rate limited.
 //
-// Where changes can be seen:
-// - Running `npm run dashboard` starts this server at http://localhost:3000.
-// - The dashboard UI loads instantly with green connection indicator and zero network errors.
+// Run with: npm run dashboard
 // ============================================================================
 
-// Load environment variables from .env file into process.env
 require('dotenv').config();
 
-// Import built-in Node.js HTTP module to create the local web server
 const http = require('http');
-// Import built-in Node.js File System module to read static dashboard files
 const fs = require('fs');
-// Import built-in Node.js Path module to resolve filesystem directory paths
+const fsp = require('fs/promises');
 const path = require('path');
-// Import built-in Node.js URL module to parse request URLs and query strings
-const url = require('url');
 
-// Define port for the dashboard local server (default: 3000)
-const PORT = process.env.PORT || 3000;
-// Define absolute directory path where dashboard frontend files reside
-const DASHBOARD_DIR = path.join(__dirname, 'dashboard');
+const sheets = require('./src/sheets');
+const auth = require('./src/auth');
+const telegram = require('./src/telegram');
 
-// MIME types dictionary mapping file extensions to HTTP Content-Type headers
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+const PORT = Number(process.env.PORT) || 3000;
+
+// Loopback by default. Set HOST=0.0.0.0 only if you understand that it exposes
+// an interface that can post to your Telegram channel to the whole network.
+const HOST = process.env.HOST || '127.0.0.1';
+
+const DASHBOARD_DIR = path.resolve(__dirname, 'dashboard');
+
+/** Largest JSON body we accept. A full batch of questions is far below this. */
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+/** Apps Script version these dashboards require. Older deployments lack the
+ *  analytics, browse and edit actions, so the UI warns instead of failing. */
+const REQUIRED_SHEET_VERSION = 'v5 (30 columns)';
+
+/** Rate limit: requests allowed per IP inside the window. */
+const RATE_LIMIT_MAX = 240;
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+
+/** Extensions we are willing to serve, mapped to their content types. */
 const MIME_TYPES = {
-  '.html': 'text/html; charset=utf-8',       // HTML documents
-  '.css': 'text/css; charset=utf-8',          // Stylesheets
-  '.js': 'text/javascript; charset=utf-8',    // Client-side scripts
-  '.json': 'application/json; charset=utf-8', // JSON data
-  '.png': 'image/png',                        // PNG images
-  '.svg': 'image/svg+xml'                     // SVG vector graphics
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2'
 };
 
+// ---------------------------------------------------------------------------
+// Rate limiting
+// ---------------------------------------------------------------------------
+
+/** Per-IP request counters: ip -> { count, resetAt }. */
+const rateBuckets = new Map();
+
 /**
- * sendJSON — Helper function to send standardized JSON responses.
- * What it does: Sets Content-Type to application/json, adds CORS headers, and sends stringified body.
- * What it brings: Uniform API response formatting across all dashboard endpoints.
- * Where changes can be seen: HTTP response headers and JSON payload returned to the browser.
+ * checkRateLimit — fixed-window counter per client address.
  *
- * @param {http.ServerResponse} res - Node HTTP response object
- * @param {number} statusCode - HTTP status code (e.g. 200, 400, 500)
- * @param {Object} data - JavaScript object to serialize as JSON
+ * @param {string} ip Remote address
+ * @returns {boolean} true when the request may proceed
  */
-function sendJSON(res, statusCode, data) {
-  // Set the HTTP response status code
-  res.statusCode = statusCode;
-  // Set Content-Type header to JSON with UTF-8 encoding
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  // Add CORS headers to allow local requests without browser blocking
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  // Allow common request headers in preflight or simple requests
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  // Allow GET, POST, and OPTIONS HTTP methods
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  // End response by writing the JSON stringified data
-  res.end(JSON.stringify(data));
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const bucket = rateBuckets.get(ip);
+
+  if (!bucket || now > bucket.resetAt) {
+    rateBuckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+  bucket.count++;
+  return bucket.count <= RATE_LIMIT_MAX;
+}
+
+// Drop expired buckets periodically so the map cannot grow without bound.
+const rateCleanup = setInterval(() => {
+  const now = Date.now();
+  for (const [ip, bucket] of rateBuckets) {
+    if (now > bucket.resetAt) rateBuckets.delete(ip);
+  }
+}, RATE_LIMIT_WINDOW_MS);
+rateCleanup.unref();
+
+// ---------------------------------------------------------------------------
+// Response helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * applySecurityHeaders — headers applied to every response.
+ * The CSP allowlists exactly the Google origins Firebase Auth needs and
+ * nothing else, so an injected script has nowhere to send data.
+ */
+function applySecurityHeaders(res) {
+  const projectId = auth.getProjectId();
+  const authFrames = projectId
+    ? `https://${projectId}.firebaseapp.com https://accounts.google.com`
+    : 'https://accounts.google.com';
+
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' https://www.gstatic.com https://apis.google.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: https://lh3.googleusercontent.com https://*.googleusercontent.com",
+    "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com",
+    `frame-src ${authFrames}`,
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join('; '));
+
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
 }
 
 /**
- * serveStaticFile — Reads and serves a file from the dashboard/ directory.
- * What it does: Maps incoming URL path to a local file in dashboard/ and streams it to the client.
- * What it brings: Serves index.html, style.css, app.js without needing external npm packages.
- * Where changes can be seen: Browser loading the dashboard interface at http://localhost:3000.
- *
- * @param {http.ServerResponse} res - Node HTTP response object
- * @param {string} filePath - Absolute path to the file to serve
+ * sendJSON — writes a JSON response.
+ * Deliberately sends no Access-Control-Allow-Origin: the dashboard is served
+ * from this same origin, so it needs none, and omitting it means no other site
+ * can read our responses.
  */
-function serveStaticFile(res, filePath) {
-  // Extract file extension to determine the appropriate MIME type
-  const ext = path.extname(filePath).toLowerCase();
-  // Lookup MIME type or fallback to generic octet-stream binary
-  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+function sendJSON(res, statusCode, data) {
+  const body = JSON.stringify(data);
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Length', Buffer.byteLength(body));
+  res.end(body);
+}
 
-  // Read file asynchronously from disk
-  fs.readFile(filePath, function(err, content) {
-    // Check if file read failed (e.g. file does not exist)
-    if (err) {
-      // If file not found, return 404 error response
-      res.statusCode = 404;
-      // Set plain text error message
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      // End response with not found text
-      res.end('404 Not Found');
+/** Sends a plain-text error without leaking internals. */
+function sendText(res, statusCode, message) {
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.end(message);
+}
+
+/**
+ * readJsonBody — buffers and parses a request body, aborting if it is too big.
+ *
+ * @param {http.IncomingMessage} req
+ * @returns {Promise<Object>} Parsed JSON body
+ */
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length'] || 0);
+    if (declared > MAX_BODY_BYTES) {
+      reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
       return;
     }
-    // Set 200 OK status code for successful file retrieval
-    res.statusCode = 200;
-    // Set matching Content-Type header
-    res.setHeader('Content-Type', contentType);
-    // Send file contents to client
-    res.end(content);
+
+    const chunks = [];
+    let received = 0;
+
+    req.on('data', (chunk) => {
+      received += chunk.length;
+      // Enforce the cap on the actual stream too — Content-Length can lie.
+      if (received > MAX_BODY_BYTES) {
+        reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on('error', reject);
+
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw.trim()) {
+        resolve({});
+        return;
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          reject(Object.assign(new Error('Body must be a JSON object'), { statusCode: 400 }));
+          return;
+        }
+        resolve(parsed);
+      } catch (err) {
+        reject(Object.assign(new Error('Body is not valid JSON'), { statusCode: 400 }));
+      }
+    });
   });
 }
 
-// Create the HTTP server instance handling incoming web requests
-const server = http.createServer(async function(req, res) {
-  // Parse incoming request URL and query parameters using modern WHATWG URL API
-  const parsedUrl = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
-  // Extract URL pathname (e.g. /, /api/config, /app.js)
-  const pathname = parsedUrl.pathname;
+// ---------------------------------------------------------------------------
+// Input validation
+// ---------------------------------------------------------------------------
 
-  // Handle CORS preflight OPTIONS requests from browser
-  if (req.method === 'OPTIONS') {
-    // Send 204 No Content with CORS headers
-    res.statusCode = 204;
-    // Allow any origin
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    // Allow Content-Type header
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    // Allow GET, POST, OPTIONS methods
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    // Complete the response
-    res.end();
+/** Field length ceilings, so one oversized paste cannot wreck a sheet. */
+const LIMITS = {
+  question: 4000,
+  option: 300,
+  explanation: 4000,
+  short: 200,
+  url: 500,
+  notes: 1000
+};
+
+/** Maximum questions accepted in a single upload. */
+const MAX_QUESTIONS_PER_BATCH = 100;
+
+/** Coerces to a trimmed string of at most `max` characters. */
+function str(value, max) {
+  return String(value === null || value === undefined ? '' : value).trim().slice(0, max);
+}
+
+/**
+ * sanitiseQuestion — normalises one incoming question object.
+ * Only known fields survive; anything else the client sends is dropped, which
+ * is what stops a crafted payload from setting Posted or Added By directly.
+ *
+ * @returns {{ok: boolean, error?: string, value?: Object}}
+ */
+function sanitiseQuestion(raw, index) {
+  if (!raw || typeof raw !== 'object') {
+    return { ok: false, error: `Question ${index + 1} is not an object` };
+  }
+
+  const question = str(raw.question || raw.question_text, LIMITS.question);
+  if (!question) return { ok: false, error: `Question ${index + 1} has empty question text` };
+
+  const answer = str(raw.correct_answer, 4).toUpperCase();
+  if (!['A', 'B', 'C', 'D'].includes(answer)) {
+    return { ok: false, error: `Question ${index + 1} has an invalid correct answer "${answer}" (expected A, B, C or D)` };
+  }
+
+  const options = ['a', 'b', 'c', 'd'].map((letter) => str(raw['option_' + letter], LIMITS.option));
+  if (options.some((o) => !o)) {
+    return { ok: false, error: `Question ${index + 1} is missing one or more options` };
+  }
+
+  // Only allow http(s) source links — no javascript: or data: URLs into a cell
+  // that a curator may later click from the sheet.
+  let sourceUrl = str(raw.source_url || raw.sourceUrl, LIMITS.url);
+  if (sourceUrl && !/^https?:\/\//i.test(sourceUrl)) sourceUrl = '';
+
+  return {
+    ok: true,
+    value: {
+      date: str(raw.date, 40),
+      newspaper: str(raw.newspaper, LIMITS.short),
+      topic: str(raw.topic, LIMITS.short),
+      question,
+      option_a: options[0],
+      option_b: options[1],
+      option_c: options[2],
+      option_d: options[3],
+      correct_answer: answer,
+      explanation: str(raw.explanation, LIMITS.explanation),
+      difficulty: str(raw.difficulty, 20) || 'Medium',
+      tags: str(raw.tags, LIMITS.short),
+      source_url: sourceUrl,
+      status: str(raw.status, 20) || 'Draft',
+      review_notes: str(raw.review_notes, LIMITS.notes),
+      scheduled_for: str(raw.scheduled_for, 40)
+    }
+  };
+}
+
+/**
+ * sanitiseQuestionBatch — validates a whole upload.
+ *
+ * @returns {{ok: boolean, error?: string, value?: Array<Object>}}
+ */
+function sanitiseQuestionBatch(questions) {
+  if (!Array.isArray(questions) || questions.length === 0) {
+    return { ok: false, error: 'No questions provided' };
+  }
+  if (questions.length > MAX_QUESTIONS_PER_BATCH) {
+    return { ok: false, error: `Too many questions in one batch (max ${MAX_QUESTIONS_PER_BATCH})` };
+  }
+
+  const clean = [];
+  for (let i = 0; i < questions.length; i++) {
+    const result = sanitiseQuestion(questions[i], i);
+    if (!result.ok) return result;
+    clean.push(result.value);
+  }
+  return { ok: true, value: clean };
+}
+
+/**
+ * validateSubject — a subject must be a plain, reasonable sheet-tab name.
+ * This keeps an arbitrary string out of the sheet-name lookups on the Apps
+ * Script side.
+ */
+function validateSubject(value) {
+  const subject = str(value, 60);
+  if (!subject) return { ok: false, error: 'Missing "subject"' };
+  if (!/^[A-Za-z0-9 &()\-.]+$/.test(subject)) {
+    return { ok: false, error: 'Subject contains unsupported characters' };
+  }
+  return { ok: true, value: subject };
+}
+
+// ---------------------------------------------------------------------------
+// Static file serving
+// ---------------------------------------------------------------------------
+
+/**
+ * resolveStaticPath — maps a URL path to a real file inside dashboard/.
+ * Percent-encoding is decoded first (so %2e%2e is caught), the path is
+ * normalised, and the result must sit strictly inside DASHBOARD_DIR — compared
+ * with a trailing separator so a sibling like `dashboard-backup` cannot match
+ * the prefix. Only allowlisted extensions are served.
+ *
+ * @returns {string|null} Absolute file path, or null when the request is unsafe
+ */
+function resolveStaticPath(pathname) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch (err) {
+    return null; // Malformed percent-encoding.
+  }
+
+  if (decoded.includes('\0')) return null;
+
+  const requested = decoded === '/' ? '/index.html' : decoded;
+  const resolved = path.resolve(DASHBOARD_DIR, '.' + path.posix.normalize(requested));
+
+  if (resolved !== DASHBOARD_DIR && !resolved.startsWith(DASHBOARD_DIR + path.sep)) {
+    return null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(MIME_TYPES, path.extname(resolved).toLowerCase())) {
+    return null;
+  }
+  return resolved;
+}
+
+/** Streams a static file, or 404s. */
+async function serveStatic(res, pathname) {
+  const filePath = resolveStaticPath(pathname);
+  if (!filePath) {
+    sendText(res, 404, '404 Not Found');
     return;
   }
 
-  // ==========================================================================
-  // API Route: GET /api/config
-  // What it does: Returns the configured Google Sheets Web App URL from .env.
-  // What it brings: Automatic pre-population of the URL field in the dashboard UI.
-  // Where changes can be seen: Dashboard header URL input box automatically has the URL.
-  // ==========================================================================
-  if (pathname === '/api/config' && req.method === 'GET') {
-    // Read the Web App URL from environment variable
-    const sheetUrl = process.env.GOOGLE_SHEET_WEBAPP_URL || '';
-    // Return the URL as JSON response
-    sendJSON(res, 200, { success: true, sheetUrl: sheetUrl });
-    return;
-  }
-
-  // ==========================================================================
-  // API Route: GET /api/ping
-  // What it does: Sends a ping request to Google Apps Script from Node.js backend.
-  // What it brings: Bypasses browser CORS so connection indicator works reliably.
-  // Where changes can be seen: Colored status dot turns green next to the Sheet URL input.
-  // ==========================================================================
-  if (pathname === '/api/ping' && req.method === 'GET') {
-    // Extract target URL from query parameter or fallback to .env configuration
-    const targetUrl = parsedUrl.searchParams.get('url') || process.env.GOOGLE_SHEET_WEBAPP_URL || '';
-
-    // Check if a URL was provided or configured
-    if (!targetUrl) {
-      // Return 400 Bad Request error if URL is missing
-      sendJSON(res, 400, { success: false, error: 'No Google Sheet Web App URL configured' });
+  try {
+    const stats = await fsp.stat(filePath);
+    if (!stats.isFile()) {
+      sendText(res, 404, '404 Not Found');
       return;
     }
 
-    try {
-      // Perform server-side HTTP GET request using Node.js native fetch with redirect follow
-      const upstreamRes = await fetch(targetUrl + '?action=ping', { redirect: 'follow' });
-      // Read response as text to inspect content before parsing
-      const text = await upstreamRes.text();
+    res.statusCode = 200;
+    res.setHeader('Content-Type', MIME_TYPES[path.extname(filePath).toLowerCase()]);
+    res.setHeader('Content-Length', stats.size);
+    // Dashboards change often during curation; never let a stale copy stick.
+    res.setHeader('Cache-Control', 'no-cache');
 
-      // Check if response contains HTML login page (indicates permissions need update)
-      if (text.includes('accounts.google.com') || text.includes('<!DOCTYPE html') || text.includes('<!doctype html')) {
-        // Return descriptive error explaining that "Who has access" must be set to "Anyone"
-        sendJSON(res, 200, {
-          success: false,
-          status: 'auth_required',
-          error: 'Google Apps Script requires login. Please redeploy with "Who has access: Anyone".'
-        });
-        return;
-      }
+    fs.createReadStream(filePath)
+      .on('error', () => sendText(res, 500, '500 Internal Server Error'))
+      .pipe(res);
+  } catch (err) {
+    sendText(res, 404, '404 Not Found');
+  }
+}
 
-      // Parse JSON response from Apps Script
-      const parsed = JSON.parse(text);
-      // Return successful ping result to client
-      sendJSON(res, 200, { success: true, status: 'ok', data: parsed });
-    } catch (err) {
-      // Handle network or JSON parse errors
-      sendJSON(res, 500, { success: false, status: 'offline', error: err.message });
+// ---------------------------------------------------------------------------
+// Telegram helpers
+// ---------------------------------------------------------------------------
+
+/** True when the bot token and group id are both present. */
+function telegramConfigured() {
+  return Boolean(
+    String(process.env.TELEGRAM_BOT_TOKEN || '').trim() &&
+    String(process.env.TELEGRAM_GROUP_ID || '').trim()
+  );
+}
+
+/** Lazily initialises the Telegram client the first time it is needed. */
+let telegramReady = false;
+function ensureTelegram() {
+  if (!telegramConfigured()) {
+    throw new Error('Telegram is not configured — set TELEGRAM_BOT_TOKEN and TELEGRAM_GROUP_ID in .env');
+  }
+  if (!telegramReady) {
+    telegram.init(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_GROUP_ID);
+    telegramReady = true;
+  }
+}
+
+/** Small promise delay used to stay under Telegram's rate limits. */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---------------------------------------------------------------------------
+// API route handlers
+// ---------------------------------------------------------------------------
+
+/**
+ * handlePublicRoute — the two endpoints that work before sign-in.
+ * Neither returns any spreadsheet content or secret value.
+ *
+ * @returns {Promise<boolean>} true when the route was handled
+ */
+async function handlePublicRoute(pathname, method, res) {
+  // Client bootstrap: what the browser needs to render the login gate.
+  if (pathname === '/api/config' && method === 'GET') {
+    sendJSON(res, 200, {
+      success: true,
+      firebaseProjectId: auth.getProjectId() || null,
+      authEnforced: auth.isConfigured(),
+      // Deliberately reports only whether the sheet is wired up. The Web App
+      // URL itself stays on the server; the browser never needs it.
+      sheetConfigured: sheets.isConfigured(),
+      telegramConfigured: telegramConfigured(),
+      allowRegistration: String(process.env.ALLOW_SELF_REGISTRATION || '').toLowerCase() === 'true'
+    });
+    return true;
+  }
+
+  // Liveness of the Apps Script deployment, for the header status pill.
+  if (pathname === '/api/ping' && method === 'GET') {
+    if (!sheets.isConfigured()) {
+      sendJSON(res, 200, { success: false, status: 'unconfigured', error: 'GOOGLE_SHEET_WEBAPP_URL is not set in .env' });
+      return true;
     }
-    return;
+    try {
+      const result = await sheets.ping();
+      // v5 reports `version`; older deployments only put it in `message`.
+      const version = result.version ||
+        (String(result.message || '').match(/v\d+[^)"]*/) || ['unknown'])[0].trim();
+
+      // The dashboards call actions that only exist in v5 of the Apps Script.
+      // Detect an older deployment here so the UI can say exactly what to do
+      // instead of surfacing an opaque "Unknown action" from Google.
+      const outdated = !/^v5\b/.test(String(version));
+
+      sendJSON(res, 200, {
+        success: true,
+        status: 'ok',
+        version,
+        outdated,
+        requiredVersion: REQUIRED_SHEET_VERSION,
+        tokenRequired: result.tokenRequired,
+        upgradeHint: outdated
+          ? 'The deployed Google Apps Script is ' + version + '. Paste the current google_apps_script.js into ' +
+            'Apps Script, run upgradeSpreadsheet, then Deploy > Manage deployments > Edit > New version.'
+          : null
+      });
+    } catch (err) {
+      sendJSON(res, 200, { success: false, status: 'offline', error: err.message });
+    }
+    return true;
   }
 
-  // ==========================================================================
-  // API Route: POST /api/send
-  // What it does: Receives questions payload from dashboard and forwards to Google Apps Script.
-  // What it brings: Complete elimination of browser CORS and redirect issues during POST.
-  // Where changes can be seen: Questions successfully append to Google Sheets with toast confirmation.
-  // ==========================================================================
-  if (pathname === '/api/send' && req.method === 'POST') {
-    // Accumulate incoming request body chunks
-    let body = '';
+  return false;
+}
 
-    // Listen for incoming data stream chunks
-    req.on('data', function(chunk) {
-      // Append chunk to body string
-      body += chunk;
-    });
+/**
+ * handleAuthedRoute — everything that reads or writes real data.
+ * `user` is the verified Firebase identity; it is the only source of the
+ * "Added By" / "Updated By" attribution, so a client cannot forge authorship.
+ *
+ * @returns {Promise<boolean>} true when the route was handled
+ */
+async function handleAuthedRoute(pathname, method, req, res, query, user) {
+  const actor = user.name ? `${user.name} (${user.email})` : user.email;
 
-    // Handle end of incoming request stream
-    req.on('end', async function() {
+  // ---- System health -------------------------------------------------------
+  if (pathname === '/api/health' && method === 'GET') {
+    const health = {
+      server: { ok: true, port: PORT, host: HOST, node: process.version, uptimeSeconds: Math.round(process.uptime()) },
+      auth: auth.describeConfig(),
+      sheets: { configured: sheets.isConfigured(), reachable: false, version: null, tokenRequired: null, error: null },
+      telegram: {
+        configured: telegramConfigured(), reachable: false, botUsername: null,
+        groupTitle: null, groupReachable: false, isForum: false, error: null
+      },
+      you: { email: user.email, uid: user.uid, provider: user.signInProvider, emailVerified: user.emailVerified }
+    };
+
+    if (sheets.isConfigured()) {
       try {
-        // Parse request body JSON
-        const payload = JSON.parse(body);
-        // Extract target URL from payload or fallback to .env configuration
-        const targetUrl = payload.url || process.env.GOOGLE_SHEET_WEBAPP_URL || '';
-
-        // Validate that target URL is present
-        if (!targetUrl) {
-          sendJSON(res, 400, { success: false, error: 'No Google Sheet Web App URL specified' });
-          return;
-        }
-
-        // Validate that subject is present
-        if (!payload.subject) {
-          sendJSON(res, 400, { success: false, error: 'Missing "subject" in payload' });
-          return;
-        }
-
-        // Validate that questions array is present and non-empty
-        if (!payload.questions || payload.questions.length === 0) {
-          sendJSON(res, 400, { success: false, error: 'No questions provided in payload' });
-          return;
-        }
-
-        // Forward payload to Google Apps Script backend using server-to-server fetch
-        const upstreamRes = await fetch(targetUrl, {
-          method: 'POST',
-          redirect: 'follow',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            action: 'addQuestions',                                  // Action identifier for Apps Script doPost handler
-            subject: payload.subject,                                // Target subject sheet tab
-            questions: payload.questions,                            // Array of question objects
-            added_by: payload.added_by || payload.addedBy || ''      // Uploader user identity from Firebase Auth
-          })
-        });
-
-        // Read upstream response as text
-        const responseText = await upstreamRes.text();
-
-        // Check if response returned HTML login page instead of JSON
-        if (responseText.includes('accounts.google.com') || responseText.includes('<!DOCTYPE html') || responseText.includes('<!doctype html')) {
-          sendJSON(res, 200, {
-            success: false,
-            error: 'Google Apps Script requires login. Please redeploy with "Who has access: Anyone".'
-          });
-          return;
-        }
-
-        // Parse JSON returned by Apps Script
-        const result = JSON.parse(responseText);
-        // Send result back to the dashboard frontend
-        sendJSON(res, 200, result);
+        const ping = await sheets.ping();
+        health.sheets.reachable = true;
+        health.sheets.version = ping.version || null;
+        health.sheets.tokenRequired = Boolean(ping.tokenRequired);
       } catch (err) {
-        // Catch parsing or network errors and return failure response
-        sendJSON(res, 500, { success: false, error: 'Proxy error: ' + err.message });
+        health.sheets.error = err.message;
       }
+    }
+
+    if (telegramConfigured()) {
+      try {
+        ensureTelegram();
+        const info = await telegram.getBotInfo();
+        health.telegram.reachable = true;
+        health.telegram.botUsername = info.username || null;
+        health.telegram.groupTitle = info.groupTitle;
+        health.telegram.isForum = info.isForum;
+        health.telegram.groupReachable = info.groupReachable;
+      } catch (err) {
+        health.telegram.error = err.message;
+      }
+    }
+
+    sendJSON(res, 200, { success: true, data: health });
+    return true;
+  }
+
+  // ---- Subjects / config ---------------------------------------------------
+  if (pathname === '/api/subjects' && method === 'GET') {
+    sendJSON(res, 200, { success: true, data: await sheets.readConfig() });
+    return true;
+  }
+
+  // ---- Analytics -----------------------------------------------------------
+  if (pathname === '/api/analytics' && method === 'GET') {
+    sendJSON(res, 200, { success: true, data: await sheets.getAnalytics() });
+    return true;
+  }
+
+  if (pathname === '/api/stats' && method === 'GET') {
+    sendJSON(res, 200, { success: true, data: await sheets.getStats() });
+    return true;
+  }
+
+  // ---- Question browse -----------------------------------------------------
+  if (pathname === '/api/questions' && method === 'GET') {
+    const data = await sheets.listQuestions({
+      subject: str(query.get('subject'), 60) || 'all',
+      status: str(query.get('status'), 20),
+      posted: str(query.get('posted'), 4),
+      difficulty: str(query.get('difficulty'), 20),
+      search: str(query.get('search'), 120),
+      page: str(query.get('page'), 8) || '1',
+      pageSize: str(query.get('pageSize'), 4) || '25'
     });
-    return;
+    sendJSON(res, 200, { success: true, data });
+    return true;
   }
 
-  // ==========================================================================
-  // Static File Serving (dashboard/)
-  // ==========================================================================
-  // Default root URL "/" to "/index.html"
-  const safePath = pathname === '/' ? '/index.html' : pathname;
-  // Resolve absolute file path safely within the dashboard directory
-  const filePath = path.join(DASHBOARD_DIR, safePath);
+  // ---- Question upload -----------------------------------------------------
+  // /api/send is the name the original dashboard used; both paths are accepted
+  // so an older cached page keeps working.
+  if ((pathname === '/api/questions' || pathname === '/api/send') && method === 'POST') {
+    const body = await readJsonBody(req);
 
-  // Prevent directory traversal attacks by verifying resolved path starts with DASHBOARD_DIR
-  if (!filePath.startsWith(DASHBOARD_DIR)) {
-    // Return 403 Forbidden if path is outside dashboard directory
-    res.statusCode = 403;
-    res.end('403 Forbidden');
-    return;
+    const subject = validateSubject(body.subject);
+    if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
+
+    const batch = sanitiseQuestionBatch(body.questions);
+    if (!batch.ok) { sendJSON(res, 400, { success: false, error: batch.error }); return true; }
+
+    // Attribution comes from the verified token, never from the request body.
+    const result = await sheets.addQuestions(subject.value, batch.value, actor, body.skipDuplicates !== false);
+    sendJSON(res, 200, {
+      success: true,
+      addedCount: result.addedCount || 0,
+      skippedCount: result.skippedCount || 0,
+      skipped: result.skipped || [],
+      ids: result.ids || [],
+      message: result.message
+    });
+    return true;
   }
 
-  // Check if file exists on disk
-  fs.stat(filePath, function(err, stats) {
-    // If file does not exist or is a directory, fallback to index.html or 404
-    if (err || !stats.isFile()) {
-      // Check if index.html exists as fallback
-      const indexPath = path.join(DASHBOARD_DIR, 'index.html');
-      fs.stat(indexPath, function(errIndex, statsIndex) {
-        if (!errIndex && statsIndex.isFile()) {
-          serveStaticFile(res, indexPath);
-        } else {
-          res.statusCode = 404;
-          res.end('404 Not Found');
+  // ---- Question edit -------------------------------------------------------
+  if (pathname === '/api/questions/update' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const subject = validateSubject(body.subject);
+    if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
+
+    const questionId = str(body.questionId, 60);
+    if (!questionId) { sendJSON(res, 400, { success: false, error: 'Missing questionId' }); return true; }
+    if (!body.fields || typeof body.fields !== 'object') {
+      sendJSON(res, 400, { success: false, error: 'Missing fields object' });
+      return true;
+    }
+
+    const result = await sheets.updateQuestion(subject.value, questionId, body.fields, actor);
+    sendJSON(res, 200, { success: true, message: result.message });
+    return true;
+  }
+
+  // ---- Question delete -----------------------------------------------------
+  if (pathname === '/api/questions/delete' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const subject = validateSubject(body.subject);
+    if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
+
+    const questionId = str(body.questionId, 60);
+    if (!questionId) { sendJSON(res, 400, { success: false, error: 'Missing questionId' }); return true; }
+
+    const result = await sheets.deleteQuestion(subject.value, questionId);
+    sendJSON(res, 200, { success: true, message: result.message });
+    return true;
+  }
+
+  // ---- Bulk status change --------------------------------------------------
+  if (pathname === '/api/questions/status' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const subject = validateSubject(body.subject);
+    if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
+
+    const ids = Array.isArray(body.questionIds) ? body.questionIds.map((id) => str(id, 60)).filter(Boolean) : [];
+    if (!ids.length) { sendJSON(res, 400, { success: false, error: 'No questionIds provided' }); return true; }
+    if (ids.length > 200) { sendJSON(res, 400, { success: false, error: 'Too many questionIds (max 200)' }); return true; }
+
+    const status = str(body.status, 20);
+    if (!status) { sendJSON(res, 400, { success: false, error: 'Missing status' }); return true; }
+
+    const updatedCount = await sheets.bulkStatus(subject.value, ids, status, actor);
+    sendJSON(res, 200, { success: true, updatedCount });
+    return true;
+  }
+
+  // ---- Schedule ------------------------------------------------------------
+  if (pathname === '/api/questions/schedule' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const subject = validateSubject(body.subject);
+    if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
+
+    const ids = Array.isArray(body.questionIds) ? body.questionIds.map((id) => str(id, 60)).filter(Boolean) : [];
+    if (!ids.length) { sendJSON(res, 400, { success: false, error: 'No questionIds provided' }); return true; }
+
+    const updatedCount = await sheets.scheduleQuestions(subject.value, ids, str(body.scheduledFor, 40), actor);
+    sendJSON(res, 200, { success: true, updatedCount });
+    return true;
+  }
+
+  // ---- Telegram status -----------------------------------------------------
+  if (pathname === '/api/telegram/status' && method === 'GET') {
+    if (!telegramConfigured()) {
+      sendJSON(res, 200, { success: true, data: { configured: false, connected: false } });
+      return true;
+    }
+    try {
+      ensureTelegram();
+      const info = await telegram.getBotInfo();
+      sendJSON(res, 200, {
+        success: true,
+        data: {
+          configured: true,
+          connected: true,
+          botUsername: info.username,
+          botName: info.firstName,
+          groupTitle: info.groupTitle,
+          groupReachable: info.groupReachable,
+          isForum: info.isForum
         }
+      });
+    } catch (err) {
+      sendJSON(res, 200, { success: true, data: { configured: true, connected: false, error: err.message } });
+    }
+    return true;
+  }
+
+  // ---- Post to Telegram now ------------------------------------------------
+  // This is the endpoint that makes the automation dashboard able to publish
+  // without dropping to the CLI. It is the most sensitive route in the app:
+  // it writes to a public channel, so it is authenticated, rate limited, and
+  // capped at a small batch per call.
+  if (pathname === '/api/telegram/post' && method === 'POST') {
+    const body = await readJsonBody(req);
+
+    const subject = validateSubject(body.subject);
+    if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
+
+    const count = Math.min(Math.max(parseInt(body.count, 10) || 1, 1), 20);
+    const requireApproved = body.requireApproved !== false;
+
+    try {
+      ensureTelegram();
+    } catch (err) {
+      sendJSON(res, 400, { success: false, error: err.message });
+      return true;
+    }
+
+    // Resolve the forum topic for this subject from the Config tab.
+    const config = await sheets.readConfig();
+    const subjectConfig = config.find((c) => c.subject === subject.value);
+    if (!subjectConfig) {
+      sendJSON(res, 400, { success: false, error: `"${subject.value}" is not in the Config tab` });
+      return true;
+    }
+    if (!subjectConfig.topic_thread_id) {
+      sendJSON(res, 400, { success: false, error: `No Telegram topic thread configured for "${subject.value}". Run: node setup.js` });
+      return true;
+    }
+
+    const questions = await sheets.getUnpostedQuestions(subject.value, count, requireApproved);
+    if (!questions.length) {
+      sendJSON(res, 200, {
+        success: true,
+        postedCount: 0,
+        results: [],
+        message: requireApproved
+          ? `No Approved or Scheduled questions waiting in "${subject.value}"`
+          : `No unposted questions left in "${subject.value}"`
+      });
+      return true;
+    }
+
+    const results = [];
+    const postedRowIndices = [];
+    const pollIds = {};
+    let lastMessageId = null;
+
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      try {
+        const sent = await telegram.sendQuizPoll(subjectConfig.topic_thread_id, q);
+        if (sent && sent.message_id) lastMessageId = sent.message_id;
+        if (sent && sent.poll && sent.poll.id) pollIds[String(q.excel_row)] = sent.poll.id;
+
+        postedRowIndices.push(q.row_index !== undefined ? q.row_index : q.excel_row);
+        results.push({ questionId: q.question_id, ok: true, preview: q.question_text.slice(0, 80) });
+      } catch (err) {
+        results.push({ questionId: q.question_id, ok: false, error: err.message, preview: q.question_text.slice(0, 80) });
+      }
+      // Telegram tolerates roughly 30 messages/second; 1.5s is deliberately safe.
+      if (i < questions.length - 1) await sleep(1500);
+    }
+
+    if (postedRowIndices.length) {
+      await sheets.markAsPosted(
+        subject.value, postedRowIndices, lastMessageId, subjectConfig.topic_thread_id, pollIds
+      );
+    }
+
+    sendJSON(res, 200, {
+      success: true,
+      postedCount: postedRowIndices.length,
+      failedCount: results.length - postedRowIndices.length,
+      results,
+      message: `${postedRowIndices.length} of ${questions.length} question(s) posted to "${subject.value}"`
+    });
+    return true;
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Server
+// ---------------------------------------------------------------------------
+
+const server = http.createServer(async (req, res) => {
+  applySecurityHeaders(res);
+
+  const clientIp = req.socket.remoteAddress || 'unknown';
+  if (!checkRateLimit(clientIp)) {
+    res.setHeader('Retry-After', '60');
+    sendJSON(res, 429, { success: false, error: 'Too many requests — slow down.' });
+    return;
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  } catch (err) {
+    sendText(res, 400, '400 Bad Request');
+    return;
+  }
+
+  const pathname = parsedUrl.pathname;
+  const method = req.method;
+
+  // No CORS preflight is answered: the API is same-origin only. A cross-origin
+  // page that tries to send an Authorization header gets stopped right here.
+  if (method === 'OPTIONS') {
+    sendText(res, 405, '405 Method Not Allowed');
+    return;
+  }
+
+  if (!pathname.startsWith('/api/')) {
+    if (method !== 'GET' && method !== 'HEAD') {
+      sendText(res, 405, '405 Method Not Allowed');
+      return;
+    }
+    await serveStatic(res, pathname);
+    return;
+  }
+
+  try {
+    if (await handlePublicRoute(pathname, method, res)) return;
+
+    // Everything past this point requires a verified Firebase identity.
+    if (!auth.isConfigured()) {
+      sendJSON(res, 503, {
+        success: false,
+        error: 'Server auth is not configured. Set FIREBASE_PROJECT_ID in .env and restart.'
       });
       return;
     }
-    // Serve the requested static file
-    serveStaticFile(res, filePath);
+
+    const token = auth.extractBearerToken(req);
+    if (!token) {
+      sendJSON(res, 401, { success: false, error: 'Sign in required.' });
+      return;
+    }
+
+    let user;
+    try {
+      user = await auth.authorize(token);
+    } catch (err) {
+      sendJSON(res, 403, { success: false, error: err.message });
+      return;
+    }
+
+    if (await handleAuthedRoute(pathname, method, req, res, parsedUrl.searchParams, user)) return;
+
+    sendJSON(res, 404, { success: false, error: `Unknown API route: ${method} ${pathname}` });
+  } catch (err) {
+    const statusCode = err.statusCode || 500;
+    // Log the full error locally; return only the message to the client.
+    console.error(`[api] ${method} ${pathname} failed:`, err.message);
+    sendJSON(res, statusCode, { success: false, error: err.message });
+  }
+});
+
+// Cap header size and idle sockets so a slow client cannot hold resources.
+server.headersTimeout = 20000;
+server.requestTimeout = 60000;
+server.keepAliveTimeout = 10000;
+
+if (require.main === module) {
+  server.listen(PORT, HOST, () => {
+    const warnings = [];
+    if (!auth.isConfigured()) warnings.push('FIREBASE_PROJECT_ID not set — API is locked (503) until you set it');
+    if (!sheets.isConfigured()) warnings.push('GOOGLE_SHEET_WEBAPP_URL not set — sheet features disabled');
+    if (!process.env.SHEET_API_TOKEN) warnings.push('SHEET_API_TOKEN not set — your Apps Script Web App is world-writable');
+    if (!auth.getCuratorAllowlist().length) warnings.push('CURATOR_EMAILS not set — any verified Firebase user can curate');
+    if (HOST === '0.0.0.0') warnings.push('HOST=0.0.0.0 — this dashboard is reachable from your whole network');
+
+    console.log('════════════════════════════════════════════════════════');
+    console.log(`🚀 Sadhana APPSC Dashboard   http://${HOST}:${PORT}`);
+    console.log('────────────────────────────────────────────────────────');
+    console.log('   📤 Upload      /index.html');
+    console.log('   📊 Analytics   /analytics.html');
+    console.log('   📚 Questions   /questions.html');
+    console.log('   🤖 Automation  /automation.html');
+    console.log('   🩺 Health      /health.html');
+    console.log('────────────────────────────────────────────────────────');
+    console.log(`   Google Sheets: ${sheets.isConfigured() ? 'configured ✅' : 'not configured ⚠️'}`);
+    console.log(`   Telegram bot : ${telegramConfigured() ? 'configured ✅' : 'not configured ⚠️'}`);
+    console.log(`   Firebase auth: ${auth.isConfigured() ? 'enforced ✅' : 'NOT ENFORCED ❌'}`);
+    if (warnings.length) {
+      console.log('────────────────────────────────────────────────────────');
+      warnings.forEach((w) => console.log('   ⚠️  ' + w));
+    }
+    console.log('════════════════════════════════════════════════════════');
   });
-});
+}
 
-// Start listening for incoming connections on the configured port
-server.listen(PORT, function() {
-  // Log server start confirmation with clickable local URL
-  console.log('====================================================');
-  console.log(`🚀 Sadhana APPSC Dashboard running at: http://localhost:${PORT}`);
-  console.log(`📡 Google Sheets Web App URL: ${process.env.GOOGLE_SHEET_WEBAPP_URL ? 'Configured ✅' : 'Not set in .env ⚠️'}`);
-  console.log('====================================================');
-});
-
-// Export server instance for testing or programmatic usage
 module.exports = server;
