@@ -140,9 +140,11 @@
   font-weight: 800;
   line-height: 1.1;
   letter-spacing: -0.02em;
-  /* Values are usually short numbers, but some are identities such as an email
-     address. Those must wrap rather than push the grid past the viewport. */
-  overflow-wrap: anywhere;
+  /* Values are usually short numbers, but some are identities such as a
+     hostname. Wrap at word boundaries first, breaking inside a word only when
+     there is no other option, so a long value never widens the tile. */
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 
 /* Applied by the page when the value is a long string rather than a number. */
@@ -330,9 +332,12 @@
 
 .filter-item.grow { flex: 1 1 240px; }
 
-/* Buttons in a filter bar size to their label; only .grow fields expand. */
-.filter-bar .btn { flex: 0 0 auto; width: auto; }
-.filter-bar .hint-text { flex: 1 1 200px; }
+/* Buttons in a filter bar size to their label; only .grow fields expand.
+   Both selectors are direct-child only: `.filter-bar .hint-text` also matched
+   the caption nested inside a .filter-item, which is a column flex container,
+   so the basis became a 200px HEIGHT and blew a hole in the bar. */
+.filter-bar > .btn { flex: 0 0 auto; width: auto; }
+.filter-bar > .hint-text { flex: 1 1 200px; align-self: center; }
 
 /* ---- Pagination -------------------------------------------------------- */
 
@@ -669,7 +674,191 @@
   }
 
   .page-root { padding-left: 12px; padding-right: 12px; }
-  .stat-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .stat-grid { grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }
   .bar-row { grid-template-columns: minmax(90px, 1fr) 2fr 60px; }
   .filter-item { min-width: 0; flex: 1 1 140px; }
 }
+
+/* ============================================================================
+   Boot screen
+   ============================================================================
+   Covers the page while Firebase restores the session from local storage.
+   Without it the sign-in gate filled that gap, so every move between
+   dashboards looked like being signed out again.
+   ========================================================================= */
+
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-primary);
+  transition: opacity 240ms ease;
+}
+
+.boot-screen.done { opacity: 0; pointer-events: none; }
+
+.boot-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.boot-spinner {
+  width: 34px;
+  height: 34px;
+  border: 2.5px solid var(--border-card);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 750ms linear infinite;
+}
+
+.boot-title {
+  font-size: 1.12rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.boot-hint {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* ============================================================================
+   Fluid layout
+   ============================================================================
+   Every container below is a flex box that wraps, and every child declares a
+   sensible basis with `min-width: 0`. That combination is what lets the whole
+   app reflow to any width without a fixed breakpoint deciding for it: items
+   sit side by side while they fit and drop to the next line when they do not.
+
+   `min-width: 0` matters more than it looks. A flex item defaults to
+   `min-width: auto`, which refuses to shrink below its content — that is what
+   pushed the header past the viewport before.
+   ========================================================================= */
+
+/* ---- Metric tiles -------------------------------------------------------
+   The one place that stays a grid rather than a flex row. Flex has no way to
+   make a short final row match the column widths above it, so eight tiles on a
+   wide screen ended up as six normal ones plus two stretched to half the page.
+   `auto-fit` + `minmax` reflows to any width AND keeps every tile the same
+   size, which is what this row actually needs. */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+}
+
+.stat-card { min-width: 0; }
+
+/* ---- Two-up panel rows -------------------------------------------------- */
+.two-col {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.two-col > * {
+  flex: 1 1 380px;
+  min-width: 0;
+}
+
+/* ---- Upload workspace --------------------------------------------------- */
+/* The JSON pane keeps a comfortable reading width and the card pane takes the
+   rest; below roughly 1000px they stack because neither can hold its basis. */
+.main-content {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 22px;
+  align-items: flex-start;
+}
+
+.input-panel {
+  flex: 1 1 400px;
+  min-width: 0;
+  max-width: 560px;
+}
+
+.cards-panel {
+  flex: 3 1 520px;
+  min-width: 0;
+}
+
+@media (max-width: 1000px) {
+  .input-panel { max-width: none; }
+}
+
+/* ---- Upload batch metadata ---------------------------------------------- */
+.meta-fields {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.meta-fields .field-group {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+/* ---- Editor modal ------------------------------------------------------- */
+.editor-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.editor-grid > .editor-field {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.editor-grid > .editor-field.full { flex-basis: 100%; }
+
+/* ---- Editor modal sizing ------------------------------------------------ */
+.editor-card {
+  width: min(860px, 100%);
+  max-height: min(88vh, 900px);
+}
+
+/* ---- Cards header ------------------------------------------------------- */
+.cards-header { flex-wrap: wrap; gap: 12px; }
+.cards-header-info { flex: 1 1 240px; min-width: 0; }
+
+/* ---- Card header bar ---------------------------------------------------- */
+.card-header-bar { flex-wrap: wrap; gap: 10px; }
+.card-meta-inputs { flex: 1 1 100%; }
+
+/* ---- Health checklist --------------------------------------------------- */
+/* Below ~560px the trailing status pill moves under the text rather than
+   squeezing the description into a two-word column. */
+@media (max-width: 560px) {
+  .check-item {
+    grid-template-columns: 26px 1fr;
+  }
+  .check-item > .pill {
+    grid-column: 2;
+    justify-self: start;
+    margin-top: 6px;
+  }
+}
+
+/* ---- Bar rows ----------------------------------------------------------- */
+@media (max-width: 480px) {
+  .bar-row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas: "label value" "track track";
+    row-gap: 4px;
+  }
+  .bar-label { grid-area: label; }
+  .bar-value { grid-area: value; }
+  .bar-track { grid-area: track; }
+}
+
+/* ---- Page header -------------------------------------------------------- */
+.page-header > div:first-child { flex: 1 1 320px; min-width: 0; }
+.page-actions { flex: 0 1 auto; }

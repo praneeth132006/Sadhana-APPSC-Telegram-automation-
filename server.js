@@ -457,16 +457,24 @@ async function handlePublicRoute(pathname, method, res) {
       // instead of surfacing an opaque "Unknown action" from Google.
       const outdated = !/^v5\b/.test(String(version));
 
+      // A v5 script that is not bound to a spreadsheet was pasted into a
+      // standalone project instead of the Sheet's own Extensions > Apps Script.
+      const unbound = result.boundToSpreadsheet === false;
+
       sendJSON(res, 200, {
         success: true,
         status: 'ok',
         version,
         outdated,
+        unbound,
+        spreadsheetName: result.spreadsheetName || null,
         requiredVersion: REQUIRED_SHEET_VERSION,
         tokenRequired: result.tokenRequired,
         upgradeHint: outdated
-          ? 'The deployed Google Apps Script is ' + version + '. Paste the current google_apps_script.js into ' +
-            'Apps Script, run upgradeSpreadsheet, then Deploy > Manage deployments > Edit > New version.'
+          ? 'The Web App at your GOOGLE_SHEET_WEBAPP_URL is running ' + version + '. Open your Google ' +
+            'Sheet > Extensions > Apps Script (NOT script.google.com — that creates a standalone project ' +
+            'with a different URL), paste the current google_apps_script.js, run upgradeSpreadsheet, then ' +
+            'Deploy > Manage deployments > Edit > New version. Redeploying that project keeps this same URL.'
           : null
       });
     } catch (err) {
@@ -493,7 +501,10 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
     const health = {
       server: { ok: true, port: PORT, host: HOST, node: process.version, uptimeSeconds: Math.round(process.uptime()) },
       auth: auth.describeConfig(),
-      sheets: { configured: sheets.isConfigured(), reachable: false, version: null, tokenRequired: null, error: null },
+      sheets: {
+        configured: sheets.isConfigured(), reachable: false, version: null,
+        tokenRequired: null, current: false, bound: null, spreadsheetName: null, error: null
+      },
       telegram: {
         configured: telegramConfigured(), reachable: false, botUsername: null,
         groupTitle: null, groupReachable: false, isForum: false, error: null
@@ -505,8 +516,12 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
       try {
         const ping = await sheets.ping();
         health.sheets.reachable = true;
-        health.sheets.version = ping.version || null;
+        health.sheets.version = ping.version ||
+          (String(ping.message || '').match(/v\d+[^)"]*/) || [null])[0];
         health.sheets.tokenRequired = Boolean(ping.tokenRequired);
+        health.sheets.current = /^v5\b/.test(String(health.sheets.version || ''));
+        health.sheets.bound = ping.boundToSpreadsheet !== false;
+        health.sheets.spreadsheetName = ping.spreadsheetName || null;
       } catch (err) {
         health.sheets.error = err.message;
       }

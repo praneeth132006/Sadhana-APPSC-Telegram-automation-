@@ -44,7 +44,7 @@ function check(state, title, detail, badge) {
 /** Top tiles: the four services at a glance. */
 function renderStats(data) {
   const authOk = data.auth.enforced;
-  const sheetsOk = data.sheets.reachable;
+  const sheetsOk = data.sheets.reachable && data.sheets.bound !== false && data.sheets.current;
   const telegramOk = data.telegram.reachable;
 
   replaceChildren($('statGrid'),
@@ -52,10 +52,16 @@ function renderStats(data) {
       tone: 'ok',
       sub: `${data.server.host}:${data.server.port} · Node ${data.server.node}`
     }),
-    statCard('Google Sheets', sheetsOk ? 'Reachable' : data.sheets.configured ? 'Error' : 'Not set', {
-      tone: sheetsOk ? 'ok' : 'danger',
-      sub: data.sheets.version || data.sheets.error || 'GOOGLE_SHEET_WEBAPP_URL missing'
-    }),
+    statCard('Google Sheets',
+      !data.sheets.configured ? 'Not set'
+        : !data.sheets.reachable ? 'Error'
+        : data.sheets.bound === false ? 'No Sheet'
+        : !data.sheets.current ? 'Outdated'
+        : 'Connected',
+      {
+        tone: sheetsOk ? 'ok' : 'danger',
+        sub: data.sheets.spreadsheetName || data.sheets.version || data.sheets.error || 'GOOGLE_SHEET_WEBAPP_URL missing'
+      }),
     statCard('Telegram Bot', telegramOk ? 'Connected' : data.telegram.configured ? 'Error' : 'Not set', {
       tone: telegramOk ? 'ok' : 'danger',
       sub: data.telegram.botUsername ? '@' + data.telegram.botUsername : (data.telegram.error || 'credentials missing')
@@ -67,8 +73,13 @@ function renderStats(data) {
     statCard('Server Uptime', formatUptime(data.server.uptimeSeconds), {
       tone: 'info', sub: 'since npm run dashboard'
     }),
-    statCard('Signed In As', data.you.email || data.you.uid, {
-      tone: 'info', sub: `${data.you.provider} · ${data.you.emailVerified ? 'verified' : 'unverified'}`
+    // An email has no spaces, so showing the whole thing as a headline value
+    // forces an ugly mid-word break. The readable half goes in the value and
+    // the full address in the sub line, which wraps gracefully.
+    statCard('Signed In As', (data.you.email || data.you.uid).split('@')[0], {
+      tone: 'info',
+      sub: `${data.you.email || data.you.uid} · ${data.you.provider} · ` +
+           `${data.you.emailVerified ? 'verified' : 'unverified'}`
     })
   );
 }
@@ -86,15 +97,35 @@ function formatUptime(seconds) {
 function connectivityChecks(data) {
   const checks = [];
 
-  checks.push(data.sheets.configured
-    ? (data.sheets.reachable
-        ? check('pass', 'Google Apps Script Web App',
-            `Responding, running <code>${data.sheets.version || 'unknown version'}</code>.`)
-        : check('fail', 'Google Apps Script Web App',
-            `Not reachable: ${data.sheets.error}. Redeploy the script with <code>Execute as: Me</code> and ` +
-            `<code>Who has access: Anyone</code>, then confirm the /exec URL in <code>.env</code>.`))
-    : check('fail', 'Google Apps Script Web App',
-        'No <code>GOOGLE_SHEET_WEBAPP_URL</code> in <code>.env</code>. Deploy <code>google_apps_script.js</code> and paste the /exec URL there.'));
+  if (!data.sheets.configured) {
+    checks.push(check('fail', 'Google Apps Script Web App',
+      'No <code>GOOGLE_SHEET_WEBAPP_URL</code> in <code>.env</code>. Deploy <code>google_apps_script.js</code> and paste the /exec URL there.'));
+  } else if (!data.sheets.reachable) {
+    checks.push(check('fail', 'Google Apps Script Web App',
+      `Not reachable: ${data.sheets.error}. Redeploy the script with <code>Execute as: Me</code> and ` +
+      '<code>Who has access: Anyone</code>, then confirm the /exec URL in <code>.env</code>.'));
+  } else if (data.sheets.bound === false) {
+    // Deployed and answering, but it cannot see any spreadsheet — the code was
+    // pasted into a standalone project instead of the Sheet's own script.
+    checks.push(check('fail', 'Apps Script is attached to your spreadsheet',
+      'The Web App is running but is not bound to any Sheet, so it was created as a standalone project ' +
+      'at script.google.com rather than from inside the Sheet. Open your Google Sheet → ' +
+      '<code>Extensions → Apps Script</code>, paste <code>google_apps_script.js</code> there, run ' +
+      '<code>upgradeSpreadsheet</code>, then <code>Deploy → Manage deployments → Edit → New version</code>. ' +
+      'Redeploying that project keeps the URL already in your <code>.env</code>.'));
+  } else if (!data.sheets.current) {
+    // Reachable and bound, but an older version of the script.
+    checks.push(check('fail', 'Google Apps Script version',
+      `The deployed Web App is running <code>${data.sheets.version || 'an unknown version'}</code>, but these ` +
+      'dashboards need <code>v5 (30 columns)</code>. Analytics, the question browser and editing will not ' +
+      'work until you open your Sheet → <code>Extensions → Apps Script</code>, paste the current ' +
+      '<code>google_apps_script.js</code>, run <code>upgradeSpreadsheet</code>, and deploy a ' +
+      '<strong>New version</strong> of that same deployment.'));
+  } else {
+    checks.push(check('pass', 'Google Apps Script Web App',
+      `Responding with <code>${data.sheets.version}</code>` +
+      (data.sheets.spreadsheetName ? `, attached to "${data.sheets.spreadsheetName}".` : '.')));
+  }
 
   checks.push(data.telegram.configured
     ? (data.telegram.reachable

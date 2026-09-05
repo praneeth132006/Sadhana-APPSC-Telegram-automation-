@@ -39,12 +39,25 @@ npm install
 
 ### 3. Google Sheet backend
 
+> **Open the script from inside the Sheet, not from script.google.com.**
+> This is the one step that catches everyone. Going to script.google.com creates a
+> *standalone* project — the title bar says "Untitled project" — which has its own
+> separate Web App URL and cannot see your spreadsheet at all
+> (`getActiveSpreadsheet()` returns `null`). Deploying it changes nothing, because
+> your `.env` still points at the old deployment. The Health dashboard detects both
+> of these and tells you which one you have hit.
+
 1. Create a Google Sheet.
-2. **Extensions → Apps Script**, delete `Code.gs`, paste all of `google_apps_script.js`.
-3. Run **`setupSpreadsheet`** from the function dropdown (first time), or
+2. From **that Sheet**, choose **Extensions → Apps Script**. The project that opens
+   is bound to the Sheet — redeploying it keeps the same Web App URL, so nothing
+   else needs changing.
+3. Delete everything in `Code.gs` and paste all of `google_apps_script.js`.
+4. Run **`setupSpreadsheet`** from the function dropdown (first time), or
    **`upgradeSpreadsheet`** if you already have questions in an older layout — it
    migrates every row by header name, so nothing is lost.
-4. Generate a shared secret and register it in **both** places:
+
+   Running a function in the editor does **not** deploy it. Step 6 does that.
+5. Generate a shared secret and register it in **both** places:
 
    ```bash
    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
@@ -54,8 +67,15 @@ npm install
    - your `.env` → `SHEET_API_TOKEN`
 
    Without this, the `/exec` URL alone grants full access to your question bank.
-5. **Deploy → Manage deployments → Edit → New version.**
-   Execute as **Me**, Who has access **Anyone**. Copy the `/exec` URL.
+6. **Deploy → Manage deployments →** pencil icon **→ Version: New version → Deploy.**
+   Execute as **Me**, Who has access **Anyone**.
+
+   Use *Manage deployments* on the existing deployment rather than *New deployment*,
+   so the URL stays the same as the one in your `.env`. If you do create a new
+   deployment, copy its `/exec` URL into `GOOGLE_SHEET_WEBAPP_URL`.
+
+Check it worked by opening the **Health** dashboard: Google Sheets should read
+**Connected** with `v5 (30 columns)` and your spreadsheet's name.
 
 ### 4. Configure
 
@@ -183,13 +203,41 @@ proven, is in [SECURITY-REVIEW.md](SECURITY-REVIEW.md).
 
 ---
 
+## Troubleshooting
+
+**"Google Apps Script needs upgrading" banner won't go away.**
+The Web App at your `GOOGLE_SHEET_WEBAPP_URL` is still serving old code. Either you
+ran the function in the editor without deploying (running ≠ deploying — you need
+**Deploy → Manage deployments → Edit → New version**), or you pasted the code into a
+different project from the one that URL points at.
+
+**"The Apps Script is not attached to your spreadsheet".**
+The code is in a standalone project created at script.google.com. Open your Sheet →
+**Extensions → Apps Script** and paste it there instead. If you would rather keep the
+standalone project, add a Script property `SPREADSHEET_ID` set to the long id from
+your Sheet's URL, and copy that project's new `/exec` URL into `.env`.
+
+**Analytics or the question browser show "Unknown action".**
+Same cause — the deployed script predates those actions. Redeploy a new version.
+
+**A brief splash when moving between dashboards.**
+That is the session being restored from local storage, and it is expected. If you see
+the *sign-in form* rather than the splash, your browser is blocking site data for
+localhost, which stops Firebase persisting the session.
+
+**HTTP 503 "Server auth is not configured".**
+`FIREBASE_PROJECT_ID` is missing from `.env`. Set it and restart the server.
+
+**"Account … is not on the curator allowlist".**
+Add the address to `CURATOR_EMAILS` in `.env` and restart.
+
 ## Tests
 
 ```bash
 npm test
 ```
 
-75 tests across three suites:
+78 tests across three suites:
 
 - `test/server.test.js` — every API route, input validation, and a regression test for
   each security finding (traversal, CORS, SSRF, body limits, forged authorship).

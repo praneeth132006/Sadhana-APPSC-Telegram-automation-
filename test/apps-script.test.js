@@ -89,7 +89,11 @@ class FakeSheet {
 
 /** A stand-in spreadsheet holding several FakeSheets. */
 class FakeSpreadsheet {
-  constructor(sheets = []) { this.sheets = sheets; }
+  constructor(sheets = [], name = 'Sadhana APPSC Questions Tracker') {
+    this.sheets = sheets;
+    this.name = name;
+  }
+  getName() { return this.name; }
   getSheets() { return this.sheets; }
   getSheetByName(name) { return this.sheets.find((s) => s.name === name) || null; }
   insertSheet(name) { const s = new FakeSheet(name); this.sheets.push(s); return s; }
@@ -103,7 +107,10 @@ function loadScript(spreadsheet) {
     Logger: { log() {} },
 
     SpreadsheetApp: {
+      // `null` here simulates a standalone script created at script.google.com
+      // rather than from Extensions > Apps Script inside the Sheet.
       getActiveSpreadsheet: () => spreadsheet,
+      openById: (id) => (id === 'known-sheet-id' ? new FakeSpreadsheet([], 'Opened By Id') : null),
       newDataValidation: () => ({
         requireValueInList() { return this; },
         setAllowInvalid() { return this; },
@@ -609,6 +616,41 @@ test('doPost refuses a write without the token', () => {
     assert.match(response.error, /Unauthorized/);
   } finally {
     delete scriptProperties.API_TOKEN;
+  }
+});
+
+test('ping reports whether the script is attached to a spreadsheet', () => {
+  const bound = freshScript();
+  const okPing = JSON.parse(bound.doGet({ parameter: { action: 'ping' } }).text);
+  assert.equal(okPing.boundToSpreadsheet, true);
+  assert.equal(okPing.spreadsheetName, 'Sadhana APPSC Questions Tracker');
+});
+
+test('a standalone script reports unbound and explains the fix', () => {
+  // The exact failure the user hit: code pasted into a new "Untitled project"
+  // at script.google.com instead of into the Sheet's own bound script.
+  const standalone = loadScript(null);
+
+  const ping = JSON.parse(standalone.doGet({ parameter: { action: 'ping' } }).text);
+  assert.equal(ping.boundToSpreadsheet, false, 'an unbound script must say so');
+  assert.match(ping.message, /NOT attached to a spreadsheet/);
+
+  // Any real action fails with actionable guidance, not a null dereference.
+  const stats = JSON.parse(standalone.doGet({ parameter: { action: 'getStats' } }).text);
+  assert.equal(stats.success, false);
+  assert.match(stats.error, /Extensions > Apps Script/);
+  assert.match(stats.error, /SPREADSHEET_ID/);
+});
+
+test('SPREADSHEET_ID lets a standalone script reach the sheet anyway', () => {
+  scriptProperties.SPREADSHEET_ID = 'known-sheet-id';
+  try {
+    const standalone = loadScript(null);
+    const ping = JSON.parse(standalone.doGet({ parameter: { action: 'ping' } }).text);
+    assert.equal(ping.boundToSpreadsheet, true);
+    assert.equal(ping.spreadsheetName, 'Opened By Id');
+  } finally {
+    delete scriptProperties.SPREADSHEET_ID;
   }
 });
 

@@ -15,6 +15,8 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js';
 import {
   getAuth,
+  setPersistence,
+  browserLocalPersistence,
   signInWithPopup,
   GoogleAuthProvider,
   signInWithEmailAndPassword,
@@ -387,6 +389,25 @@ function buildAuthGate() {
   ]);
 }
 
+/**
+ * buildBootScreen — the neutral splash shown while Firebase restores the
+ * session from local storage.
+ *
+ * Without this the sign-in gate is what fills the screen during that gap, so
+ * every navigation between dashboards looked like being logged out again. The
+ * gate is now only revealed once Firebase has actually confirmed there is no
+ * user.
+ */
+function buildBootScreen() {
+  return el('div', { id: 'bootScreen', class: 'boot-screen' }, [
+    el('div', { class: 'boot-inner' }, [
+      el('div', { class: 'boot-spinner' }),
+      el('div', { class: 'boot-title', text: 'Sadhana APPSC' }),
+      el('div', { class: 'boot-hint', text: 'Restoring your session…' })
+    ])
+  ]);
+}
+
 /** Turns a Firebase error code into something a curator can act on. */
 function friendlyAuthError(err) {
   const code = (err && err.code) || '';
@@ -459,13 +480,22 @@ async function refreshConnectionStatus() {
       return;
     }
 
+    if (payload.unbound) {
+      // v5 is deployed but it cannot see any spreadsheet.
+      setConnectionStatus('warn', 'Sheets: script not attached to a sheet');
+      showBanner('error', 'The Apps Script is not attached to your spreadsheet.',
+        'It was created as a standalone project rather than from inside the Sheet. Open your Google ' +
+        'Sheet → Extensions → Apps Script, paste google_apps_script.js there, run upgradeSpreadsheet, ' +
+        'and deploy a new version of that project.');
+      return;
+    }
+
     if (payload.outdated) {
       // Reachable, but running an older script than these dashboards need.
       setConnectionStatus('warn', `Sheets: ${payload.version} — upgrade needed`);
       showBanner('warn', 'Google Apps Script needs upgrading.',
-        `The deployed backend is ${payload.version}, but the dashboards need ${payload.requiredVersion}. ` +
-        'Analytics, the question browser and editing will not work until you paste the current ' +
-        'google_apps_script.js into Apps Script, run upgradeSpreadsheet, and deploy a new version.');
+        payload.upgradeHint ||
+        `The deployed backend is ${payload.version}, but the dashboards need ${payload.requiredVersion}.`);
     } else {
       setConnectionStatus('online', `Sheets: connected · ${payload.version}`);
     }
@@ -500,10 +530,28 @@ export async function initDashboard({ page, onReady }) {
   const pageRoot = $('pageRoot');
 
   container.prepend(buildTopBar(page));
-  container.insertBefore(buildAuthGate(), pageRoot || null);
+
+  // The gate starts hidden. Showing it before Firebase has restored the
+  // session is what made every tab change look like a fresh logout.
+  const gate = buildAuthGate();
+  gate.style.display = 'none';
+  container.insertBefore(gate, pageRoot || null);
+
+  // The splash covers the page until the first auth state resolves.
+  document.body.append(buildBootScreen());
 
   if (!$('toastContainer')) {
     document.body.append(el('div', { id: 'toastContainer', class: 'toast-container' }));
+  }
+
+  // Persist the session in local storage so it survives navigation between
+  // dashboards, reloads and browser restarts. This is Firebase's default, but
+  // stating it explicitly means a change of default cannot silently log
+  // everyone out on every page load.
+  try {
+    await setPersistence(auth, browserLocalPersistence);
+  } catch (err) {
+    console.warn('[auth] could not set local persistence:', err.message);
   }
 
   // Bootstrap config drives the gate's behaviour (e.g. hiding registration).
@@ -533,22 +581,32 @@ export async function initDashboard({ page, onReady }) {
 
   let started = false;
 
+  /** Removes the splash once we know whether anyone is signed in. */
+  function dismissBootScreen() {
+    const boot = $('bootScreen');
+    if (!boot) return;
+    boot.classList.add('done');
+    setTimeout(() => boot.remove(), 260);
+  }
+
   onAuthStateChanged(auth, async (user) => {
-    const gate = $('authGate');
+    const authGate = $('authGate');
 
     if (!user) {
       currentUser = null;
       started = false;
-      if (gate) gate.style.display = 'flex';
+      if (authGate) authGate.style.display = 'flex';
       if (pageRoot) pageRoot.style.display = 'none';
       const chip = $('userProfileChip');
       if (chip) chip.style.display = 'none';
+      dismissBootScreen();
       return;
     }
 
     currentUser = user;
-    if (gate) gate.style.display = 'none';
+    if (authGate) authGate.style.display = 'none';
     if (pageRoot) pageRoot.style.display = '';
+    dismissBootScreen();
 
     const chip = $('userProfileChip');
     const avatar = $('userAvatar');

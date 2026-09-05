@@ -116,6 +116,60 @@ var SUBJECT_CONFIG_LIST = [
 ];
 
 // ============================================================================
+// Spreadsheet access
+// ============================================================================
+
+/**
+ * book — returns the spreadsheet this script operates on.
+ *
+ * A script created from Extensions > Apps Script inside the Sheet is "bound"
+ * to it, and getActiveSpreadsheet() returns that Sheet. A script created from
+ * script.google.com is standalone, getActiveSpreadsheet() returns null, and
+ * every function here would fail with an obscure null error.
+ *
+ * So: fail loudly with the actual fix, and offer an escape hatch for anyone who
+ * genuinely wants a standalone project (set SPREADSHEET_ID in Script
+ * properties to the long id in the Sheet's URL).
+ *
+ * @returns {Spreadsheet} The spreadsheet to read and write
+ */
+function book() {
+  var active = SpreadsheetApp.getActiveSpreadsheet();
+  if (active) return active;
+
+  var id = '';
+  try {
+    id = String(PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID') || '').trim();
+  } catch (err) {
+    id = '';
+  }
+
+  if (id) return SpreadsheetApp.openById(id);
+
+  throw new Error(
+    'This script is not attached to a spreadsheet. It looks like it was created as a ' +
+    'standalone project (the title bar says "Untitled project") rather than from inside ' +
+    'the Sheet. Fix it either way:\n' +
+    '  A) Open your Google Sheet > Extensions > Apps Script, and paste this code THERE. ' +
+    'That project is already bound to the Sheet, and redeploying it keeps your existing ' +
+    'Web App URL so nothing else needs changing.\n' +
+    '  B) Or keep this standalone project and add a Script property named SPREADSHEET_ID ' +
+    'set to the long id from your Sheet URL ' +
+    '(docs.google.com/spreadsheets/d/THIS_PART/edit). If you go this route you must also ' +
+    'copy the NEW /exec URL from this project into GOOGLE_SHEET_WEBAPP_URL in your .env.'
+  );
+}
+
+/** True when this script can reach a spreadsheet at all. */
+function isBound() {
+  try {
+    return Boolean(book());
+  } catch (err) {
+    return false;
+  }
+}
+
+// ============================================================================
 // Request routing
 // ============================================================================
 
@@ -132,12 +186,17 @@ function doGet(e) {
     // ping is deliberately unauthenticated: it is the liveness probe the
     // dashboard status pill uses, and it returns no spreadsheet data.
     if (action === 'ping') {
+      var bound = isBound();
       return jsonResponse({
         success: true,
         status: 'ok',
         version: 'v5 (30 columns)',
         tokenRequired: Boolean(getApiToken()),
-        message: 'Google Sheets API is running with 30-column enhanced tracking'
+        boundToSpreadsheet: bound,
+        spreadsheetName: bound ? book().getName() : null,
+        message: bound
+          ? 'Google Sheets API is running with 30-column enhanced tracking'
+          : 'Script is deployed but NOT attached to a spreadsheet — see the Health dashboard'
       });
     }
 
@@ -445,14 +504,14 @@ function colNum(map, header) {
 
 /** Names of every sheet tab that holds questions (excludes Config etc). */
 function listSubjectSheets() {
-  return SpreadsheetApp.getActiveSpreadsheet().getSheets()
+  return book().getSheets()
     .map(function (s) { return s.getName(); })
     .filter(function (n) { return RESERVED_SHEETS.indexOf(n) === -1; });
 }
 
 /** Reads the Config tab into structured objects. */
 function fetchConfigFromSheet() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = book();
   var sheet = ss.getSheetByName('Config');
   if (!sheet) throw new Error('Sheet named "Config" not found. Run setupSpreadsheet() first.');
 
@@ -518,7 +577,7 @@ function rowToQuestion(row, map, subject, dataIndex) {
  * @param {boolean} requireApproved When true only Status=Approved rows qualify.
  */
 function fetchUnpostedQuestions(subject, limit, requireApproved) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(subject);
+  var sheet = book().getSheetByName(subject);
   if (!sheet) throw new Error('Sheet tab "' + subject + '" not found in spreadsheet.');
 
   var lastRow = sheet.getLastRow();
@@ -555,7 +614,7 @@ function listQuestions(params) {
   var page = clampInt(params.page, 1, 1, 100000);
   var pageSize = clampInt(params.pageSize, 25, 1, 200);
 
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = book();
   var matched = [];
 
   for (var s = 0; s < subjects.length; s++) {
@@ -609,7 +668,7 @@ function fetchSummaryStats() {
  * breakdowns, curator contributions, a posting timeline and data-quality flags.
  */
 function buildAnalytics() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = book();
   var configs = [];
   try { configs = fetchConfigFromSheet(); } catch (err) { configs = []; }
 
@@ -790,7 +849,7 @@ function findExistingHashes(hashes) {
   var wanted = {};
   hashes.forEach(function (h) { wanted[h] = true; });
 
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = book();
   var names = listSubjectSheets();
   var existing = {};
 
@@ -823,7 +882,7 @@ function findExistingHashes(hashes) {
  * @param {Object} pollIds Optional { rowNumber: pollId } map from the sender.
  */
 function markRowsAsPostedInSheet(subject, rowIndices, messageId, threadId, pollIds) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(subject);
+  var sheet = book().getSheetByName(subject);
   if (!sheet) throw new Error('Sheet tab "' + subject + '" not found in spreadsheet.');
 
   var map = headerMap(sheet);
@@ -857,7 +916,7 @@ function markRowsAsPostedInSheet(subject, rowIndices, messageId, threadId, pollI
  * exists in the target sheet when skipDuplicates is on.
  */
 function appendQuestionsToSheet(subject, questions, addedBy, skipDuplicates) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = book();
   var sheet = ss.getSheetByName(subject);
   if (!sheet) {
     sheet = ss.insertSheet(subject);
@@ -980,7 +1039,7 @@ var EDITABLE_FIELDS = {
 
 /** Applies an allowlisted field patch to one question row. */
 function updateQuestionRow(subject, questionId, fields, updatedBy) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(subject);
+  var sheet = book().getSheetByName(subject);
   if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
 
   var map = headerMap(sheet);
@@ -1013,7 +1072,7 @@ function updateQuestionRow(subject, questionId, fields, updatedBy) {
 
 /** Deletes one question row by Question ID. */
 function deleteQuestionRow(subject, questionId) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(subject);
+  var sheet = book().getSheetByName(subject);
   if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
   var map = headerMap(sheet);
   var rowNumber = findRowByQuestionId(sheet, map, questionId);
@@ -1024,7 +1083,7 @@ function deleteQuestionRow(subject, questionId) {
 
 /** Sets Status on many rows at once (approve / reject / archive in bulk). */
 function bulkSetStatus(subject, questionIds, status, updatedBy) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(subject);
+  var sheet = book().getSheetByName(subject);
   if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
 
   var map = headerMap(sheet);
@@ -1045,7 +1104,7 @@ function bulkSetStatus(subject, questionIds, status, updatedBy) {
 
 /** Stamps Scheduled For and flips Status to Scheduled for the given questions. */
 function scheduleQuestionRows(subject, questionIds, scheduledFor, updatedBy) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(subject);
+  var sheet = book().getSheetByName(subject);
   if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
 
   var map = headerMap(sheet);
@@ -1066,7 +1125,7 @@ function scheduleQuestionRows(subject, questionIds, scheduledFor, updatedBy) {
 
 /** Writes topic thread ids back into the Config tab after `node setup.js`. */
 function updateConfigInSheet(configData) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Config');
+  var sheet = book().getSheetByName('Config');
   if (!sheet) throw new Error('Config sheet not found. Run setupSpreadsheet() first.');
 
   var lastRow = sheet.getLastRow();
@@ -1284,7 +1343,7 @@ function applyConditionalFormatting(sheet) {
  * apart from having headers ensured.
  */
 function setupSpreadsheet() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = book();
 
   var config = ss.getSheetByName('Config');
   if (!config) config = ss.insertSheet('Config');
@@ -1312,7 +1371,7 @@ function setupSpreadsheet() {
     }
   }
 
-  SpreadsheetApp.getActiveSpreadsheet().toast(
+  book().toast(
     'Setup complete — ' + SUBJECT_CONFIG_LIST.length + ' subject tabs on the 30-column schema.',
     'Sadhana APPSC', 10
   );
@@ -1324,7 +1383,7 @@ function setupSpreadsheet() {
  * name, preserving all data, then reports what it touched.
  */
 function upgradeSpreadsheet() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = book();
   var names = listSubjectSheets();
   var report = [];
 
