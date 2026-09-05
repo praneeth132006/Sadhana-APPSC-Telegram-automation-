@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Received — Sadhana APPSC</title>
+  <meta name="description" content="Your APPSC premium group pass is confirmed. Your private invite link has been sent to you on Telegram.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    /* This page is shown to paying students, not curators, so it deliberately
+       carries none of the dashboard chrome — no nav, no sign-in gate. */
+    .thanks-wrap {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .thanks-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      padding: 40px 34px;
+      max-width: 520px;
+      width: 100%;
+      text-align: center;
+    }
+
+    .thanks-icon { font-size: 3.4rem; line-height: 1; margin-bottom: 14px; }
+
+    .thanks-title {
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 10px;
+    }
+
+    .thanks-body {
+      color: var(--text-secondary);
+      line-height: 1.7;
+      font-size: 0.95rem;
+    }
+
+    .thanks-steps {
+      text-align: left;
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 18px 20px;
+      margin: 22px 0;
+    }
+
+    .thanks-steps li { margin-bottom: 10px; line-height: 1.6; }
+    .thanks-steps li:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+  <div class="thanks-wrap">
+    <div class="thanks-card">
+      <div class="thanks-icon">✅</div>
+      <h1 class="thanks-title">Payment received</h1>
+
+      <p class="thanks-body">
+        Thank you — your APPSC Premium pass is being activated.
+      </p>
+
+      <ol class="thanks-steps">
+        <li><strong>Go back to Telegram.</strong> The bot is sending your private invite link right now.</li>
+        <li><strong>Tap the link</strong> to join the premium group. It only works once, so do not forward it.</li>
+        <li>Send <strong>/status</strong> to the bot any time to see your expiry date.</li>
+      </ol>
+
+      <p class="thanks-body">
+        Nothing after a minute or two? Send <strong>/status</strong> to the bot — if the payment
+        went through, it will show your pass and link. Otherwise reply to the bot and an
+        admin will sort it out.
+      </p>
+    </div>
+  </div>
+</body>
+</html>

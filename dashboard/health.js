@@ -139,6 +139,56 @@ function connectivityChecks(data) {
   checks.push(check('pass', 'Dashboard server',
     `Running on Node ${data.server.node}, bound to <code>${data.server.host}</code>, up for ${formatUptime(data.server.uptimeSeconds)}.`));
 
+  // Membership actions live in the same Apps Script, but only in a deployment
+  // made after the payments release.
+  if (data.sheets.reachable && data.sheets.membershipReady === false) {
+    checks.push(check('fail', 'Subscription storage',
+      'The deployed Apps Script does not have the membership actions, so every payment webhook will fail ' +
+      'and nobody gets group access after paying. Paste the current <code>google_apps_script.js</code>, run ' +
+      '<code>setupSubscriptionSheets</code>, and deploy a new version. ' +
+      `<br><small>${data.sheets.membershipError || ''}</small>`));
+  } else if (data.sheets.membershipReady) {
+    checks.push(check('pass', 'Subscription storage',
+      'Subscribers and Payments tabs are reachable — paid members will be recorded.'));
+  }
+
+  // Payment pipeline.
+  if (data.payments) {
+    const p = data.payments;
+
+    checks.push(p.configured
+      ? check(p.testMode ? 'warn' : 'pass', 'Razorpay keys',
+          p.testMode
+            ? 'Running in <strong>TEST mode</strong>. Real money is not charged — switch to live keys when you are ready to sell.'
+            : 'Live keys configured.')
+      : check('fail', 'Razorpay keys',
+          'Set <code>RAZORPAY_KEY_ID</code> and <code>RAZORPAY_KEY_SECRET</code> in <code>.env</code>.'));
+
+    checks.push(p.webhookSecretSet
+      ? check('pass', 'Webhook signature secret',
+          'Set. Every webhook must carry a matching HMAC signature, so a forged "payment captured" cannot buy a free seat.')
+      : check('fail', 'Webhook signature secret',
+          'No <code>RAZORPAY_WEBHOOK_SECRET</code>. Every webhook is rejected, so nobody gets access after paying. ' +
+          'Generate one, put it in <code>.env</code>, and paste the same value into Razorpay → Settings → Webhooks.'));
+
+    checks.push(p.premiumGroupSet
+      ? check('pass', 'Premium group', 'Configured — invite links will point at it.')
+      : check('fail', 'Premium group',
+          'Set <code>TELEGRAM_PREMIUM_GROUP_ID</code> (or <code>TELEGRAM_GROUP_ID</code>) so paid members have somewhere to join.'));
+
+    checks.push(p.recurringPlanReady
+      ? check('pass', 'Monthly Auto-Pay plan', 'Razorpay plan id configured.')
+      : check('warn', 'Monthly Auto-Pay plan',
+          'No <code>RAZORPAY_MONTHLY_PLAN_ID</code>. The two one-time passes work; the recurring option will error ' +
+          'until you run <code>node setup-razorpay.js</code> and add the id to <code>.env</code>.'));
+
+    checks.push(p.publicBaseUrl
+      ? check('pass', 'Public base URL', `Webhooks and redirects use <code>${p.publicBaseUrl}</code>.`)
+      : check('warn', 'Public base URL',
+          'No <code>PUBLIC_BASE_URL</code>. Razorpay needs a publicly reachable URL to deliver webhooks to; ' +
+          'localhost will not receive them.'));
+  }
+
   return el('div', { class: 'check-list' }, checks);
 }
 

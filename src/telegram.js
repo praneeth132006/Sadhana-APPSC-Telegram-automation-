@@ -365,6 +365,94 @@ async function sendQuizPoll(threadId, question) {
 }
 
 /**
+ * createSingleUseInviteLink — mints a private invite only one person can use.
+ * What it does: Calls createChatInviteLink with member_limit 1 and an expiry.
+ * What it brings: A paid seat cannot be shared — the link dies on first use, so
+ * forwarding it gives away your own place rather than creating a free one.
+ * Where changes can be seen: The link DMed to a student after they pay.
+ *
+ * @param {string|number} chatId — Group to invite into
+ * @param {string} name — Label shown in the group's invite-link list
+ * @param {number} [expireUnix] — Unix time the unused link stops working
+ * @returns {Promise<Object>} The invite link object, with `invite_link`
+ */
+async function createSingleUseInviteLink(chatId, name, expireUnix) {
+  if (!bot) throw new Error('Bot not initialized');
+
+  const options = { member_limit: 1 };
+  if (name) options.name = String(name).slice(0, 32);
+  if (expireUnix) options.expire_date = expireUnix;
+
+  return bot.createChatInviteLink(chatId, options);
+}
+
+/**
+ * sendDirectMessage — sends a private message to one user.
+ * What it does: Posts to the user's own chat with the bot.
+ * What it brings: Invite links, renewal reminders and expiry notices reach the
+ * student privately instead of being posted in the group.
+ * Where changes can be seen: The student's DM thread with the bot.
+ *
+ * Note: Telegram forbids a bot from opening a conversation, so this only works
+ * after the student has messaged the bot at least once.
+ *
+ * @param {string|number} userId — Telegram user id
+ * @param {string} text — HTML-formatted message
+ * @param {Object} [extra] — Extra sendMessage options, e.g. reply_markup
+ * @returns {Promise<Object>} The sent message
+ */
+async function sendDirectMessage(userId, text, extra) {
+  if (!bot) throw new Error('Bot not initialized');
+
+  return bot.sendMessage(userId, text, Object.assign({
+    parse_mode: 'HTML',
+    disable_web_page_preview: true
+  }, extra || {}));
+}
+
+/**
+ * banChatMember — removes a user from a group.
+ * Paired with unbanChatMember to kick without a permanent ban.
+ *
+ * @param {string|number} chatId — Group id
+ * @param {string|number} userId — User to remove
+ */
+async function banChatMember(chatId, userId) {
+  if (!bot) throw new Error('Bot not initialized');
+  return bot.banChatMember(chatId, userId);
+}
+
+/**
+ * unbanChatMember — lifts a ban so the user can rejoin later.
+ * What it brings: A lapsed subscriber who pays again can come straight back;
+ * without this, removal would be permanent.
+ *
+ * @param {string|number} chatId — Group id
+ * @param {string|number} userId — User to unban
+ */
+async function unbanChatMember(chatId, userId) {
+  if (!bot) throw new Error('Bot not initialized');
+  return bot.unbanChatMember(chatId, userId, { only_if_banned: true });
+}
+
+/**
+ * getChatMemberStatus — whether a user is currently in the group.
+ *
+ * @param {string|number} chatId — Group id
+ * @param {string|number} userId — User to check
+ * @returns {Promise<string>} 'member', 'administrator', 'left', 'kicked', or 'unknown'
+ */
+async function getChatMemberStatus(chatId, userId) {
+  if (!bot) throw new Error('Bot not initialized');
+  try {
+    const member = await bot.getChatMember(chatId, userId);
+    return member && member.status ? member.status : 'unknown';
+  } catch (err) {
+    return 'unknown';
+  }
+}
+
+/**
  * setGroupId — Updates the internal supergroup chat ID in the telegram module.
  * What it does: Replaces the module-level groupId variable with a newly discovered or user-provided ID.
  * What it brings: Allows dynamic runtime configuration of the group ID without restarting the process.
@@ -452,6 +540,11 @@ async function detectGroupId() {
 // Export all functions for use by send.js, setup.js, and scheduler.js
 module.exports = {
   getBotInfo,
+  createSingleUseInviteLink,
+  sendDirectMessage,
+  banChatMember,
+  unbanChatMember,
+  getChatMemberStatus,
   init,
   testConnection,
   createForumTopic,

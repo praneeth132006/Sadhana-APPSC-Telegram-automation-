@@ -92,8 +92,54 @@ var STATUS_VALUES = ['Draft', 'Review', 'Approved', 'Scheduled', 'Posted', 'Reje
 /** Allowed values for the Difficulty column. */
 var DIFFICULTY_VALUES = ['Easy', 'Medium', 'Hard'];
 
-/** Sheet tabs that are configuration, not question banks. */
-var RESERVED_SHEETS = ['Config', 'Dashboard', 'README'];
+/** Sheet tabs that are configuration or membership, not question banks. */
+var RESERVED_SHEETS = ['Config', 'Dashboard', 'README', 'Subscribers', 'Payments'];
+
+/** Tab holding one row per paying member. */
+var SUBSCRIBER_SHEET = 'Subscribers';
+
+/**
+ * Subscriber columns (A..S).
+ * One row per Telegram user. A renewal updates the row in place and appends to
+ * the Payments log, so the current state of a member is always a single row.
+ */
+var SUBSCRIBER_HEADERS = [
+  'Telegram ID',      // A  Primary key
+  'Username',         // B  @handle, may be blank
+  'Name',             // C  Display name from Telegram
+  'Plan',             // D  sprint_30 | autopay_monthly | exam_pass
+  'Plan Label',       // E  Human readable, for the sheet reader
+  'Status',           // F  pending | active | expired | cancelled | removed
+  'Start Date',       // G  When access began
+  'Expiry Date',      // H  When access ends — the field the cron acts on
+  'Amount',           // I  Rupees paid on the most recent payment
+  'Payment ID',       // J  Razorpay payment id
+  'Link/Sub ID',      // K  Payment link id, or subscription id for auto-pay
+  'Subscription ID',  // L  Razorpay subscription id, recurring plan only
+  'Total Paid',       // M  Lifetime rupees from this member
+  'Renewals',         // N  How many times they have paid
+  'Reminder Sent',    // O  Expiry date a reminder was last sent for
+  'Invite Link',      // P  The single-use link issued to them
+  'Joined At',        // Q  First payment
+  'Last Payment At',  // R  Most recent payment
+  'Notes'             // S  Free text
+];
+
+/** Tab holding an append-only log of every payment event. */
+var PAYMENT_SHEET = 'Payments';
+
+/** Payment log columns (A..I). */
+var PAYMENT_HEADERS = [
+  'Timestamp',
+  'Telegram ID',
+  'Username',
+  'Plan',
+  'Amount',
+  'Payment ID',
+  'Event',
+  'Status',
+  'Expiry After'
+];
 
 /** Master subject list with default Telegram thread ids and cron schedules. */
 var SUBJECT_CONFIG_LIST = [
@@ -233,6 +279,26 @@ function doGet(e) {
       return jsonResponse({ success: true, data: listQuestions(params) });
     }
 
+    // ---- Membership reads --------------------------------------------------
+    if (action === 'getSubscriber') {
+      if (!params.telegramId) {
+        return jsonResponse({ success: false, error: 'Missing telegramId' });
+      }
+      return jsonResponse({ success: true, data: getSubscriber(params.telegramId) });
+    }
+
+    if (action === 'listSubscribers') {
+      return jsonResponse({ success: true, data: listSubscribers(params) });
+    }
+
+    if (action === 'getExpiring') {
+      return jsonResponse({ success: true, data: getExpiringSubscribers(parseInt(params.days || '0', 10)) });
+    }
+
+    if (action === 'getRevenue') {
+      return jsonResponse({ success: true, data: buildRevenueStats() });
+    }
+
     if (action === 'checkDuplicates') {
       var hashes = String(params.hashes || '').split(',').filter(function (h) { return h; });
       return jsonResponse({ success: true, data: findExistingHashes(hashes) });
@@ -339,6 +405,34 @@ function doPost(e) {
         payload.updated_by || 'Dashboard User'
       );
       return jsonResponse({ success: true, updatedCount: count });
+    }
+
+    // ---- Membership writes -------------------------------------------------
+    if (action === 'upsertSubscriber') {
+      if (!payload.subscriber || !payload.subscriber.telegram_id) {
+        return jsonResponse({ success: false, error: 'Missing subscriber.telegram_id' });
+      }
+      var saved = upsertSubscriber(payload.subscriber);
+      // A payment also appends to the immutable log, so renewal history
+      // survives the member row being overwritten in place.
+      if (payload.subscriber.is_payment) {
+        logPayment({
+          telegram_id: saved.telegram_id,
+          username: saved.username,
+          plan: saved.plan,
+          amount: payload.subscriber.amount,
+          payment_id: saved.payment_id,
+          event: payload.event || 'payment',
+          status: saved.status,
+          expiry_date: saved.expiry_date
+        });
+      }
+      return jsonResponse({ success: true, data: saved });
+    }
+
+    if (action === 'logPayment') {
+      logPayment(payload.entry || {});
+      return jsonResponse({ success: true });
     }
 
     if (action === 'scheduleQuestions') {
@@ -1222,6 +1316,393 @@ function updateConfigInSheet(configData) {
       sheet.getRange(r + 2, 3).setValue(matched.topic_thread_id);
     }
   }
+}
+
+// ============================================================================
+// Subscribers & payments
+// ============================================================================
+
+/**
+ * subscriberSheet — returns the Subscribers tab, creating it if absent.
+ *
+ * @returns {Sheet}
+ */
+function subscriberSheet() {
+  var ss = book();
+  var sheet = ss.getSheetByName(SUBSCRIBER_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(SUBSCRIBER_SHEET);
+    formatSimpleSheet(sheet, SUBSCRIBER_HEADERS,
+      [120, 140, 170, 130, 190, 100, 170, 170, 90, 180, 190, 190, 95, 90, 130, 260, 170, 170, 220]);
+    applySubscriberFormatting(sheet);
+  }
+  return sheet;
+}
+
+/** Returns the Payments log tab, creating it if absent. */
+function paymentSheet() {
+  var ss = book();
+  var sheet = ss.getSheetByName(PAYMENT_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(PAYMENT_SHEET);
+    formatSimpleSheet(sheet, PAYMENT_HEADERS, [180, 120, 140, 140, 90, 190, 180, 100, 170]);
+  }
+  return sheet;
+}
+
+/**
+ * formatSimpleSheet — writes and styles a header row for the flat tabs.
+ *
+ * @param {Sheet} sheet Target
+ * @param {Array<string>} headers Header labels
+ * @param {Array<number>} widths Column widths in pixels
+ */
+function formatSimpleSheet(sheet, headers, widths) {
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers])
+    .setFontWeight('bold').setFontColor('#ffffff').setBackground('#1a237e')
+    .setVerticalAlignment('middle').setWrap(true);
+  sheet.setFrozenRows(1);
+  sheet.setFrozenColumns(1);
+  sheet.setRowHeight(1, 40);
+  for (var i = 0; i < widths.length; i++) sheet.setColumnWidth(i + 1, widths[i]);
+}
+
+/** Colour codes the Status column so lapsed members stand out. */
+function applySubscriberFormatting(sheet) {
+  var rows = Math.max(sheet.getMaxRows() - 1, 1);
+  var statusRange = sheet.getRange(2, 6, rows, 1); // Column F
+
+  function rule(text, bg, fg) {
+    return SpreadsheetApp.newConditionalFormatRule()
+      .whenTextEqualTo(text).setBackground(bg).setFontColor(fg)
+      .setRanges([statusRange]).build();
+  }
+
+  sheet.setConditionalFormatRules([
+    rule('active',    '#c8e6c9', '#1b5e20'),
+    rule('pending',   '#fff9c4', '#f57f17'),
+    rule('expired',   '#ffcdd2', '#b71c1c'),
+    rule('cancelled', '#ffe0b2', '#e65100'),
+    rule('removed',   '#eceff1', '#455a64')
+  ]);
+}
+
+/** Turns a subscriber row array into an object. */
+function rowToSubscriber(row, rowNumber) {
+  return {
+    telegram_id: String(row[0] || '').trim(),
+    username: String(row[1] || '').trim(),
+    name: String(row[2] || '').trim(),
+    plan: String(row[3] || '').trim(),
+    plan_label: String(row[4] || '').trim(),
+    status: String(row[5] || '').trim().toLowerCase(),
+    start_date: String(row[6] || '').trim(),
+    expiry_date: String(row[7] || '').trim(),
+    amount: Number(row[8]) || 0,
+    payment_id: String(row[9] || '').trim(),
+    link_id: String(row[10] || '').trim(),
+    subscription_id: String(row[11] || '').trim(),
+    total_paid: Number(row[12]) || 0,
+    renewals: Number(row[13]) || 0,
+    reminder_sent: String(row[14] || '').trim(),
+    invite_link: String(row[15] || '').trim(),
+    joined_at: String(row[16] || '').trim(),
+    last_payment_at: String(row[17] || '').trim(),
+    notes: String(row[18] || '').trim(),
+    row_number: rowNumber
+  };
+}
+
+/**
+ * findSubscriberRow — locates a member by Telegram id.
+ *
+ * @param {Sheet} sheet Subscribers tab
+ * @param {string|number} telegramId
+ * @returns {number} 1-based row number, or -1
+ */
+function findSubscriberRow(sheet, telegramId) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return -1;
+
+  var target = String(telegramId).trim();
+  var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (var i = 0; i < ids.length; i++) {
+    if (String(ids[i][0] || '').trim() === target) return i + 2;
+  }
+  return -1;
+}
+
+/**
+ * getSubscriber — one member by Telegram id.
+ *
+ * @param {string|number} telegramId
+ * @returns {Object|null}
+ */
+function getSubscriber(telegramId) {
+  var sheet = subscriberSheet();
+  var rowNumber = findSubscriberRow(sheet, telegramId);
+  if (rowNumber === -1) return null;
+
+  var row = sheet.getRange(rowNumber, 1, 1, SUBSCRIBER_HEADERS.length).getValues()[0];
+  return rowToSubscriber(row, rowNumber);
+}
+
+/**
+ * upsertSubscriber — creates or updates a member row.
+ *
+ * A renewal must never reset the lifetime counters, so Total Paid and Renewals
+ * accumulate and Joined At is only ever written once. `isPayment` distinguishes
+ * a real payment from a status-only change such as the cron marking someone
+ * expired, which must not inflate the revenue figures.
+ *
+ * @param {Object} data Fields to write
+ * @returns {Object} The stored subscriber
+ */
+function upsertSubscriber(data) {
+  var sheet = subscriberSheet();
+  var telegramId = String(data.telegram_id || '').trim();
+  if (!telegramId) throw new Error('upsertSubscriber requires telegram_id');
+
+  var rowNumber = findSubscriberRow(sheet, telegramId);
+  var now = istNow();
+  var existing = rowNumber === -1
+    ? null
+    : rowToSubscriber(sheet.getRange(rowNumber, 1, 1, SUBSCRIBER_HEADERS.length).getValues()[0], rowNumber);
+
+  var isPayment = Boolean(data.is_payment);
+  var amount = Number(data.amount) || 0;
+
+  // Prefer the incoming value, then what is already stored, then a default.
+  function pick(key, fallback) {
+    if (data[key] !== undefined && data[key] !== null && String(data[key]) !== '') return data[key];
+    if (existing && existing[key]) return existing[key];
+    return fallback;
+  }
+
+  var row = [
+    telegramId,
+    pick('username', ''),
+    pick('name', ''),
+    pick('plan', ''),
+    pick('plan_label', ''),
+    String(data.status || (existing ? existing.status : 'pending')).toLowerCase(),
+    pick('start_date', now),
+    pick('expiry_date', ''),
+    isPayment ? amount : (existing ? existing.amount : 0),
+    pick('payment_id', ''),
+    pick('link_id', ''),
+    pick('subscription_id', ''),
+    (existing ? existing.total_paid : 0) + (isPayment ? amount : 0),
+    (existing ? existing.renewals : 0) + (isPayment ? 1 : 0),
+    // A new expiry means the old reminder no longer applies.
+    data.reminder_sent !== undefined ? data.reminder_sent : (existing ? existing.reminder_sent : ''),
+    pick('invite_link', ''),
+    existing && existing.joined_at ? existing.joined_at : now,
+    isPayment ? now : (existing ? existing.last_payment_at : ''),
+    pick('notes', '')
+  ];
+
+  if (rowNumber === -1) {
+    sheet.appendRow(row);
+    rowNumber = sheet.getLastRow();
+    applySubscriberFormatting(sheet);
+  } else {
+    sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
+  }
+
+  return rowToSubscriber(row, rowNumber);
+}
+
+/**
+ * logPayment — appends to the immutable payment log.
+ * Separate from the subscriber row so renewal history survives even though the
+ * member row is overwritten in place.
+ */
+function logPayment(entry) {
+  paymentSheet().appendRow([
+    istNow(),
+    String(entry.telegram_id || ''),
+    String(entry.username || ''),
+    String(entry.plan || ''),
+    Number(entry.amount) || 0,
+    String(entry.payment_id || ''),
+    String(entry.event || ''),
+    String(entry.status || ''),
+    String(entry.expiry_date || '')
+  ]);
+  return true;
+}
+
+/**
+ * listSubscribers — filtered list for the Members dashboard.
+ *
+ * @param {Object} params status, plan, search, page, pageSize
+ */
+function listSubscribers(params) {
+  var sheet = subscriberSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return { total: 0, page: 1, totalPages: 1, subscribers: [] };
+
+  var values = sheet.getRange(2, 1, lastRow - 1, SUBSCRIBER_HEADERS.length).getValues();
+  var statusFilter = String(params.status || '').trim().toLowerCase();
+  var planFilter = String(params.plan || '').trim();
+  var search = String(params.search || '').trim().toLowerCase();
+  var page = clampInt(params.page, 1, 1, 100000);
+  var pageSize = clampInt(params.pageSize, 50, 1, 500);
+
+  var matched = [];
+  for (var i = 0; i < values.length; i++) {
+    var sub = rowToSubscriber(values[i], i + 2);
+    if (!sub.telegram_id) continue;
+    if (statusFilter && sub.status !== statusFilter) continue;
+    if (planFilter && sub.plan !== planFilter) continue;
+    if (search) {
+      var haystack = (sub.telegram_id + ' ' + sub.username + ' ' + sub.name + ' ' + sub.payment_id).toLowerCase();
+      if (haystack.indexOf(search) === -1) continue;
+    }
+    matched.push(sub);
+  }
+
+  var start = (page - 1) * pageSize;
+  return {
+    total: matched.length,
+    page: page,
+    pageSize: pageSize,
+    totalPages: Math.max(1, Math.ceil(matched.length / pageSize)),
+    subscribers: matched.slice(start, start + pageSize)
+  };
+}
+
+/**
+ * getExpiringSubscribers — members whose access ends within `days`.
+ * Used by the daily cron for both reminders and removals; `days: 0` returns
+ * only those already past expiry.
+ *
+ * @param {number} days Look-ahead window
+ * @returns {Array<Object>}
+ */
+function getExpiringSubscribers(days) {
+  var sheet = subscriberSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return [];
+
+  var values = sheet.getRange(2, 1, lastRow - 1, SUBSCRIBER_HEADERS.length).getValues();
+  var horizon = new Date().getTime() + (Number(days) || 0) * 24 * 60 * 60 * 1000;
+  var results = [];
+
+  for (var i = 0; i < values.length; i++) {
+    var sub = rowToSubscriber(values[i], i + 2);
+    if (!sub.telegram_id) continue;
+    // Only members who currently hold access can lapse.
+    if (sub.status !== 'active') continue;
+
+    var expiry = parseIstDate(sub.expiry_date);
+    if (!expiry) continue;
+    if (expiry.getTime() <= horizon) {
+      sub.expiry_ms = expiry.getTime();
+      sub.days_left = Math.ceil((expiry.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+      results.push(sub);
+    }
+  }
+  return results;
+}
+
+/**
+ * parseIstDate — parses the "dd-MM-yyyy, hh:mm:ss a IST" stamps this book uses.
+ * Also accepts a bare dd-MM-yyyy.
+ *
+ * @param {string} value
+ * @returns {Date|null}
+ */
+function parseIstDate(value) {
+  var text = String(value || '').trim();
+  if (!text || text === '-') return null;
+
+  var match = text.match(/^(\d{2})-(\d{2})-(\d{4})(?:,\s*(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM))?/i);
+  if (!match) return null;
+
+  var hour = match[4] ? parseInt(match[4], 10) : 23;
+  var minute = match[5] ? parseInt(match[5], 10) : 59;
+  var second = match[6] ? parseInt(match[6], 10) : 59;
+
+  if (match[7]) {
+    var meridiem = match[7].toUpperCase();
+    if (meridiem === 'PM' && hour < 12) hour += 12;
+    if (meridiem === 'AM' && hour === 12) hour = 0;
+  }
+
+  return new Date(
+    parseInt(match[3], 10), parseInt(match[2], 10) - 1, parseInt(match[1], 10),
+    hour, minute, second
+  );
+}
+
+/**
+ * buildRevenueStats — totals for the Members dashboard.
+ *
+ * @returns {Object}
+ */
+function buildRevenueStats() {
+  var sheet = subscriberSheet();
+  var lastRow = sheet.getLastRow();
+
+  var stats = {
+    totalMembers: 0, active: 0, pending: 0, expired: 0, cancelled: 0, removed: 0,
+    totalRevenue: 0, byPlan: {}, expiringIn7Days: 0, generatedAt: istNow()
+  };
+
+  if (lastRow > 1) {
+    var values = sheet.getRange(2, 1, lastRow - 1, SUBSCRIBER_HEADERS.length).getValues();
+    var weekAhead = Date.now() + 7 * 24 * 60 * 60 * 1000;
+
+    for (var i = 0; i < values.length; i++) {
+      var sub = rowToSubscriber(values[i], i + 2);
+      if (!sub.telegram_id) continue;
+
+      stats.totalMembers++;
+      if (stats[sub.status] !== undefined) stats[sub.status]++;
+      stats.totalRevenue += sub.total_paid;
+
+      if (sub.plan) {
+        if (!stats.byPlan[sub.plan]) stats.byPlan[sub.plan] = { count: 0, revenue: 0, label: sub.plan_label };
+        stats.byPlan[sub.plan].count++;
+        stats.byPlan[sub.plan].revenue += sub.total_paid;
+      }
+
+      if (sub.status === 'active') {
+        var expiry = parseIstDate(sub.expiry_date);
+        if (expiry && expiry.getTime() <= weekAhead) stats.expiringIn7Days++;
+      }
+    }
+  }
+
+  // Recent payments give the dashboard a live activity feed.
+  var pay = book().getSheetByName(PAYMENT_SHEET);
+  stats.recentPayments = [];
+  if (pay && pay.getLastRow() > 1) {
+    var take = Math.min(pay.getLastRow() - 1, 20);
+    var rows = pay.getRange(pay.getLastRow() - take + 1, 1, take, PAYMENT_HEADERS.length).getValues();
+    for (var r = rows.length - 1; r >= 0; r--) {
+      stats.recentPayments.push({
+        timestamp: String(rows[r][0] || ''),
+        telegram_id: String(rows[r][1] || ''),
+        username: String(rows[r][2] || ''),
+        plan: String(rows[r][3] || ''),
+        amount: Number(rows[r][4]) || 0,
+        payment_id: String(rows[r][5] || ''),
+        event: String(rows[r][6] || '')
+      });
+    }
+  }
+
+  return stats;
+}
+
+/** Creates the Subscribers and Payments tabs. Safe to run repeatedly. */
+function setupSubscriptionSheets() {
+  subscriberSheet();
+  paymentSheet();
+  book().toast('Subscribers and Payments tabs are ready.', 'Sadhana APPSC', 10);
 }
 
 // ============================================================================

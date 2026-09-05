@@ -319,6 +319,55 @@ async function scheduleQuestions(subject, questionIds, scheduledFor, updatedBy) 
   return result.updatedCount || 0;
 }
 
+// ---------------------------------------------------------------------------
+// Membership
+// ---------------------------------------------------------------------------
+
+/**
+ * getSubscriber — one member by Telegram id.
+ *
+ * @param {string|number} telegramId
+ * @returns {Promise<Object|null>} The member, or null when they have never paid
+ */
+async function getSubscriber(telegramId) {
+  const result = await request('GET', { action: 'getSubscriber', telegramId });
+  return result.data || null;
+}
+
+/** Filtered, paginated member list for the Members dashboard. */
+async function listSubscribers(filters = {}) {
+  const result = await request('GET', Object.assign({ action: 'listSubscribers' }, filters));
+  return result.data || { total: 0, subscribers: [], page: 1, totalPages: 1 };
+}
+
+/**
+ * getExpiring — active members whose access ends within `days`.
+ * Pass 0 for those already past expiry.
+ */
+async function getExpiring(days = 0) {
+  const result = await request('GET', { action: 'getExpiring', days });
+  return result.data || [];
+}
+
+/** Revenue and membership totals. */
+async function getRevenue() {
+  const result = await request('GET', { action: 'getRevenue' });
+  return result.data || null;
+}
+
+/**
+ * upsertSubscriber — creates or updates a member row.
+ * Set `is_payment` to also append to the Payments log and advance the
+ * lifetime revenue and renewal counters.
+ *
+ * @param {Object} subscriber Fields to write; telegram_id is required
+ * @param {string} [event] Label recorded in the payment log
+ */
+async function upsertSubscriber(subscriber, event = 'payment') {
+  const result = await request('POST', { action: 'upsertSubscriber', subscriber, event });
+  return result.data;
+}
+
 module.exports = {
   isConfigured,
   getWebAppUrl,
@@ -336,5 +385,10 @@ module.exports = {
   updateQuestion,
   deleteQuestion,
   bulkStatus,
-  scheduleQuestions
+  scheduleQuestions,
+  getSubscriber,
+  listSubscribers,
+  getExpiring,
+  getRevenue,
+  upsertSubscriber
 };
