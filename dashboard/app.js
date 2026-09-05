@@ -1,26 +1,30 @@
 // ============================================================================
-// Sadhana APPSC Question Dashboard — Client Application Logic (v3)
+// Sadhana APPSC Question Dashboard — Client Application Logic (v4)
 // ============================================================================
 // What this file does:
-// 1. Manages Firebase Authentication (Google 1-click & Email/Password).
-// 2. Parses APPSC question batches from JSON into standardized question objects.
-// 3. Renders interactive vertical question cards with stacked options.
-// 4. Supports real-time inline editing of questions, dates, newspapers, and options.
-// 5. Connects via local proxy server to batch-append questions into Google Sheets.
-// 6. Tracks the authenticated user's email into the "Added By" sheet column.
+// 1. Enforces a strict Authentication Gate: Hides the entire dashboard until the user is logged in.
+// 2. Integrates Firebase Auth (Google 1-click & Email/Password) with automatic profile chip updates.
+// 3. Eliminates internal scrollbars: Dynamically auto-expands question prompt & explanation textareas.
+// 4. Connects via embedded Google Sheets API URL without exposing an editable URL input field.
+// 5. Batches and pushes questions to Google Sheets via backend proxy with uploader email tracking.
 //
 // What it brings:
-// - User attribution and security via Firebase Auth.
-// - High-readability vertical cards designed specifically for long multi-statement exam questions.
-// - 100% CORS-free data transmission to Google Sheets.
+// - Absolute dashboard security prior to authentication.
+// - Superior readability for multi-statement exam questions without cramped scrollbars.
+// - Zero user configuration needed for Google Sheets API URL.
 //
 // Where changes can be seen:
-// - Header user chip, auth modal, and vertical question cards rendered on http://localhost:3000.
+// - Browser interface at http://localhost:3000 (Auth Gate, Auto-Expanding Cards, Status Pill).
 // ============================================================================
 
-// Import Firebase App initializer from official Google CDN
+// Import Firebase App initializer from Google official CDN
+// What it brings: Initializes client-side Firebase runtime
+// Where changes can be seen: In browser network tab loading Firebase SDK
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js';
-// Import Firebase Authentication functions from official Google CDN
+
+// Import Firebase Authentication functions from Google official CDN
+// What it brings: Provides popup OAuth, credential login, sign-out, and auth state observer
+// Where changes can be seen: User authentication flows on the login gate
 import {
   getAuth,
   signInWithPopup,
@@ -34,7 +38,10 @@ import {
 // ============================================================================
 // 1. Firebase Configuration & Initialization
 // ============================================================================
-// Firebase configuration credentials provided for ap-gurukul-43050 project
+// Configuration credentials for project ap-gurukul-43050
+// What this block does: Connects the web client to the designated Firebase project
+// What it brings: Validates identity with Google Identity platform
+// Where changes can be seen: Google OAuth consent popup identifying ap-gurukul-43050
 const firebaseConfig = {
   apiKey: "AIzaSyDlL3dw-FY2bdNQDCm4Rtp0ZhrDTCSJHfQ",
   authDomain: "ap-gurukul-43050.firebaseapp.com",
@@ -46,252 +53,198 @@ const firebaseConfig = {
 };
 
 // Initialize the Firebase app instance
+// What it brings: Core SDK handle for service bindings
+// Where changes can be seen: Internal Firebase state in the browser console
 const firebaseApp = initializeApp(firebaseConfig);
-// Initialize the Firebase Auth service
+
+// Initialize Firebase Auth service
+// What it brings: Authentication state management and token persistence
+// Where changes can be seen: LocalStorage token cache and auth observer triggers
 const auth = getAuth(firebaseApp);
-// Google OAuth provider instance for 1-click sign-in
+
+// Initialize Google OAuth provider for 1-click popup login
+// What it brings: Easy popup sign-in without requiring user to type credentials
+// Where changes can be seen: In the Google OAuth popup window
 const googleProvider = new GoogleAuthProvider();
 
-// Global variable tracking currently authenticated user object (null when logged out)
+// Global tracking variable for authenticated user object (null when logged out)
+// What it brings: Guard checks before publishing questions to Google Sheets
+// Where changes can be seen: Attached to added_by column payload when pushing data
 let currentUser = null;
+
+// Embedded Google Sheets API Web App URL stored in memory
+// What it brings: Removes need for editable URL input in UI
+// Where changes can be seen: Used seamlessly by background proxy requests
+let embeddedSheetUrl = '';
 
 // ============================================================================
 // 2. DOM Elements References
 // ============================================================================
-// Header controls
-const sheetUrlInput = document.getElementById('sheetUrl');              // Sheet API URL input
-const connectionStatus = document.getElementById('connectionStatus');    // Connection status dot
-const openAuthBtn = document.getElementById('openAuthBtn');              // Open Auth modal button
-const userProfileChip = document.getElementById('userProfileChip');      // User profile chip container
-const userAvatar = document.getElementById('userAvatar');                // User avatar element
-const userEmail = document.getElementById('userEmail');                  // User email text
-const signOutBtn = document.getElementById('signOutBtn');                // Sign out button
+// Top Header elements
+// What this line does: References the live connection status dot in the header
+const connectionStatus = document.getElementById('connectionStatus');
+// What this line does: References the descriptive status text inside the header pill
+const connectionStatusText = document.getElementById('connectionStatusText');
+// What this line does: References the user profile chip displayed when logged in
+const userProfileChip = document.getElementById('userProfileChip');
+// What this line does: References the avatar circle holding image or user initial
+const userAvatar = document.getElementById('userAvatar');
+// What this line does: References the user email span in the top header
+const userEmail = document.getElementById('userEmail');
+// What this line does: References the sign out button inside the profile chip
+const signOutBtn = document.getElementById('signOutBtn');
 
-// Left panel inputs
-const subjectSelect = document.getElementById('subjectSelect');          // Subject dropdown
-const defaultDate = document.getElementById('defaultDate');              // Default publication date input
-const defaultNewspaper = document.getElementById('defaultNewspaper');    // Default newspaper input
-const jsonInput = document.getElementById('jsonInput');                  // JSON raw text area
-const parseBtn = document.getElementById('parseBtn');                    // Parse JSON button
-const clearBtn = document.getElementById('clearBtn');                    // Clear all button
-const sampleBtn = document.getElementById('sampleBtn');                  // Load sample JSON button
-const parseError = document.getElementById('parseError');                // Error message container
+// Auth Gate Hero elements (Displayed when logged out)
+// What this line does: References the full hero container covering the screen before login
+const authGate = document.getElementById('authGate');
+// What this line does: References the Google 1-Click sign-in button in the login card
+const gateGoogleSignInBtn = document.getElementById('gateGoogleSignInBtn');
+// What this line does: References the Sign In tab button
+const gateTabSignIn = document.getElementById('gateTabSignIn');
+// What this line does: References the Register tab button
+const gateTabRegister = document.getElementById('gateTabRegister');
+// What this line does: References the email/password form in the login card
+const gateAuthForm = document.getElementById('gateAuthForm');
+// What this line does: References the email input field in the login card
+const gateAuthEmail = document.getElementById('gateAuthEmail');
+// What this line does: References the password input field in the login card
+const gateAuthPassword = document.getElementById('gateAuthPassword');
+// What this line does: References the submit button in the login card
+const gateAuthSubmitBtn = document.getElementById('gateAuthSubmitBtn');
+// What this line does: References the error text box in the login card
+const gateAuthError = document.getElementById('gateAuthError');
+
+// Main Content Workspace (Kept strictly hidden until authenticated)
+// What this line does: References the main grid layout container holding questions workspace
+const mainDashboard = document.getElementById('mainDashboard');
+// What this line does: References the subject dropdown selector
+const subjectSelect = document.getElementById('subjectSelect');
+// What this line does: References default publication date input field
+const defaultDate = document.getElementById('defaultDate');
+// What this line does: References default source newspaper input field
+const defaultNewspaper = document.getElementById('defaultNewspaper');
+// What this line does: References the raw JSON textarea on the left panel
+const jsonInput = document.getElementById('jsonInput');
+// What this line does: References the Parse & Preview button
+const parseBtn = document.getElementById('parseBtn');
+// What this line does: References the Clear All inputs button
+const clearBtn = document.getElementById('clearBtn');
+// What this line does: References the Load Sample JSON button
+const sampleBtn = document.getElementById('sampleBtn');
+// What this line does: References the JSON parse error message container
+const parseError = document.getElementById('parseError');
 
 // Right panel outputs
-const cardCount = document.getElementById('cardCount');                  // Question count badge
-const cardsContainer = document.getElementById('cardsContainer');        // Vertical cards container
-const sendToSheetBtn = document.getElementById('sendToSheetBtn');        // Push to Google Sheets button
-const toastContainer = document.getElementById('toastContainer');        // Toast notification container
-
-// Auth modal elements
-const authModal = document.getElementById('authModal');                  // Auth modal backdrop
-const closeAuthModal = document.getElementById('closeAuthModal');        // Modal close button
-const googleSignInBtn = document.getElementById('googleSignInBtn');      // Google sign-in button
-const tabSignIn = document.getElementById('tabSignIn');                  // Tab: Sign In
-const tabRegister = document.getElementById('tabRegister');              // Tab: Register
-const authForm = document.getElementById('authForm');                    // Email/password form
-const authEmail = document.getElementById('authEmail');                  // Auth email input
-const authPassword = document.getElementById('authPassword');            // Auth password input
-const authSubmitBtn = document.getElementById('authSubmitBtn');          // Auth submit button
-const authError = document.getElementById('authError');                  // Auth error message
+// What this line does: References the badge displaying total active question cards
+const cardCount = document.getElementById('cardCount');
+// What this line does: References the scrollable container holding rendered question cards
+const cardsContainer = document.getElementById('cardsContainer');
+// What this line does: References the primary button pushing questions to Google Sheets
+const sendToSheetBtn = document.getElementById('sendToSheetBtn');
+// What this line does: References the fixed container rendering toast alerts
+const toastContainer = document.getElementById('toastContainer');
 
 // ============================================================================
 // 3. Application State & Storage
 // ============================================================================
 // In-memory array of parsed question objects
+// What it brings: Stores sanitized questions ready for inline editing and export
+// Where changes can be seen: Reflected in rendered cards and final payload
 let questions = [];
-// LocalStorage key for persisting the Sheet API URL across sessions
-const STORAGE_KEY_URL = 'sadhana_sheet_url';
-// Auth mode state ('signin' or 'register')
-let authMode = 'signin';
+
+// Track auth mode inside the login gate ('signin' or 'register')
+// What it brings: Controls whether form calls signInWithEmailAndPassword or createUserWithEmailAndPassword
+// Where changes can be seen: Changes button text between "Sign In" and "Create Account"
+let gateAuthMode = 'signin';
 
 // ============================================================================
-// 4. Initialization & Server Auto-Configuration
+// 4. Textarea Dynamic Auto-Expansion Helper (No Internal Scrollbars!)
+// ============================================================================
+/**
+ * autoResizeTextarea — Dynamically adjusts textarea height based on its content scrollHeight.
+ * What it does: Resets height to 'auto', calculates full scrollHeight, and sets height explicitly.
+ * What it brings: Eliminates internal scrollbars so multi-statement questions and explanations are 100% visible.
+ * Where changes can be seen: Question prompt and explanation textareas expand smoothly without any inner scrolling.
+ *
+ * @param {HTMLElement} textarea - The textarea DOM element to auto-resize
+ */
+function autoResizeTextarea(textarea) {
+  // If element is not defined, return safely
+  if (!textarea) return;
+  // Reset height to auto first so scrollHeight shrinks if text is deleted
+  textarea.style.height = 'auto';
+  // Define generous minimum heights: 140px for prompt, 110px for explanation
+  const minHeight = textarea.classList.contains('question-textarea-vertical') ? 140 : 110;
+  // Calculate target height with 6px buffer to avoid any text clipping
+  const targetHeight = Math.max(textarea.scrollHeight + 6, minHeight);
+  // Apply calculated pixel height
+  textarea.style.height = targetHeight + 'px';
+}
+
+// ============================================================================
+// 5. Initialization & Server Auto-Configuration
 // ============================================================================
 (async function init() {
-  // Read previously saved Sheet URL from browser's localStorage
-  const savedUrl = localStorage.getItem(STORAGE_KEY_URL);
-  if (savedUrl) {
-    // Populate input field with saved URL
-    sheetUrlInput.value = savedUrl;
-    // Test connectivity
-    testConnection(savedUrl);
-  }
-
-  // Attempt to fetch server-side configuration from local dashboard server (/api/config)
+  // Fetch embedded Google Sheets Web App URL from local backend server (/api/config)
+  // What it brings: Eliminates any manual typing or pasting of the Apps Script URL
+  // Where changes can be seen: Read-only status pill in the header
   try {
+    // Query local Node server configuration endpoint
     const res = await fetch('/api/config');
+    // Check if configuration request succeeded
     if (res.ok) {
+      // Parse JSON payload containing sheetUrl
       const cfg = await res.json();
-      // If server has GOOGLE_SHEET_WEBAPP_URL configured in .env, pre-fill it
-      if (cfg.sheetUrl && (!sheetUrlInput.value || sheetUrlInput.value === savedUrl)) {
-        sheetUrlInput.value = cfg.sheetUrl;
-        localStorage.setItem(STORAGE_KEY_URL, cfg.sheetUrl);
-        testConnection(cfg.sheetUrl);
+      // If URL is configured in server's .env, save to memory and test connection
+      if (cfg.sheetUrl) {
+        embeddedSheetUrl = cfg.sheetUrl.trim();
+        // Trigger background connectivity test
+        testConnection(embeddedSheetUrl);
+      } else {
+        // Update badge if URL is missing in server .env
+        updateStatusBadge('offline', 'Google Sheets: URL Not Configured in .env');
       }
     }
   } catch (err) {
-    // Silently continue if running without local server
+    // If running in standalone mode without server, set offline indicator
+    updateStatusBadge('offline', 'Local Server Offline');
   }
 })();
 
-// ============================================================================
-// 5. Firebase Auth State Listener & Handlers
-// ============================================================================
-// Listen for Firebase authentication state changes in real time
-onAuthStateChanged(auth, function(user) {
-  if (user) {
-    // User is signed in
-    currentUser = user;
-    // Hide sign-in trigger button
-    openAuthBtn.style.display = 'none';
-    // Display user profile chip in header
-    userProfileChip.style.display = 'flex';
-
-    // Populate user avatar with photo if available, otherwise display initial
-    if (user.photoURL) {
-      userAvatar.innerHTML = '<img src="' + escapeAttr(user.photoURL) + '" alt="Avatar">';
-    } else {
-      userAvatar.textContent = (user.displayName || user.email || 'U').charAt(0).toUpperCase();
-    }
-
-    // Display user's name or email
-    userEmail.textContent = user.displayName || user.email;
-    // Dismiss auth modal if open
-    hideAuthModal();
-    // Show welcoming toast notification
-    showToast('info', 'Signed in as ' + (user.displayName || user.email));
-  } else {
-    // User is signed out
-    currentUser = null;
-    // Show sign-in trigger button
-    openAuthBtn.style.display = 'flex';
-    // Hide user profile chip
-    userProfileChip.style.display = 'none';
+/**
+ * updateStatusBadge — Updates the read-only Google Sheets status indicator.
+ * What it does: Sets CSS class on the dot and updates label text.
+ * What it brings: Clear, unambiguous status feedback for the embedded connection.
+ * Where changes can be seen: Header status pill.
+ *
+ * @param {'online'|'loading'|'offline'} state - The visual indicator state
+ * @param {string} text - Description label
+ */
+function updateStatusBadge(state, text) {
+  // Set class on the colored dot indicator
+  connectionStatus.className = 'status-dot ' + state;
+  // Update hover title attribute
+  connectionStatus.title = text;
+  // Update visible label text
+  if (connectionStatusText) {
+    connectionStatusText.textContent = text;
   }
-});
-
-// Open Auth Modal
-openAuthBtn.addEventListener('click', showAuthModal);
-// Close Auth Modal via X button
-closeAuthModal.addEventListener('click', hideAuthModal);
-
-// Close Auth Modal when clicking the dark backdrop
-authModal.addEventListener('click', function(e) {
-  if (e.target === authModal) hideAuthModal();
-});
-
-// Helper: Show Auth Modal
-function showAuthModal() {
-  authModal.style.display = 'flex';
-  authError.style.display = 'none';
-  authError.textContent = '';
 }
 
-// Helper: Hide Auth Modal
-function hideAuthModal() {
-  authModal.style.display = 'none';
-}
-
-// Google 1-Click Sign-In
-googleSignInBtn.addEventListener('click', async function() {
-  authError.style.display = 'none';
-  try {
-    // Open Google Sign-In popup
-    await signInWithPopup(auth, googleProvider);
-  } catch (err) {
-    // Display authentication error in modal
-    authError.textContent = 'Google sign-in error: ' + err.message;
-    authError.style.display = 'block';
-  }
-});
-
-// Switch to Sign In Tab
-tabSignIn.addEventListener('click', function() {
-  authMode = 'signin';
-  tabSignIn.classList.add('active');
-  tabRegister.classList.remove('active');
-  authSubmitBtn.textContent = 'Sign In';
-  authError.style.display = 'none';
-});
-
-// Switch to Register Tab
-tabRegister.addEventListener('click', function() {
-  authMode = 'register';
-  tabRegister.classList.add('active');
-  tabSignIn.classList.remove('active');
-  authSubmitBtn.textContent = 'Create Account';
-  authError.style.display = 'none';
-});
-
-// Email / Password Form Submission
-authForm.addEventListener('submit', async function(e) {
-  e.preventDefault();
-  const email = authEmail.value.trim();
-  const password = authPassword.value;
-  authError.style.display = 'none';
-
-  if (!email || !password) {
-    authError.textContent = 'Please enter both email and password.';
-    authError.style.display = 'block';
-    return;
-  }
-
-  try {
-    if (authMode === 'signin') {
-      // Authenticate existing user with email and password
-      await signInWithEmailAndPassword(auth, email, password);
-    } else {
-      // Register new user account with email and password
-      await createUserWithEmailAndPassword(auth, email, password);
-    }
-  } catch (err) {
-    // Format friendly error message
-    authError.textContent = err.message.replace('Firebase: ', '');
-    authError.style.display = 'block';
-  }
-});
-
-// Sign Out button handler
-signOutBtn.addEventListener('click', async function() {
-  try {
-    await signOut(auth);
-    showToast('info', 'Signed out successfully.');
-  } catch (err) {
-    showToast('error', 'Sign out error: ' + err.message);
-  }
-});
-
-// ============================================================================
-// 6. Sheet URL Validation & Connection Testing
-// ============================================================================
-sheetUrlInput.addEventListener('change', function() {
-  const url = sheetUrlInput.value.trim();
-
-  // Validate that user didn't accidentally paste a Library or Edit URL
-  if (url.includes('/macros/library/') || url.includes('/edit')) {
-    showToast('error', '⚠️ That is a Library/Edit URL! Please copy the Web App URL ending in /exec.');
-    connectionStatus.className = 'status-dot offline';
-    connectionStatus.title = 'Invalid URL: Must be Web App URL ending in /exec';
-    return;
-  }
-
-  // Save to localStorage for persistence
-  localStorage.setItem(STORAGE_KEY_URL, url);
-  if (url) {
-    testConnection(url);
-  } else {
-    connectionStatus.className = 'status-dot offline';
-    connectionStatus.title = 'Not connected';
-  }
-});
-
+/**
+ * testConnection — Tests connectivity to the embedded Google Sheets Web App endpoint.
+ * What it does: Sends ping request via server proxy (/api/ping) or direct fetch.
+ * What it brings: Verifies that the deployed Google Apps Script is active and responsive.
+ * Where changes can be seen: Indicator turns green (online) or red (offline) in header.
+ *
+ * @param {string} url - Google Apps Script Web App URL
+ */
 async function testConnection(url) {
-  connectionStatus.className = 'status-dot loading';
-  connectionStatus.title = 'Testing connection...';
+  // Set status badge to loading animation while pinging
+  updateStatusBadge('loading', 'Google Sheets: Connecting...');
 
   let result = null;
-  // Try checking via local server proxy first
+  // Attempt ping through local server proxy first to bypass CORS
   try {
     const proxyRes = await fetch('/api/ping?url=' + encodeURIComponent(url));
     if (proxyRes.ok) {
@@ -301,120 +254,278 @@ async function testConnection(url) {
     result = null;
   }
 
-  // Fallback to direct fetch
+  // Fallback to direct fetch if proxy is unavailable
   if (!result) {
     try {
       const response = await fetch(url + '?action=ping', { redirect: 'follow' });
       result = await response.json();
     } catch (directErr) {
-      connectionStatus.className = 'status-dot offline';
-      connectionStatus.title = 'Cannot reach Sheet API: ' + directErr.message;
+      updateStatusBadge('offline', 'Google Sheets: Offline (' + directErr.message + ')');
       return;
     }
   }
 
-  // Check if authentication redirect is required
+  // Verify if Google requires login permissions
   if (result.status === 'auth_required') {
-    connectionStatus.className = 'status-dot offline';
-    connectionStatus.title = result.error;
+    updateStatusBadge('offline', 'Google Sheets: Auth Required (Redeploy as Anyone)');
     showToast('error', '⚠️ Apps Script requires login. Redeploy with "Who has access: Anyone".');
     return;
   }
 
-  // Check if connection was successful
+  // Handle successful connection
   if (result.status === 'ok') {
-    connectionStatus.className = 'status-dot online';
-    connectionStatus.title = 'Connected to Google Sheets';
+    updateStatusBadge('online', 'Google Sheets: Connected 🟢');
   } else {
-    connectionStatus.className = 'status-dot offline';
-    connectionStatus.title = result.error || 'Unexpected response from Sheet API';
+    updateStatusBadge('offline', 'Google Sheets: Error (' + (result.error || 'Unknown') + ')');
   }
 }
 
 // ============================================================================
-// 7. JSON Parsing & Sample Loading
+// 6. Strict Firebase Auth State Observer (Gatekeeper)
 // ============================================================================
-// Sample APPSC Question JSON
+// What this observer does: Monitors user login state in real time
+// What it brings: Enforces "without logging do not show the dashboard"
+// Where changes can be seen: Instant transition between Login Hero Gate and Question Workspace
+onAuthStateChanged(auth, function(user) {
+  if (user) {
+    // ========================================================================
+    // USER IS LOGGED IN: Reveal Dashboard Workspace
+    // ========================================================================
+    currentUser = user;
+
+    // Hide the login gate hero screen completely
+    // What it brings: Frees up the full viewport for the question workspace
+    // Where changes can be seen: Auth gate fades out
+    if (authGate) authGate.style.display = 'none';
+
+    // Show the main dashboard workspace
+    // What it brings: Gives authenticated curator full access to JSON parser and card editor
+    // Where changes can be seen: Split view workspace appears with smooth fade-in
+    if (mainDashboard) mainDashboard.style.display = 'grid';
+
+    // Show authenticated user profile chip in header
+    // What it brings: Displays user photo, email, and sign-out button
+    // Where changes can be seen: Top right corner of header bar
+    if (userProfileChip) userProfileChip.style.display = 'flex';
+
+    // Render avatar: photo if available from Google, otherwise first initial
+    if (user.photoURL) {
+      userAvatar.innerHTML = '<img src="' + escapeAttr(user.photoURL) + '" alt="Avatar">';
+    } else {
+      userAvatar.textContent = (user.displayName || user.email || 'U').charAt(0).toUpperCase();
+    }
+
+    // Display formatted user name or email
+    userEmail.textContent = user.displayName || user.email;
+
+    // Welcoming toast confirmation
+    showToast('info', 'Welcome, ' + (user.displayName || user.email) + ' 👋');
+  } else {
+    // ========================================================================
+    // USER IS LOGGED OUT: Strictly Hide Dashboard Workspace
+    // ========================================================================
+    currentUser = null;
+
+    // Show the login gate hero screen prominently
+    // What it brings: Guarantees that unauthenticated visitors cannot access questions
+    // Where changes can be seen: Centered glassmorphic login card is visible
+    if (authGate) authGate.style.display = 'flex';
+
+    // Hide the main dashboard workspace completely
+    // What it brings: Prevents unauthenticated users from seeing or editing questions
+    // Where changes can be seen: Main workspace is removed from layout
+    if (mainDashboard) mainDashboard.style.display = 'none';
+
+    // Hide user profile chip from header
+    if (userProfileChip) userProfileChip.style.display = 'none';
+
+    // Clear any sensitive question cards and input state
+    questions = [];
+    if (jsonInput) jsonInput.value = '';
+    renderCards();
+  }
+});
+
+// ============================================================================
+// 7. Auth Gate Event Handlers (Google 1-Click & Email/Password)
+// ============================================================================
+// Google 1-Click Sign-In handler on the Login Gate
+if (gateGoogleSignInBtn) {
+  gateGoogleSignInBtn.addEventListener('click', async function() {
+    // Clear any previous error text
+    gateAuthError.style.display = 'none';
+    try {
+      // Trigger Google OAuth popup
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      // Display friendly error message
+      gateAuthError.textContent = 'Google sign-in error: ' + err.message;
+      gateAuthError.style.display = 'block';
+    }
+  });
+}
+
+// Switch to Sign In Tab on Login Gate
+if (gateTabSignIn) {
+  gateTabSignIn.addEventListener('click', function() {
+    gateAuthMode = 'signin';
+    gateTabSignIn.classList.add('active');
+    if (gateTabRegister) gateTabRegister.classList.remove('active');
+    gateAuthSubmitBtn.textContent = 'Sign In';
+    gateAuthError.style.display = 'none';
+  });
+}
+
+// Switch to Register Tab on Login Gate
+if (gateTabRegister) {
+  gateTabRegister.addEventListener('click', function() {
+    gateAuthMode = 'register';
+    gateTabRegister.classList.add('active');
+    if (gateTabSignIn) gateTabSignIn.classList.remove('active');
+    gateAuthSubmitBtn.textContent = 'Create Account';
+    gateAuthError.style.display = 'none';
+  });
+}
+
+// Email & Password Form Submission on Login Gate
+if (gateAuthForm) {
+  gateAuthForm.addEventListener('submit', async function(e) {
+    // Prevent default form submission reload
+    e.preventDefault();
+    const email = gateAuthEmail.value.trim();
+    const password = gateAuthPassword.value;
+    gateAuthError.style.display = 'none';
+
+    // Validate inputs
+    if (!email || !password) {
+      gateAuthError.textContent = 'Please enter both email and password.';
+      gateAuthError.style.display = 'block';
+      return;
+    }
+
+    try {
+      if (gateAuthMode === 'signin') {
+        // Authenticate existing user with email and password
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        // Register new user account with email and password
+        await createUserWithEmailAndPassword(auth, email, password);
+      }
+    } catch (err) {
+      // Format clean error message removing Firebase internal prefix
+      gateAuthError.textContent = err.message.replace('Firebase: ', '');
+      gateAuthError.style.display = 'block';
+    }
+  });
+}
+
+// Sign Out button handler in profile chip
+if (signOutBtn) {
+  signOutBtn.addEventListener('click', async function() {
+    try {
+      // Sign out from Firebase Auth
+      await signOut(auth);
+      showToast('info', 'Signed out successfully.');
+    } catch (err) {
+      showToast('error', 'Sign out error: ' + err.message);
+    }
+  });
+}
+
+// ============================================================================
+// 8. JSON Parsing & Sample Loading
+// ============================================================================
+// Sample APPSC Question JSON showcasing multi-statement format
 const SAMPLE_JSON = {
   "subject": "Environment",
   "date": "05-09-2026",
   "newspaper": "The Hindu",
   "questions": [
     {
-      "question": "Consider the following statements regarding the 'AP-Green' initiative and forest data in Andhra Pradesh:\n1. At present, forest area covers 22.96% of the state's total geographical area (37.42 lakh hectares).\n2. AP-Green is set up as an autonomous body to bring all green-cover initiatives onto a single platform.\n3. Funding for AP-Green projects includes sources such as Carbon Finance, Green Bonds, District Mineral Fund, and NABARD.\nWhich of the statements given above are correct?",
+      "question": "Consider the following statements regarding the 'AP-Green' initiative and forest data in Andhra Pradesh:\n1. At present, forest area covers 22.96% of the state's total geographical area (37.42 lakh hectares).\n2. AP-Green is set up as an autonomous body to bring all green-cover initiatives onto a single platform.\n3. Funding for AP-Green projects includes sources such as Carbon Finance, Green Bonds, District Mineral Fund, and NABARD.\n\nWhich of the statements given above are correct?",
       "option_a": "1 and 2 only",
       "option_b": "2 and 3 only",
       "option_c": "1 and 3 only",
       "option_d": "1, 2, and 3",
       "correct_answer": "D",
-      "explanation": "Statement 1 is correct: Andhra Pradesh currently has 37.42 lakh hectares under forest cover (22.96%). Statement 2 is correct: AP-Green coordinates multi-departmental efforts to reach 50% green cover by 2047. Statement 3 is correct: Resources are mobilized via State Grants, Central Schemes, NABARD, Carbon Finance, Green Bonds, and DMF."
-    },
-    {
-      "question": "Under the Andhra Pradesh Community Managed Natural Farming (APCNF) framework, which bio-input is primarily utilized for seed treatment?",
-      "option_a": "Jeevamrutha",
-      "option_b": "Beejamrutha",
-      "option_c": "Ghanajeevamrutha",
-      "option_d": "Neemastram",
-      "correct_answer": "B",
-      "explanation": "Beejamrutha is a microbial seed treatment formulation made from cow dung, cow urine, lime, and soil that protects young roots from seed-borne and soil-borne diseases."
+      "explanation": "Statement 1 is correct: Andhra Pradesh currently has 37.42 lakh hectares under forest cover, which is 22.96% of the state's geographical area.\n\nStatement 2 is correct: AP-Green is set up as an autonomous body to bring all green-cover initiatives onto a single unified platform to reach 50% green cover by 2047.\n\nStatement 3 is correct: Resources for AP-Green projects are mobilized through State Grants, Central Government Schemes, NABARD, CSR funds, Carbon Finance/Carbon Credits, Green Bonds, District Mineral Fund (DMF), and eco-tourism revenues."
     }
   ]
 };
 
-// Load Sample JSON button
-sampleBtn.addEventListener('click', function() {
-  jsonInput.value = JSON.stringify(SAMPLE_JSON, null, 2);
-  subjectSelect.value = "Environment";
-  defaultDate.value = "05-09-2026";
-  defaultNewspaper.value = "The Hindu";
-  parseError.style.display = 'none';
-  showToast('info', 'Loaded sample JSON. Click "Parse & Preview" to see vertical cards.');
-});
+// Load Sample JSON button handler
+if (sampleBtn) {
+  sampleBtn.addEventListener('click', function() {
+    // Populate textarea with sample formatted JSON
+    jsonInput.value = JSON.stringify(SAMPLE_JSON, null, 2);
+    // Pre-select Environment subject
+    subjectSelect.value = 'Environment';
+    // Set default date
+    defaultDate.value = '05-09-2026';
+    // Set default newspaper
+    defaultNewspaper.value = 'The Hindu';
+    // Clear any previous error box
+    hideError();
+    // Provide user feedback
+    showToast('info', 'Loaded sample APPSC multi-statement question JSON.');
+  });
+}
 
-// Parse Button Click
-parseBtn.addEventListener('click', function() {
-  parseError.style.display = 'none';
-  parseError.textContent = '';
+// Clear button handler
+if (clearBtn) {
+  clearBtn.addEventListener('click', function() {
+    jsonInput.value = '';
+    questions = [];
+    renderCards();
+    hideError();
+    showToast('info', 'All inputs and question cards cleared.');
+  });
+}
+
+// Parse button handler
+if (parseBtn) {
+  parseBtn.addEventListener('click', parseQuestionsJson);
+}
+
+/**
+ * parseQuestionsJson — Parses JSON input and instantiates standardized question objects.
+ * What it does: Validates JSON syntax, extracts questions, and triggers vertical card rendering.
+ * What it brings: Robust handling of multiple JSON schemas.
+ * Where changes can be seen: Question cards appearing in the right panel.
+ */
+function parseQuestionsJson() {
+  hideError();
   const raw = jsonInput.value.trim();
+
   if (!raw) {
-    showError('Please paste some JSON content first or click "Load Sample JSON".');
+    showError('Please paste your JSON questions in the textarea first.');
     return;
   }
 
+  let parsed;
   try {
-    const parsed = JSON.parse(raw);
-    processJSON(parsed);
-  } catch (e) {
-    showError('Invalid JSON: ' + e.message);
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    showError('Invalid JSON syntax: ' + err.message);
+    return;
   }
-});
 
-// Clear Button Click
-clearBtn.addEventListener('click', function() {
-  jsonInput.value = '';
-  questions = [];
-  renderCards();
-  parseError.style.display = 'none';
-});
-
-// Process Parsed JSON
-function processJSON(parsed) {
   let extracted = [];
 
-  // Format 1: Object with questions array
+  // Format 1: Object with "questions" array property
   if (parsed && Array.isArray(parsed.questions)) {
+    extracted = parsed.questions;
     if (parsed.subject && !subjectSelect.value) {
       subjectSelect.value = parsed.subject;
     }
-    if (parsed.date) {
+    if (parsed.date && !defaultDate.value) {
       defaultDate.value = parsed.date;
     }
-    if (parsed.newspaper) {
+    if (parsed.newspaper && !defaultNewspaper.value) {
       defaultNewspaper.value = parsed.newspaper;
     }
-    extracted = parsed.questions;
   }
-  // Format 2: Plain array of questions
+  // Format 2: Plain array of question objects
   else if (Array.isArray(parsed)) {
     extracted = parsed;
   }
@@ -447,43 +558,85 @@ function processJSON(parsed) {
     };
   });
 
+  // Render cards and trigger auto-resizing
   renderCards();
   showToast('info', `Parsed ${questions.length} question(s) into vertical card format.`);
 }
 
 // ============================================================================
-// 8. Vertical Question Card Rendering
+// 9. Vertical Question Card Rendering & Auto-Expansion
 // ============================================================================
+/**
+ * renderCards — Renders question cards and ensures all textareas auto-expand without scrollbars.
+ * What it does: Updates card count, loops through questions, appends cards, and runs autoResizeTextarea.
+ * What it brings: Eliminates internal scrollbars so questions are immediately readable.
+ * Where changes can be seen: In cardsContainer on http://localhost:3000.
+ */
 function renderCards() {
+  // Update question count badge
   cardCount.textContent = '(' + questions.length + ')';
+  // Enable or disable Send to Sheet button based on question count
   sendToSheetBtn.disabled = questions.length === 0;
 
+  // If no questions exist, show empty state placeholder
   if (questions.length === 0) {
     cardsContainer.innerHTML = '';
     cardsContainer.appendChild(createEmptyState());
     return;
   }
 
+  // Clear existing cards
   cardsContainer.innerHTML = '';
+
+  // Render each question card element
   questions.forEach(function(q, index) {
     const card = createCardElement(q, index);
     card.style.animationDelay = (index * 0.05) + 's';
     cardsContainer.appendChild(card);
   });
+
+  // Schedule auto-resizing across all question and explanation textareas
+  // What it brings: Guarantees textareas expand to exact scrollHeight after DOM insertion
+  // Where changes can be seen: No scrollbars on any question prompt or explanation!
+  requestAnimationFrame(function() {
+    const allTextareas = cardsContainer.querySelectorAll('.question-textarea-vertical, .explanation-textarea-vertical');
+    allTextareas.forEach(function(ta) {
+      autoResizeTextarea(ta);
+    });
+  });
+
+  // Backup timer for pixel-perfect expansion after full CSS layout computation
+  setTimeout(function() {
+    const allTextareas = cardsContainer.querySelectorAll('.question-textarea-vertical, .explanation-textarea-vertical');
+    allTextareas.forEach(function(ta) {
+      autoResizeTextarea(ta);
+    });
+  }, 60);
 }
 
+/**
+ * createEmptyState — Generates the placeholder element displayed when no cards are active.
+ *
+ * @returns {HTMLElement} Empty state DOM container
+ */
 function createEmptyState() {
   const div = document.createElement('div');
   div.className = 'empty-state';
   div.innerHTML = '<div class="empty-icon">📋</div>' +
     '<p>Paste JSON on the left and click <strong>Parse &amp; Preview</strong></p>' +
-    '<p class="empty-hint">Questions will appear here as rich, editable vertical cards</p>';
+    '<p class="empty-hint">Questions will appear here as rich, auto-expanding vertical cards</p>';
   return div;
 }
 
 /**
- * createCardElement — Builds a rich, vertical question card DOM element.
- * Options are stacked vertically with radio selectors for instantaneous correct answer toggling.
+ * createCardElement — Builds an auto-expanding, vertical question card DOM element.
+ * What it does: Stacks options vertically, configures radio switches, and attaches auto-resize listeners.
+ * What it brings: Spacious layout without internal scrolling and instant answer toggling.
+ * Where changes can be seen: Individual card inside the right panel.
+ *
+ * @param {Object} q - Question object
+ * @param {number} cardIndex - 0-based index of this card
+ * @returns {HTMLElement} Card DOM element
  */
 function createCardElement(q, cardIndex) {
   const card = document.createElement('div');
@@ -523,9 +676,9 @@ function createCardElement(q, cardIndex) {
       '<button class="btn-card-delete" data-action="delete" title="Delete this question card">🗑️ Delete</button>' +
     '</div>' +
 
-    // Section 1: Question Text
+    // Section 1: Question Text (Auto-expanding textarea without scrollbar)
     '<div class="card-section">' +
-      '<label class="section-label">📝 Question Prompt</label>' +
+      '<label class="section-label">📝 Question Prompt (Auto-Expands to Fit Statements)</label>' +
       '<textarea class="question-textarea-vertical" data-field="question" rows="4" placeholder="Enter question text...">' + escapeHtml(q.question) + '</textarea>' +
     '</div>' +
 
@@ -535,9 +688,9 @@ function createCardElement(q, cardIndex) {
       '<div class="options-vertical-list">' + optionsHtml + '</div>' +
     '</div>' +
 
-    // Section 3: Explanation
+    // Section 3: Explanation (Auto-expanding textarea without scrollbar)
     '<div class="card-section">' +
-      '<label class="section-label">💡 Explanation</label>' +
+      '<label class="section-label">💡 Explanation (Auto-Expands to Fit Full Text)</label>' +
       '<textarea class="explanation-textarea-vertical" data-field="explanation" rows="3" placeholder="Enter detailed explanation...">' + escapeHtml(q.explanation) + '</textarea>' +
     '</div>' +
 
@@ -546,6 +699,22 @@ function createCardElement(q, cardIndex) {
       '<span class="correct-summary-tag">✓ Correct Answer: Option <strong class="correct-letter-display">' + q.correct_answer + '</strong></span>' +
       '<span>APPSC Format</span>' +
     '</div>';
+
+  // Attach dynamic auto-resizing listeners to both textareas
+  // What it brings: Immediate dynamic expansion as text is typed, pasted, or edited
+  // Where changes can be seen: Textarea box automatically expands downward without scrollbars
+  const qTextarea = card.querySelector('.question-textarea-vertical');
+  const expTextarea = card.querySelector('.explanation-textarea-vertical');
+
+  if (qTextarea) {
+    qTextarea.addEventListener('input', function() { autoResizeTextarea(qTextarea); });
+    qTextarea.addEventListener('change', function() { autoResizeTextarea(qTextarea); });
+  }
+
+  if (expTextarea) {
+    expTextarea.addEventListener('input', function() { autoResizeTextarea(expTextarea); });
+    expTextarea.addEventListener('change', function() { autoResizeTextarea(expTextarea); });
+  }
 
   // Attach Radio Change Event for Instant Answer Selection
   const radios = card.querySelectorAll('.option-radio');
@@ -589,8 +758,13 @@ function createCardElement(q, cardIndex) {
 }
 
 // ============================================================================
-// 9. Collect Card Data for Submission
+// 10. Collect Card Data for Submission
 // ============================================================================
+/**
+ * collectCardData — Scrapes edited field values from all active question cards.
+ *
+ * @returns {Array<Object>} Array of sanitized question objects
+ */
 function collectCardData() {
   const cards = cardsContainer.querySelectorAll('.question-card-vertical');
   const payload = [];
@@ -613,42 +787,31 @@ function collectCardData() {
   return payload;
 }
 
-function getFieldValue(card, fieldName) {
-  const el = card.querySelector('[data-field="' + fieldName + '"]');
+function getFieldValue(card, field) {
+  const el = card.querySelector('[data-field="' + field + '"]');
   return el ? el.value.trim() : '';
 }
 
 // ============================================================================
-// 10. Push to Google Sheets (Protected by Firebase Auth)
+// 11. Push to Google Sheets (Protected by Firebase Auth)
 // ============================================================================
 sendToSheetBtn.addEventListener('click', async function() {
   // Step 1: Authentication Guard — Require Firebase Auth before uploading!
   if (!currentUser) {
     showToast('error', '⚠️ Please sign in first to upload questions to Google Sheets.');
-    showAuthModal();
+    if (authGate) authGate.style.display = 'flex';
+    if (mainDashboard) mainDashboard.style.display = 'none';
     return;
   }
 
-  // Step 2: Validate Sheet URL
-  const url = sheetUrlInput.value.trim();
-  if (!url) {
-    showToast('error', 'Please configure the Sheet API URL first.');
-    return;
-  }
-
-  if (url.includes('/macros/library/') || url.includes('/edit')) {
-    showToast('error', '⚠️ You entered a Library/Edit URL! Please copy the Web App URL ending in /exec.');
-    return;
-  }
-
-  // Step 3: Validate Subject Selection
+  // Step 2: Validate Target Subject Selection
   const subject = subjectSelect.value;
   if (!subject) {
-    showToast('error', 'Please select a subject from the dropdown.');
+    showToast('error', 'Please select a target subject from the dropdown.');
     return;
   }
 
-  // Step 4: Validate Cards Count
+  // Step 3: Validate Cards Count
   if (questions.length === 0) {
     showToast('error', 'No question cards to send. Parse JSON first.');
     return;
@@ -669,13 +832,13 @@ sendToSheetBtn.addEventListener('click', async function() {
   try {
     let result = null;
 
-    // Try sending through local server proxy first
+    // Try sending through local server proxy first (bypasses browser CORS completely)
     try {
       const proxyRes = await fetch('/api/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: url,
+          url: embeddedSheetUrl,
           subject: subject,
           questions: payload,
           added_by: addedBy
@@ -689,9 +852,9 @@ sendToSheetBtn.addEventListener('click', async function() {
       result = null;
     }
 
-    // Fallback to direct fetch
-    if (!result) {
-      const response = await fetch(url, {
+    // Fallback to direct fetch using embedded URL
+    if (!result && embeddedSheetUrl) {
+      const response = await fetch(embeddedSheetUrl, {
         method: 'POST',
         redirect: 'follow',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -705,14 +868,14 @@ sendToSheetBtn.addEventListener('click', async function() {
       result = await response.json();
     }
 
-    if (result.success) {
-      showToast('success', `✅ ${result.addedCount} question(s) added to "${subject}" by ${currentUser.email}!`);
+    if (result && result.success) {
+      showToast('success', `✅ ${result.addedCount || payload.length} question(s) added to "${subject}" by ${currentUser.email}!`);
       // Clear questions after successful push
       questions = [];
       renderCards();
       jsonInput.value = '';
     } else {
-      showToast('error', 'Failed: ' + (result.error || 'Unknown error'));
+      showToast('error', 'Failed: ' + (result ? (result.error || 'Unknown error') : 'No response from server'));
     }
   } catch (e) {
     showToast('error', 'Network error: ' + e.message);
@@ -723,36 +886,64 @@ sendToSheetBtn.addEventListener('click', async function() {
 });
 
 // ============================================================================
-// 11. Toast Notifications & Helpers
+// 12. Toast Notifications & Helpers
 // ============================================================================
 function showError(message) {
+  if (!parseError) return;
   parseError.textContent = message;
   parseError.style.display = 'block';
 }
 
-function showToast(type, message) {
+function hideError() {
+  if (!parseError) return;
+  parseError.textContent = '';
+  parseError.style.display = 'none';
+}
+
+/**
+ * showToast — Displays a floating notification toast.
+ *
+ * @param {'success'|'error'|'info'} type - Visual style
+ * @param {string} message - Text to show
+ * @param {number} durationMs - Auto-dismiss delay (ms)
+ */
+function showToast(type, message, durationMs = 4500) {
   const toast = document.createElement('div');
   toast.className = 'toast ' + type;
+
   const icons = { success: '✅', error: '❌', info: 'ℹ️' };
-  toast.innerHTML = '<span class="toast-icon">' + (icons[type] || 'ℹ️') + '</span>' + escapeHtml(message);
+  toast.innerHTML = '<span class="toast-icon">' + (icons[type] || 'ℹ️') + '</span>' +
+    '<span class="toast-message">' + escapeHtml(message) + '</span>' +
+    '<button class="toast-close" title="Dismiss">&times;</button>';
+
+  const closeBtn = toast.querySelector('.toast-close');
+  closeBtn.addEventListener('click', function() {
+    toast.remove();
+  });
+
   toastContainer.appendChild(toast);
 
   setTimeout(function() {
-    toast.style.animation = 'toastSlideOut 0.3s ease forwards';
-    setTimeout(function() {
-      toast.remove();
-    }, 300);
-  }, 4000);
+    if (toast.parentElement) {
+      toast.style.animation = 'slideOutRight 0.3s ease forwards';
+      setTimeout(function() { toast.remove(); }, 300);
+    }
+  }, durationMs);
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text || '';
-  return div.innerHTML;
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
-function escapeAttr(text) {
-  return String(text || '')
+function escapeAttr(str) {
+  if (!str) return '';
+  return String(str)
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')

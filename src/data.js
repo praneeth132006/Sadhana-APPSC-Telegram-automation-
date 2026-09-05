@@ -79,15 +79,19 @@ async function getUnpostedQuestions(subject, count) {
 
 /**
  * markAsPosted — Marks questions as posted in Google Sheets or local Excel.
+ * What it does: Updates the status of sent questions in cloud Google Sheets or local Excel files.
+ * What it brings: Seamless persistence across data backends with optional Telegram message ID tracking.
+ * Where changes can be seen: "Posted", "Posted At", and "Telegram Msg ID" columns in spreadsheet.
  *
  * @param {string} subject — Subject name
  * @param {Array<number>} rowIndices — Row indices to mark as posted
+ * @param {string|number} [messageId] — Optional Telegram message ID returned by bot API
  * @returns {Promise<number>} Number of marked rows
  */
-async function markAsPosted(subject, rowIndices) {
-  // If Google Sheets is enabled, delegate to sheets.markAsPosted()
+async function markAsPosted(subject, rowIndices, messageId = null) {
+  // If Google Sheets is enabled, delegate to sheets.markAsPosted() with optional messageId
   if (isGoogleSheetsEnabled()) {
-    return await sheets.markAsPosted(subject, rowIndices);
+    return await sheets.markAsPosted(subject, rowIndices, messageId);
   }
   // Otherwise, delegate to local excel.markAsPosted()
   return excel.markAsPosted(subject, rowIndices);

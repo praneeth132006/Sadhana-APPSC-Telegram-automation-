@@ -134,16 +134,20 @@ async function getUnpostedQuestions(subject, count = 1) {
 
 /**
  * markAsPosted — Marks specified question rows as posted in Google Sheets.
+ * What it does: Sends HTTP POST request with action=markPosted, rowIndices, and optional Telegram messageId.
+ * What it brings: Records 'YES', IST timestamp, and Telegram Message ID into the 16-column Google Sheet.
+ * Where changes can be seen: Columns L, M, and P of the subject Google Sheet tab.
  *
  * @param {string} subject — Subject sheet tab name
- * @param {Array<number>} rowIndices — Array of 1-based row numbers to mark in sheet
+ * @param {Array<number>} rowIndices — Array of 1-based row numbers or 0-based data row indices
+ * @param {string|number} [messageId] — Optional Telegram message ID from the posted quiz
  * @returns {Promise<number>} Number of updated rows
  */
-async function markAsPosted(subject, rowIndices) {
+async function markAsPosted(subject, rowIndices, messageId = null) {
   // If rowIndices array is empty, nothing to update
   if (!rowIndices || rowIndices.length === 0) return 0;
 
-  // Get base endpoint URL
+  // Get base endpoint URL from .env
   const baseUrl = getWebAppUrl();
 
   // Send HTTP POST request with action=markPosted payload
@@ -154,7 +158,8 @@ async function markAsPosted(subject, rowIndices) {
     body: JSON.stringify({
       action: 'markPosted',
       subject: subject,
-      rowIndices: rowIndices
+      rowIndices: rowIndices,
+      messageId: messageId ? String(messageId) : ''
     })
   });
 
