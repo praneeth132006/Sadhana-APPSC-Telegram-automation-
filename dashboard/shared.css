@@ -562,7 +562,13 @@
 
 /* On narrow screens the two-panel workspace stacks. */
 @media (max-width: 1000px) {
-  .main-content { grid-template-columns: 1fr !important; }
+  /* What this property does: Allows single-column layout on mobile viewports without forcing display overrides */
+  /* What it brings: Seamless responsive stacking on handheld screens */
+  /* Where changes can be seen: Mobile layouts below 1000px width */
+  .main-content { grid-template-columns: 1fr; }
+  /* What this property does: Stacks metadata fields in a single column on mobile */
+  /* What it brings: Prevents text truncation in small form inputs */
+  /* Where changes can be seen: Batch metadata form on mobile screens */
   .meta-fields { grid-template-columns: 1fr; }
 }
 
@@ -771,10 +777,38 @@
 /* ---- Upload workspace --------------------------------------------------- */
 /* The JSON pane keeps a comfortable reading width and the card pane takes the
    rest; below roughly 1000px they stack because neither can hold its basis. */
+/* What this rule does: Enforces complete concealment of pageRoot whenever display:none or is-auth-hidden is applied */
+/* What it brings: Guarantees that unauthenticated users cannot see or peek at question cards or inputs */
+/* Where changes can be seen: Visible across all 5 dashboard screens before logging in */
+#pageRoot[style*="display: none"],
+#pageRoot[style*="display:none"],
+#pageRoot.is-auth-hidden,
+.is-auth-hidden {
+  /* What this property does: Overrides any conflicting display rule with maximum specificity */
+  /* What it brings: 100% strict lockdown of all dashboard content prior to authentication */
+  /* Where changes can be seen: Underneath the auth gate hero card in the center of the viewport */
+  display: none !important;
+}
+
+/* What this rule does: Defines the flex layout for the upload page panels when authenticated */
+/* What it brings: Responsive two-pane editing layout without leaking when locked */
+/* Where changes can be seen: On the main upload dashboard after successful sign in */
 .main-content {
-  display: flex !important;
+  /* What this property does: Sets display to flex without overriding inline hidden state */
+  /* What it brings: Proper layout when unlocked while respecting display:none when locked */
+  /* Where changes can be seen: Split view between JSON panel and question cards panel */
+  display: flex;
+  /* What this property does: Allows panels to wrap on smaller screens */
+  /* What it brings: Fluid responsiveness across mobile and tablet viewports */
+  /* Where changes can be seen: Stacking on screens under 1000px */
   flex-wrap: wrap;
+  /* What this property does: Provides 22px spacing between panels */
+  /* What it brings: Clean visual breathing room between editor and cards */
+  /* Where changes can be seen: Space between JSON textarea and card list */
   gap: 22px;
+  /* What this property does: Aligns panels to top of container */
+  /* What it brings: Prevents awkward panel stretching */
+  /* Where changes can be seen: Top edge alignment of cards and editor */
   align-items: flex-start;
 }
 

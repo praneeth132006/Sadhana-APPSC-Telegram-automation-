@@ -34,11 +34,15 @@ const telegram = require('./src/telegram');
 // Configuration
 // ---------------------------------------------------------------------------
 
+/* What this line does: Resolves port number from PORT environment variable or defaults to 3000 */
+/* What it brings: Seamless port assignment on cloud runtimes like Vercel and local machines */
+/* Where changes can be seen: Listening HTTP port */
 const PORT = Number(process.env.PORT) || 3000;
 
-// Loopback by default. Set HOST=0.0.0.0 only if you understand that it exposes
-// an interface that can post to your Telegram channel to the whole network.
-const HOST = process.env.HOST || '127.0.0.1';
+/* What this line does: Binds to 0.0.0.0 in cloud/Vercel or explicit HOST, and 127.0.0.1 on local machines */
+/* What it brings: Allows container ingress on Vercel while preserving local loopback security */
+/* Where changes can be seen: Incoming network socket binding in server.listen */
+const HOST = process.env.HOST || (process.env.VERCEL ? '0.0.0.0' : '127.0.0.1');
 
 const DASHBOARD_DIR = path.resolve(__dirname, 'dashboard');
 
@@ -391,20 +395,31 @@ async function serveStatic(res, pathname) {
 
 /** True when the bot token and group id are both present. */
 function telegramConfigured() {
+  /* What this line does: Validates presence of TELEGRAM_BOT_TOKEN and either TELEGRAM_GROUP_ID or TELEGRAM_CHANNEL_ID */
+  /* What it brings: Seamless support for both Telegram supergroup setups and channel setups */
+  /* Where changes can be seen: /api/config telegramConfigured flag and posting capability checks */
+  const chatId = process.env.TELEGRAM_GROUP_ID || process.env.TELEGRAM_CHANNEL_ID;
   return Boolean(
     String(process.env.TELEGRAM_BOT_TOKEN || '').trim() &&
-    String(process.env.TELEGRAM_GROUP_ID || '').trim()
+    String(chatId || '').trim()
   );
 }
 
 /** Lazily initialises the Telegram client the first time it is needed. */
 let telegramReady = false;
 function ensureTelegram() {
+  /* What this line does: Verifies configuration before attempting to initialize client */
+  /* What it brings: Clear explanatory error if credentials are not configured */
+  /* Where changes can be seen: /api/telegram/post endpoint */
   if (!telegramConfigured()) {
     throw new Error('Telegram is not configured — set TELEGRAM_BOT_TOKEN and TELEGRAM_GROUP_ID in .env');
   }
+  /* What this line does: Lazily creates Telegram bot client once when needed */
+  /* What it brings: Avoids startup crashes if network is briefly unavailable */
+  /* Where changes can be seen: Telegram dispatch execution */
   if (!telegramReady) {
-    telegram.init(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_GROUP_ID);
+    const chatId = process.env.TELEGRAM_GROUP_ID || process.env.TELEGRAM_CHANNEL_ID;
+    telegram.init(process.env.TELEGRAM_BOT_TOKEN, chatId);
     telegramReady = true;
   }
 }

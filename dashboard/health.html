@@ -13,7 +13,10 @@
 </head>
 <body>
   <div class="app-container">
-    <main id="pageRoot" class="page-root" style="display:none">
+    <!-- What this element does: Health dashboard container, locked by default until curator is authenticated -->
+    <!-- What it brings: Prevents system diagnostics and infrastructure details from being seen unauthenticated -->
+    <!-- Where changes can be seen: On the Health dashboard before logging in -->
+    <main id="pageRoot" class="page-root is-auth-hidden" style="display:none !important">
       <div class="page-header">
         <div>
           <h1 class="page-title">System Health</h1>

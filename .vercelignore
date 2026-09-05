@@ -1,0 +1,20 @@
+# What this line does: Excludes all environment variable files from Vercel deployments
+# What it brings: Guarantees secret keys and tokens remain strictly local and never get packaged into cloud bundles
+# Where changes can be seen: Vercel deployment file inspector
+.env
+.env*
+.env.local
+
+# What this line does: Excludes test suites and test fixtures from deployment bundle
+# What it brings: Keeps deployment bundle light and fast
+# Where changes can be seen: Vercel build output
+test/
+*.test.js
+
+# What this line does: Excludes git metadata and local caches
+# What it brings: Clean deployment artifacts
+# Where changes can be seen: Vercel build pipeline
+.git
+.github
+*.log
+.DS_Store

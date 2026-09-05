@@ -15,8 +15,10 @@
   <!-- shared.js injects the navigation bar and the sign-in gate above #pageRoot -->
   <div class="app-container">
 
-    <!-- Hidden until a curator is signed in -->
-    <main id="pageRoot" class="main-content" style="display:none">
+    <!-- What this element does: Main curation workspace container, locked by default until Firebase auth resolves -->
+    <!-- What it brings: Prevents any visual flash or leakage of input panels while the user is logging in -->
+    <!-- Where changes can be seen: On the upload dashboard page prior to signing in -->
+    <main id="pageRoot" class="main-content is-auth-hidden" style="display:none !important">
 
       <!-- ================================================================
            LEFT: JSON input and the metadata applied across the batch

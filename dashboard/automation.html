@@ -13,7 +13,10 @@
 </head>
 <body>
   <div class="app-container">
-    <main id="pageRoot" class="page-root" style="display:none">
+    <!-- What this element does: Automation dashboard container, hidden by default until authentication succeeds -->
+    <!-- What it brings: Protects scheduled posting jobs and thread configuration from unauthenticated viewers -->
+    <!-- Where changes can be seen: On the Automation dashboard before logging in -->
+    <main id="pageRoot" class="page-root is-auth-hidden" style="display:none !important">
       <div class="page-header">
         <div>
           <h1 class="page-title">Automation</h1>

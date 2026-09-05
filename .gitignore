@@ -18,3 +18,12 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+# What this line does: Ignores Vercel project linkage and build metadata
+# What it brings: Prevents local Vercel CLI cache files from polluting git history
+# Where changes can be seen: Git staging and repository tracking
+.vercel
+
+# What this line does: Ignores all environment variable files and backups (.env, .env.local, .env.production)
+# What it brings: Completely prevents secrets, tokens, and keys from being accidentally committed
+# Where changes can be seen: Git status and commit trees
+.env*
