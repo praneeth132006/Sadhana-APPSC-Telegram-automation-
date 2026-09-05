@@ -813,7 +813,7 @@ test('doGet answers ping without a token but gates everything else', () => {
 
     const ping = JSON.parse(s.doGet({ parameter: { action: 'ping' } }).text);
     assert.equal(ping.status, 'ok');
-    assert.match(ping.version, /^v5/);
+    assert.match(ping.version, /^v6/);
     assert.equal(ping.tokenRequired, true);
 
     const denied = JSON.parse(s.doGet({ parameter: { action: 'getStats' } }).text);

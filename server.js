@@ -130,7 +130,7 @@ function applySecurityHeaders(res) {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https://lh3.googleusercontent.com https://*.googleusercontent.com",
-    "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com",
+    "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://www.gstatic.com",
     `frame-src ${authFrames}`,
     "object-src 'none'",
     "base-uri 'none'",
@@ -720,12 +720,14 @@ async function handlePublicRoute(pathname, method, req, res) {
       const version = result.version ||
         (String(result.message || '').match(/v\d+[^)"]*/) || ['unknown'])[0].trim();
 
-      // The dashboards call actions that only exist in v5 of the Apps Script.
-      // Detect an older deployment here so the UI can say exactly what to do
-      // instead of surfacing an opaque "Unknown action" from Google.
-      const outdated = !/^v5\b/.test(String(version));
+      // The dashboards call actions that only exist in v6 of the Apps Script
+      // (the membership reads behind the Members page). Detect an older
+      // deployment here so the UI can say exactly what to do instead of
+      // surfacing an opaque "Unknown action" from Google.
+      const versionNumber = Number((String(version).match(/^v(\d+)/) || [])[1]);
+      const outdated = !(versionNumber >= 6);
 
-      // A v5 script that is not bound to a spreadsheet was pasted into a
+      // A script that is not bound to a spreadsheet was pasted into a
       // standalone project instead of the Sheet's own Extensions > Apps Script.
       const unbound = result.boundToSpreadsheet === false;
 

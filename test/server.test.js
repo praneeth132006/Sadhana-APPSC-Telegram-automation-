@@ -54,7 +54,7 @@ function stub(module, name, result) {
   };
 }
 
-stub(sheets, 'ping', { status: 'ok', version: 'v5 (30 columns)', tokenRequired: true });
+stub(sheets, 'ping', { status: 'ok', version: 'v6 (30 columns + membership)', tokenRequired: true });
 stub(sheets, 'getAnalytics', { totals: { total: 10, posted: 4, pending: 6 }, subjects: [] });
 stub(sheets, 'getStats', [{ subject: 'Polity', total: 10, posted: 4, pending: 6 }]);
 stub(sheets, 'listQuestions', { total: 1, page: 1, totalPages: 1, questions: [{ question_id: 'POL-1' }] });

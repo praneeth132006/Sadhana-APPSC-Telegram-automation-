@@ -236,7 +236,7 @@ function doGet(e) {
       return jsonResponse({
         success: true,
         status: 'ok',
-        version: 'v5 (30 columns)',
+        version: 'v6 (30 columns + membership)',
         tokenRequired: Boolean(getApiToken()),
         boundToSpreadsheet: bound,
         spreadsheetName: bound ? book().getName() : null,
