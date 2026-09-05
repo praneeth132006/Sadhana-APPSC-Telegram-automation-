@@ -1258,7 +1258,7 @@ if (require.main === module) {
     console.log('════════════════════════════════════════════════════════');
     console.log(`🚀 Sadhana APPSC Dashboard   http://${displayHost}:${PORT}`);
     console.log('────────────────────────────────────────────────────────');
-    console.log('   📤 Upload      /index.html');
+    console.log('   📤 Upload      /upload.html');
     console.log('   📊 Analytics   /analytics.html');
     console.log('   📚 Questions   /questions.html');
     console.log('   🤖 Automation  /automation.html');

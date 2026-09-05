@@ -57,7 +57,7 @@ export let serverConfig = {};
 
 /** The five dashboards, in the order they appear in the nav bar. */
 const PAGES = [
-  { id: 'upload',     href: 'index.html',      icon: '📤', label: 'Upload',     hint: 'Paste JSON and push questions to the sheet' },
+  { id: 'upload',     href: 'upload.html',     icon: '📤', label: 'Upload',     hint: 'Paste JSON and push questions to the sheet' },
   { id: 'analytics',  href: 'analytics.html',  icon: '📊', label: 'Analytics',  hint: 'Counts, coverage, runway and curator activity' },
   { id: 'questions',  href: 'questions.html',  icon: '📚', label: 'Questions',  hint: 'Browse, search and edit the whole question bank' },
   { id: 'automation', href: 'automation.html', icon: '🤖', label: 'Automation', hint: 'Post to Telegram now and manage schedules' },

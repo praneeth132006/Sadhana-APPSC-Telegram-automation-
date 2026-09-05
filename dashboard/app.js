@@ -405,7 +405,7 @@ function renderCards() {
 
   // What this does: Displays the bulk actions toolbar when questions are loaded and hides it when empty
   // What it brings: Provides immediate bulk editing controls as soon as cards are parsed
-  // Where changes can be seen: Directly above the question cards list in dashboard/index.html
+  // Where changes can be seen: Directly above the question cards list in dashboard/upload.html
   const bulkToolbar = $('bulkToolbar');
   if (bulkToolbar) {
     bulkToolbar.style.display = questions.length > 0 ? 'flex' : 'none';

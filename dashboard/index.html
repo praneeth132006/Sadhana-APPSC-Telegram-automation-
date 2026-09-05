@@ -3,196 +3,125 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Upload — Sadhana APPSC</title>
-  <meta name="description" content="Paste APPSC quiz questions as JSON, review them as editable cards, and push them into the Google Sheets question bank.">
+  <title>Sadhana APPSC — Daily APPSC Practice on Telegram</title>
+  <meta name="description" content="Daily APPSC practice questions with explanations, delivered to a private Telegram group. Three passes from ₹249.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="shared.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="public.css">
 </head>
-<body>
-  <!-- shared.js injects the navigation bar and the sign-in gate above #pageRoot -->
-  <div class="app-container">
+<body class="public">
 
-    <!-- What this element does: Main curation workspace container, locked by default until Firebase auth resolves -->
-    <!-- What it brings: Prevents any visual flash or leakage of input panels while the user is logging in -->
-    <!-- Where changes can be seen: On the upload dashboard page prior to signing in -->
-    <main id="pageRoot" class="main-content is-auth-hidden" style="display:none !important">
+<!-- This is the page a visitor and a Razorpay reviewer land on. The curator
+     dashboards live behind a sign-in gate at /upload.html and are deliberately
+     not linked from here. -->
 
-      <!-- ================================================================
-           LEFT: JSON input and the metadata applied across the batch
-           ================================================================ -->
-      <section class="input-panel">
-        <!-- Panel header with title and quick sample loading options -->
-        <div class="panel-header">
-          <h2 class="panel-title">Paste JSON Questions</h2>
-          <!-- Header actions: load full sample or minimal 4-essential format -->
-          <div class="header-sample-actions">
-            <button id="sampleBtn" class="btn btn-sm btn-ghost" title="Load full APPSC question sample with all optional attributes">
-              Full Sample
-            </button>
-            <button id="templateBtn" class="btn btn-sm btn-ghost" title="Load minimal JSON format with only the 4 required essentials: Subject, Question, Options, Answer">
-              Minimal JSON
-            </button>
-          </div>
-        </div>
-
-        <!-- Target Subject: Primary selector, required if omitted inside JSON payload -->
-        <div class="field-group hero-subject-group">
-          <div class="label-with-pill">
-            <label for="subjectSelect">Target Subject</label>
-            <span class="pill-badge pill-required">Required if not in JSON</span>
-          </div>
-          <select id="subjectSelect" class="field-select hero-select"></select>
-        </div>
-
-        <!-- Batch Defaults (Compact 2-Column Grid to eliminate vertical scrolling) -->
-        <div class="meta-section-compact">
-          <div class="meta-section-header">
-            <span class="meta-section-title">Batch Defaults</span>
-            <span class="meta-section-sub">(Optional — auto-fills blank card fields)</span>
-          </div>
-          <div class="meta-grid-2col">
-            <!-- Col 1: Default Date -->
-            <div class="field-group-compact">
-              <label for="defaultDate">Date</label>
-              <input type="text" id="defaultDate" class="field-input-compact" placeholder="DD-MM-YYYY (e.g. 05-09-2026)">
-            </div>
-            <!-- Col 2: Default Newspaper -->
-            <div class="field-group-compact">
-              <label for="defaultNewspaper">Newspaper</label>
-              <input type="text" id="defaultNewspaper" class="field-input-compact" placeholder="e.g. The Hindu">
-            </div>
-            <!-- Col 1: Default Difficulty -->
-            <div class="field-group-compact">
-              <label for="defaultDifficulty">Difficulty</label>
-              <select id="defaultDifficulty" class="field-select-compact"></select>
-            </div>
-            <!-- Col 2: Default Status (defaults to Approved) -->
-            <div class="field-group-compact">
-              <label for="defaultStatus">Status</label>
-              <select id="defaultStatus" class="field-select-compact"></select>
-            </div>
-            <!-- Col 1: Default Topic -->
-            <div class="field-group-compact">
-              <label for="defaultTopic">Topic</label>
-              <input type="text" id="defaultTopic" class="field-input-compact" placeholder="e.g. Biodiversity">
-            </div>
-            <!-- Col 2: Default Tags -->
-            <div class="field-group-compact">
-              <label for="defaultTags">Tags</label>
-              <input type="text" id="defaultTags" class="field-input-compact" placeholder="keywords, comma-separated">
-            </div>
-            <!-- Full width (span 2): Default Source URL -->
-            <div class="field-group-compact grid-col-span-2">
-              <label for="defaultSourceUrl">Source URL</label>
-              <input type="text" id="defaultSourceUrl" class="field-input-compact" placeholder="https://… (optional reference link)">
-            </div>
-          </div>
-        </div>
-
-        <!-- JSON Input Textarea with explicit requirement header -->
-        <div class="textarea-header">
-          <label for="jsonInput">JSON Payload</label>
-          <span class="textarea-requirement-hint">Must contain: <b>Subject, Question, Options, Answer</b></span>
-        </div>
-        <textarea id="jsonInput" class="json-textarea-compact" spellcheck="false"
-                  placeholder='Paste JSON here. A question is added ONLY when it has Subject, Question, 4 Options, and Answer.
-
-{
-  "subject": "Environment",
-  "questions": [
-    {
-      "question": "Which of the following is an autonomous body for green cover in Andhra Pradesh?",
-      "option_a": "AP-Green",
-      "option_b": "AP-Forest",
-      "option_c": "AP-Eco",
-      "option_d": "AP-Bio",
-      "correct_answer": "A"
-    }
-  ]
-}'></textarea>
-
-        <!-- Action Buttons: Parse & Preview, Clear All -->
-        <div class="action-buttons">
-          <button id="parseBtn" class="btn btn-primary" title="Parse the JSON into editable cards (⌘+Enter)">
-            🔍 Parse &amp; Preview
-          </button>
-          <button id="clearBtn" class="btn btn-ghost" title="Clear the input and all cards">
-            Clear All
-          </button>
-        </div>
-
-        <!-- Error display box for JSON syntax or missing mandatory fields -->
-        <div id="parseError" class="error-box" style="display:none"></div>
-      </section>
-
-      <!-- ================================================================
-           RIGHT: editable question cards
-           ================================================================ -->
-      <section class="cards-panel">
-        <div class="cards-header">
-          <div class="cards-header-info">
-            <h2 class="panel-title">Question Cards <span id="cardCount" class="card-count">(0)</span></h2>
-            <span class="panel-subtitle">Edit anything before sending &bull; click a radio to set the correct answer</span>
-          </div>
-          <div style="display:flex;gap:10px;align-items:center">
-            <label class="hint-text" style="display:flex;align-items:center;gap:6px" title="Skip questions whose text already exists anywhere in the bank">
-              <input type="checkbox" id="skipDuplicates" checked>
-              Skip duplicates
-            </label>
-            <button id="sendToSheetBtn" class="btn btn-send" disabled title="Push all cards to the Google Sheets question bank">
-              🚀 Send to Sheet
-            </button>
-          </div>
-        </div>
-
-        <!-- Bulk Actions Toolbar: Apply Difficulty, Status, or Batch Defaults across all cards simultaneously -->
-        <div id="bulkToolbar" class="bulk-toolbar" style="display:none">
-          <div class="bulk-toolbar-title">
-            <span class="bulk-icon">⚡</span>
-            <span>Bulk Apply:</span>
-          </div>
-          <div class="bulk-toolbar-controls">
-            <!-- Bulk Difficulty Selector -->
-            <div class="bulk-control-group">
-              <label for="bulkDifficulty">Difficulty</label>
-              <select id="bulkDifficulty" class="field-select-compact">
-                <option value="">— Set all difficulty —</option>
-                <option value="Easy">Easy</option>
-                <option value="Medium">Medium</option>
-                <option value="Hard">Hard</option>
-              </select>
-            </div>
-            <!-- Bulk Status Selector -->
-            <div class="bulk-control-group">
-              <label for="bulkStatus">Status</label>
-              <select id="bulkStatus" class="field-select-compact">
-                <option value="">— Set all status —</option>
-                <option value="Approved">Approved</option>
-                <option value="Draft">Draft</option>
-                <option value="Review">Review</option>
-                <option value="Scheduled">Scheduled</option>
-                <option value="Posted">Posted</option>
-                <option value="Rejected">Rejected</option>
-                <option value="Archived">Archived</option>
-              </select>
-            </div>
-            <!-- Apply Left Defaults to All Cards Button -->
-            <button id="applyDefaultsBtn" class="btn btn-sm btn-outline-cyan" title="Copy batch defaults from left panel to all cards">
-              ⚡ Apply Defaults to All Cards
-            </button>
-          </div>
-        </div>
-
-        <!-- Container for individual editable question cards -->
-        <div id="cardsContainer" class="cards-container vertical-flow"></div>
-      </section>
-
-    </main>
+<header class="pub-header">
+  <div class="pub-wrap pub-header-inner">
+    <a class="pub-brand" href="index.html">
+      Sadhana APPSC <span class="pub-brand-tag">Practice Group</span>
+    </a>
+    <nav class="pub-nav">
+      <a href="#passes">Passes</a>
+      <a href="#how">How it works</a>
+      <a href="#contact">Contact</a>
+      <a href="terms.html">Terms</a>
+      <a href="refund.html">Refunds</a>
+      <a href="privacy.html">Privacy</a>
+    </nav>
   </div>
+</header>
 
-  <script type="module" src="app.js"></script>
+<main>
+  <section class="pub-wrap pub-hero">
+    <h1>Daily APPSC practice,<br>delivered to your Telegram</h1>
+    <p>
+      Curated APPSC questions with answers and explanations, posted every day to a
+      private group. Buy a pass from our Telegram bot and you are added automatically.
+    </p>
+    <a class="pub-cta" id="botLink" href="https://t.me/sadhanamainbot" target="_blank" rel="noopener">
+      Open the Telegram bot →
+    </a>
+    <p class="pub-cta-note">
+      Payments are processed securely by Razorpay. UPI, cards and net banking accepted.
+    </p>
+  </section>
+
+  <section class="pub-wrap pub-section" id="passes">
+    <h2>Choose a pass</h2>
+    <p class="pub-section-sub">
+      Every pass unlocks the same private group. They differ only in how long access lasts.
+    </p>
+    <div class="pub-plans" id="plans">
+      <p class="pub-loading">Loading current prices…</p>
+    </div>
+  </section>
+
+  <section class="pub-wrap pub-section" id="how">
+    <h2>How it works</h2>
+    <p class="pub-section-sub">Four steps, start to finish.</p>
+    <div class="pub-steps">
+      <div class="pub-step">
+        <div class="pub-step-n">1</div>
+        <h3>Message the bot</h3>
+        <p>Send <strong>/start</strong> to <span data-business="botHandle"></span> on Telegram and pick a pass.</p>
+      </div>
+      <div class="pub-step">
+        <div class="pub-step-n">2</div>
+        <h3>Pay securely</h3>
+        <p>The bot opens a Razorpay checkout. Pay by UPI, card or net banking.</p>
+      </div>
+      <div class="pub-step">
+        <div class="pub-step-n">3</div>
+        <h3>Get your invite</h3>
+        <p>A single-use invite link to the private group is sent to you on Telegram straight away.</p>
+      </div>
+      <div class="pub-step">
+        <div class="pub-step-n">4</div>
+        <h3>Practise daily</h3>
+        <p>Questions are posted every day. Check your remaining days any time with <strong>/status</strong>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="pub-wrap pub-section" id="contact">
+    <h2>Contact us</h2>
+    <p class="pub-section-sub">
+      Questions about a payment or your access? Reach us directly — we reply within one working day.
+    </p>
+    <div class="pub-contact">
+      <div class="pub-contact-item">
+        <div class="k">Business name</div>
+        <div class="v" data-business="name"></div>
+      </div>
+      <div class="pub-contact-item">
+        <div class="k">Email</div>
+        <div class="v"><a data-business-href="email" href="#"></a></div>
+      </div>
+      <div class="pub-contact-item">
+        <div class="k">Phone</div>
+        <div class="v"><a data-business-href="phone" href="#"></a></div>
+      </div>
+      <div class="pub-contact-item">
+        <div class="k">Address</div>
+        <div class="v" data-business="address"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="pub-footer">
+  <div class="pub-wrap pub-footer-inner">
+    <div>© <span id="year"></span> <span data-business="name"></span></div>
+    <div>
+      <a href="terms.html">Terms &amp; Conditions</a>
+      <a href="refund.html">Refund &amp; Cancellation</a>
+      <a href="privacy.html">Privacy Policy</a>
+    </div>
+  </div>
+</footer>
+
+<script type="module" src="landing.js"></script>
+
 </body>
 </html>
