@@ -69,6 +69,18 @@ const STORAGE_KEY_URL = 'sadhana_sheet_url';
 sheetUrlInput.addEventListener('change', function() {
   // Get the current trimmed value of the URL input
   const url = sheetUrlInput.value.trim();
+
+  // Validate that the user did not accidentally paste a Library or Edit link instead of Web App URL
+  if (url.includes('/macros/library/') || url.includes('/edit')) {
+    // Show descriptive error toast alerting user to paste Web App URL instead of Library link
+    showToast('error', '⚠️ That is a Library/Edit URL! Please copy the Web App URL (starts with /macros/s/ and ends in /exec).');
+    // Set connection status dot to offline red
+    connectionStatus.className = 'status-dot offline';
+    // Set tooltip text explaining invalid URL format
+    connectionStatus.title = 'Invalid URL: Must be Web App URL ending in /exec';
+    return;
+  }
+
   // Save to localStorage for persistence across page reloads
   localStorage.setItem(STORAGE_KEY_URL, url);
   // Test whether the URL is reachable and valid
@@ -128,6 +140,12 @@ sendToSheetBtn.addEventListener('click', async function() {
   // Validate URL is configured
   if (!url) {
     showToast('error', 'Please configure the Sheet API URL first.');
+    return;
+  }
+
+  // Validate that the URL is a Web App URL and not a Library or edit URL
+  if (url.includes('/macros/library/') || url.includes('/edit')) {
+    showToast('error', '⚠️ You entered a Library/Edit URL! Please copy the Web App URL ending in /exec.');
     return;
   }
 
