@@ -10,7 +10,8 @@ bot that posts on a schedule or on demand.
 
 ## The five dashboards
 
-Run `npm run dashboard` and open <http://localhost:3000>.
+Live at <https://appscsadhana.vercel.app>, or locally with `npm run dashboard` at
+<http://localhost:3000>.
 
 | | Dashboard | What it is for |
 |---|---|---|
@@ -22,7 +23,29 @@ Run `npm run dashboard` and open <http://localhost:3000>.
 
 ---
 
-## Setup
+## Uploading questions — for everyone except the admin
+
+**Open <https://appscsadhana.vercel.app> and sign in with Google. That is the whole setup.**
+
+Nothing to install, no server to run, no `.env`, no Apps Script. It writes to the same
+Google Sheet as everything else.
+
+To let a new person in, the admin adds their email to the `CURATOR_EMAILS`
+environment variable on Vercel (Project → Settings → Environment Variables) and
+redeploys. Without that they will sign in successfully and then see a banner saying
+the account is not on the curator allowlist — that is the allowlist doing its job, not
+a bug.
+
+The rest of this README is for the **admin**: the one machine that also runs the
+Telegram bot and the scheduler. Everyone else can stop reading here.
+
+---
+
+## Setup — admin only
+
+Only needed on the machine that posts to Telegram and runs the scheduler. Curators
+uploading questions do not need any of this.
+
 
 ### 1. Install
 
@@ -218,6 +241,12 @@ proven, is in [SECURITY-REVIEW.md](SECURITY-REVIEW.md).
 
 ### Signing in
 
+**Banner says "Sign-in will fail on …" but the site works.**
+Fixed. That check used to compare against a hardcoded guess at the authorised hosts,
+so it wrongly flagged the live Vercel domain. It now reads the project's real
+`authorizedDomains` list and stays silent if it cannot reach it — a false alarm is
+worse than none.
+
 **Google sign-in shows "500. That's an error" from accounts.google.com.**
 Almost always the host the page is open on. Firebase authorises sign-in per
 *domain*, and it treats `localhost` and `127.0.0.1` as different domains — only
@@ -323,6 +352,8 @@ npm test
   `alg:none`, HS256 confusion, tampered payloads, expiry, wrong audience.
 - `test/apps-script.test.js` — the Apps Script logic in a sandboxed Google runtime:
   header resolution, the migration, duplicate detection, filtering and the runway math.
+- `test/host-authorisation.test.js` — the Firebase authorised-domain matching rule,
+  pinned after a hardcoded guess wrongly flagged the live Vercel host.
 
 ---
 

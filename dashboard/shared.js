@@ -409,34 +409,59 @@ function buildBootScreen() {
 }
 
 /**
+ * isHostAuthorised — does `host` match one of Firebase's authorised domains?
+ *
+ * Firebase accepts an exact match or any subdomain of a listed domain. Kept
+ * separate from the network call so the rule itself is directly testable — the
+ * previous hardcoded guess wrongly rejected a valid custom domain.
+ *
+ * @param {string} host location.hostname
+ * @param {Array<string>} domains authorizedDomains from the project config
+ * @returns {boolean}
+ */
+export function isHostAuthorised(host, domains) {
+  if (!host || !Array.isArray(domains)) return false;
+  return domains.some((domain) => host === domain || host.endsWith('.' + domain));
+}
+
+/**
  * warnIfOriginNotAuthorised — flags a host Firebase sign-in cannot work from.
  *
- * Firebase authorises sign-in per domain, and "localhost" and "127.0.0.1" are
- * different domains to it. Only localhost, the two firebaseapp/web.app domains
- * and any host added in the console are allowed. Loading the dashboard on
- * anything else makes the Google popup fail — frequently as an unexplained 500
- * from accounts.google.com, which gives the curator nothing to act on.
+ * Firebase authorises sign-in per domain. Rather than guessing which hosts are
+ * allowed, this asks the project for its actual authorised list — an earlier
+ * version hardcoded a guess and wrongly warned on a perfectly valid custom
+ * domain, which is worse than saying nothing.
  *
- * The server already redirects 127.0.0.1 to localhost, so this catches the
- * remaining cases: a LAN IP, or a machine name.
+ * The check is advisory and fails open: if the list cannot be fetched, no
+ * banner is shown, because a false alarm is more damaging than a missing one.
  */
-function warnIfOriginNotAuthorised() {
+async function warnIfOriginNotAuthorised() {
   const host = location.hostname;
 
-  // Hosts Firebase allows out of the box, plus anything the user configured.
-  const alwaysFine = ['localhost', ''];
-  if (alwaysFine.includes(host)) return;
-  if (host.endsWith('.firebaseapp.com') || host.endsWith('.web.app')) return;
+  // Served from a file:// URL or similar — nothing useful to say.
+  if (!host) return;
 
-  // A bare IP address is never on the default authorised list.
-  const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
+  let authorised;
+  try {
+    const res = await fetch(
+      'https://identitytoolkit.googleapis.com/v1/projects?key=' + encodeURIComponent(firebaseConfig.apiKey)
+    );
+    if (!res.ok) return;
+    authorised = (await res.json()).authorizedDomains;
+  } catch (err) {
+    return; // Offline or blocked: stay quiet rather than guess.
+  }
+
+  if (!Array.isArray(authorised) || !authorised.length) return;
+  if (isHostAuthorised(host, authorised)) return;
+
   const localUrl = `http://localhost:${location.port || '3000'}${location.pathname}`;
 
   showBanner('error', `Sign-in will fail on "${host}".`,
-    'Firebase only allows sign-in from domains on its authorised list, and an IP address is not one of ' +
-    'them. Open this dashboard at ' + localUrl + ' instead' +
-    (isIp ? '' : ', or add this host under Firebase Console → Authentication → Settings → Authorised domains') +
-    '. Opening it on the wrong host is what produces the "500. That\u2019s an error" page from Google.');
+    'That host is not on this Firebase project\u2019s authorised list (' + authorised.join(', ') + '). ' +
+    'Either open the dashboard at ' + localUrl + ', or add "' + host + '" under ' +
+    'Firebase Console \u2192 Authentication \u2192 Settings \u2192 Authorised domains. ' +
+    'Signing in from an unauthorised host is what produces the "500. That\u2019s an error" page from Google.');
 }
 
 /** Turns a Firebase error code into something a curator can act on. */
@@ -620,7 +645,8 @@ export async function initDashboard({ page, onReady }) {
     showToast('error', 'Cannot reach the local server. Start it with: npm run dashboard');
   }
 
-  warnIfOriginNotAuthorised();
+  // Advisory only, and it fails open — never let it block startup.
+  warnIfOriginNotAuthorised().catch(() => {});
 
   refreshConnectionStatus();
   // Re-check the sheet connection every couple of minutes.
