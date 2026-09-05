@@ -489,7 +489,10 @@ test('appendQuestionsToSheet assigns ids, timestamps and skips duplicates', () =
   assert.equal(row[map['Subject']], 'Polity');
   assert.equal(row[map['Correct Answer']], 'B', 'answer is upper-cased');
   assert.equal(row[map['Posted']], 'NO');
-  assert.equal(row[map['Status']], 'Draft');
+  // What this line does: Asserts that newly added questions default to 'Approved' status
+  // What it brings: Validates the user requirement that newly added questions are automatically Approved
+  // Where changes can be seen: In test suite execution results
+  assert.equal(row[map['Status']], 'Approved');
   assert.equal(row[map['Times Posted']], 0);
   assert.equal(row[map['Added By']], 'Curator (curator@x.com)');
   assert.equal(sheet.values[2][map['Difficulty']], 'Hard', 'difficulty is normalised');

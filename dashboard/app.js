@@ -69,33 +69,47 @@ function normaliseQuestion(raw, defaults) {
     difficulty: pick('difficulty', 'level') || defaults.difficulty,
     tags: pick('tags', 'keywords') || defaults.tags,
     source_url: pick('source_url', 'sourceUrl', 'url', 'link') || defaults.sourceUrl,
-    status: pick('status') || defaults.status
+    // What this does: Defaults workflow status to Approved instead of Draft if unspecified
+    // What it brings: Satisfies user request that questions automatically arrive as Approved
+    // Where changes can be seen: On the question card status badge and in Google Sheets
+    status: pick('status') || defaults.status || 'Approved'
   };
 }
 
 /** Reads the batch metadata inputs into a defaults object. */
 function readDefaults() {
   return {
-    date: $('defaultDate').value.trim(),
-    newspaper: $('defaultNewspaper').value.trim(),
-    topic: $('defaultTopic').value.trim(),
-    difficulty: $('defaultDifficulty').value,
-    tags: $('defaultTags').value.trim(),
-    sourceUrl: $('defaultSourceUrl').value.trim(),
-    status: $('defaultStatus').value
+    // Read optional date default from input field
+    date: $('defaultDate') ? $('defaultDate').value.trim() : '',
+    // Read optional newspaper source from input field
+    newspaper: $('defaultNewspaper') ? $('defaultNewspaper').value.trim() : '',
+    // Read optional topic classification from input field
+    topic: $('defaultTopic') ? $('defaultTopic').value.trim() : '',
+    // Read default difficulty level (defaults to Medium)
+    difficulty: $('defaultDifficulty') ? $('defaultDifficulty').value : 'Medium',
+    // Read optional comma-separated search keywords
+    tags: $('defaultTags') ? $('defaultTags').value.trim() : '',
+    // Read optional reference link URL
+    sourceUrl: $('defaultSourceUrl') ? $('defaultSourceUrl').value.trim() : '',
+    // Read default status (defaults to Approved)
+    status: ($('defaultStatus') && $('defaultStatus').value) ? $('defaultStatus').value : 'Approved'
   };
 }
 
-/** Parses the textarea and rebuilds the card list. */
+/** Parses the textarea and rebuilds the card list with strict 4-essential validation. */
 function parseJson() {
+  // Clear any existing parse error messages
   hideError();
+  // Read and strip raw text from textarea
   const raw = $('jsonInput').value.trim();
 
+  // Guard: Ensure user entered content before parsing
   if (!raw) {
     showError('Paste some JSON first.');
     return;
   }
 
+  // Parse JSON syntax safely
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -104,6 +118,7 @@ function parseJson() {
     return;
   }
 
+  // Retrieve batch metadata defaults from left panel
   const defaults = readDefaults();
 
   // Accept { questions: [...] }, a bare array, or a single question object.
@@ -123,22 +138,93 @@ function parseJson() {
     return;
   }
 
+  // Guard: Ensure at least one question exists in payload
   if (!list.length) {
     showError('The JSON parsed fine but contains no questions.');
     return;
   }
 
-  questions = list
-    .filter((q) => q && typeof q === 'object')
-    .map((q) => normaliseQuestion(q, defaults));
+  // Determine current active subject from dropdown or root object
+  const activeSubject = ($('subjectSelect') && $('subjectSelect').value.trim()) ||
+                        (parsed.subject && String(parsed.subject).trim()) || '';
 
-  const empties = questions.filter((q) => !q.question).length;
-  if (empties) {
-    showToast('warn', `${empties} entr${empties === 1 ? 'y has' : 'ies have'} no question text — fill them in or delete the cards.`);
+  // Validation collector to ensure all 4 essentials exist: Subject, Question, 4 Options, Answer
+  const validationErrors = [];
+  const parsedQuestions = [];
+
+  // Iterate over every question item to strictly validate the 4 mandatory requirements
+  list.forEach((item, index) => {
+    const itemNum = index + 1;
+    // Validate that item is a valid object
+    if (!item || typeof item !== 'object') {
+      validationErrors.push(`Item #${itemNum}: Invalid question format (expected a JSON object).`);
+      return;
+    }
+
+    // 1. Mandatory Requirement 1: Subject Name
+    const subject = (item.subject && String(item.subject).trim()) || activeSubject;
+    // 2. Mandatory Requirement 2: Question Prompt Text
+    const questionText = String(item.question || item.question_text || item.text || item.prompt || '').trim();
+
+    // 3. Mandatory Requirement 3: All 4 Options (A, B, C, D)
+    const optionArray = Array.isArray(item.options) ? item.options : null;
+    const optA = (optionArray ? String(optionArray[0] ?? '') : String(item.option_a || item.optionA || item.a || '')).trim();
+    const optB = (optionArray ? String(optionArray[1] ?? '') : String(item.option_b || item.optionB || item.b || '')).trim();
+    const optC = (optionArray ? String(optionArray[2] ?? '') : String(item.option_c || item.optionC || item.c || '')).trim();
+    const optD = (optionArray ? String(optionArray[3] ?? '') : String(item.option_d || item.optionD || item.d || '')).trim();
+
+    // 4. Mandatory Requirement 4: Correct Answer (A, B, C, or D)
+    const rawAnswer = String(item.correct_answer || item.correctAnswer || item.answer || item.correct || '').trim().toUpperCase();
+    const validAnswer = ['A', 'B', 'C', 'D'].includes(rawAnswer) ? rawAnswer : '';
+
+    // Collect specific missing fields for this item
+    const missing = [];
+    if (!subject) missing.push('Subject Name (set "subject" or choose Target Subject)');
+    if (!questionText) missing.push('Question Text');
+    if (!optA) missing.push('Option A');
+    if (!optB) missing.push('Option B');
+    if (!optC) missing.push('Option C');
+    if (!optD) missing.push('Option D');
+    if (!validAnswer) missing.push('Correct Answer (must be A, B, C, or D)');
+
+    // If any mandatory field is missing, record error and block ingestion
+    if (missing.length > 0) {
+      validationErrors.push(`Question #${itemNum}: Missing ${missing.join(', ')}`);
+    } else {
+      // If subject was in JSON and dropdown is empty, auto-select it in dropdown
+      if (item.subject && SUBJECTS.includes(item.subject) && !$('subjectSelect').value) {
+        $('subjectSelect').value = item.subject;
+      }
+      // Normalise question with batch defaults; status automatically defaults to Approved
+      const q = normaliseQuestion(item, defaults);
+      q.question = questionText;
+      q.option_a = optA;
+      q.option_b = optB;
+      q.option_c = optC;
+      q.option_d = optD;
+      q.correct_answer = validAnswer;
+      // Ensure status is explicitly Approved unless user specified otherwise
+      q.status = q.status || 'Approved';
+      parsedQuestions.push(q);
+    }
+  });
+
+  // Strict enforcement: If ANY question failed mandatory requirements, reject the batch completely
+  if (validationErrors.length > 0) {
+    const errorHtml = `<strong>⚠️ Mandatory Requirements Missing:</strong><br>` +
+      `Questions are added ONLY when they contain <strong>Subject, Question, 4 Options (A-D), and Answer</strong>.<br><br>` +
+      validationErrors.map((e) => `• ${e}`).join('<br>');
+    showError(errorHtml);
+    return;
   }
 
+  // Store valid parsed questions
+  questions = parsedQuestions;
+
+  // Render cards in the right panel
   renderCards();
-  showToast('success', `Parsed ${questions.length} question(s). Review and edit before sending.`);
+  // Show confirmation toast
+  showToast('success', `Parsed ${questions.length} question(s) with "Approved" status. Review & edit before sending.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +401,14 @@ function renderCards() {
   $('cardCount').textContent = `(${questions.length})`;
   $('sendToSheetBtn').disabled = questions.length === 0;
 
+  // What this does: Displays the bulk actions toolbar when questions are loaded and hides it when empty
+  // What it brings: Provides immediate bulk editing controls as soon as cards are parsed
+  // Where changes can be seen: Directly above the question cards list in dashboard/index.html
+  const bulkToolbar = $('bulkToolbar');
+  if (bulkToolbar) {
+    bulkToolbar.style.display = questions.length > 0 ? 'flex' : 'none';
+  }
+
   if (!questions.length) {
     replaceChildren(container, emptyState(
       '📋',
@@ -449,47 +543,142 @@ const SAMPLE_JSON = {
   ]
 };
 
+/**
+ * Minimal question format with only the mandatory 4 attributes requested by user:
+ * Subject name, question prompt, 4 options (A-D), and correct answer key.
+ * All other fields (explanation, topic, tags, date, newspaper) are completely optional.
+ */
+const MINIMAL_JSON = {
+  subject: 'Environment',
+  questions: [
+    {
+      question: 'Which of the following is an autonomous body established to coordinate green-cover initiatives in Andhra Pradesh?',
+      option_a: 'AP-Green',
+      option_b: 'AP-Forest Development Corporation',
+      option_c: 'AP-Eco Board',
+      option_d: 'AP-Bio Authority',
+      correct_answer: 'A'
+    }
+  ]
+};
+
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
 /** Populates the subject, difficulty and status dropdowns. */
 function initSelects() {
+  // Populate target subject dropdown with all 16 APPSC subjects
   replaceChildren($('subjectSelect'),
     el('option', { value: '', text: '— Select Subject —' }),
     ...SUBJECTS.map((s) => el('option', { value: s, text: s }))
   );
+  // Populate default difficulty dropdown
   replaceChildren($('defaultDifficulty'), ...DIFFICULTIES.map((d) => el('option', { value: d, text: d })));
+  // Default difficulty to Medium
   $('defaultDifficulty').value = 'Medium';
 
+  // Populate default workflow status dropdown
   replaceChildren($('defaultStatus'), ...STATUSES.map((s) => el('option', { value: s, text: s })));
-  $('defaultStatus').value = 'Draft';
+  // What this line does: Defaults workflow status to Approved instead of Draft
+  // What it brings: Satisfies user request that questions automatically arrive as Approved
+  // Where changes can be seen: In the left panel defaults and on every new question card
+  $('defaultStatus').value = 'Approved';
 }
 
 initDashboard({
   page: 'upload',
   onReady: async () => {
+    // Populate dropdown options
     initSelects();
+    // Render initial empty state or cards
     renderCards();
 
+    // Wire parse button to trigger strict validation and card generation
     $('parseBtn').addEventListener('click', parseJson);
 
+    // Wire clear all button to reset inputs and cards
     $('clearBtn').addEventListener('click', () => {
       questions = [];
       $('jsonInput').value = '';
       hideError();
       renderCards();
-      showToast('info', 'Cleared.');
+      showToast('info', 'Cleared all questions.');
     });
 
+    // Wire full sample button to load rich multi-statement example
     $('sampleBtn').addEventListener('click', () => {
       $('jsonInput').value = JSON.stringify(SAMPLE_JSON, null, 2);
       $('subjectSelect').value = 'Environment';
       hideError();
-      showToast('info', 'Sample loaded — click Parse & Preview.');
+      showToast('info', 'Full sample loaded — click Parse & Preview.');
     });
 
+    // Wire minimal format button to load strict 4-attribute sample
+    if ($('templateBtn')) {
+      $('templateBtn').addEventListener('click', () => {
+        $('jsonInput').value = JSON.stringify(MINIMAL_JSON, null, 2);
+        $('subjectSelect').value = 'Environment';
+        hideError();
+        showToast('info', 'Minimal JSON loaded (Subject, Question, 4 Options, Answer). Click Parse & Preview.');
+      });
+    }
+
+    // Wire send to sheet button to push validated questions to Google Sheets
     $('sendToSheetBtn').addEventListener('click', sendToSheet);
+
+    // Bulk Difficulty Selector: Changes difficulty across all cards at once
+    const bulkDiff = $('bulkDifficulty');
+    if (bulkDiff) {
+      bulkDiff.addEventListener('change', () => {
+        const val = bulkDiff.value;
+        if (!val || !questions.length) return;
+        questions.forEach((q) => { q.difficulty = val; });
+        $('cardsContainer').querySelectorAll('.card-meta-inputs select[title="Difficulty level"]').forEach((sel) => {
+          sel.value = val;
+        });
+        showToast('info', `Set difficulty to "${val}" across all ${questions.length} card(s).`);
+        bulkDiff.value = '';
+      });
+    }
+
+    // Bulk Status Selector: Changes status across all cards at once
+    const bulkStatus = $('bulkStatus');
+    if (bulkStatus) {
+      bulkStatus.addEventListener('change', () => {
+        const val = bulkStatus.value;
+        if (!val || !questions.length) return;
+        questions.forEach((q) => { q.status = val; });
+        $('cardsContainer').querySelectorAll('.card-meta-inputs select[title="Workflow status on upload"]').forEach((sel) => {
+          sel.value = val;
+        });
+        showToast('info', `Set status to "${val}" across all ${questions.length} card(s).`);
+        bulkStatus.value = '';
+      });
+    }
+
+    // Apply Defaults Button: Copies left panel batch defaults to all cards at once
+    const applyDefs = $('applyDefaultsBtn');
+    if (applyDefs) {
+      applyDefs.addEventListener('click', () => {
+        if (!questions.length) {
+          showToast('warn', 'No question cards loaded to apply defaults to.');
+          return;
+        }
+        const defs = readDefaults();
+        questions.forEach((q) => {
+          if (defs.date) q.date = defs.date;
+          if (defs.newspaper) q.newspaper = defs.newspaper;
+          if (defs.topic) q.topic = defs.topic;
+          if (defs.difficulty) q.difficulty = defs.difficulty;
+          if (defs.status) q.status = defs.status;
+          if (defs.tags) q.tags = defs.tags;
+          if (defs.sourceUrl) q.source_url = defs.sourceUrl;
+        });
+        renderCards();
+        showToast('success', `Applied batch defaults across all ${questions.length} card(s).`);
+      });
+    }
 
     // Ctrl/Cmd+Enter in the textarea parses, which is the common next action.
     $('jsonInput').addEventListener('keydown', (event) => {

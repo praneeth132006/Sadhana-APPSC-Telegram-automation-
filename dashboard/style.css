@@ -547,7 +547,193 @@ body {
   margin-left: 4px;
 }
 
-/* Batch Metadata Fields */
+/* Header Sample Actions: Container for full sample and minimal JSON buttons */
+.header-sample-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Hero Subject Selector: Prominent container for the primary subject field */
+.hero-subject-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(15, 23, 42, 0.4);
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+
+/* Flex row containing the field label and pill badge */
+.label-with-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Required badge highlighting that subject is essential if omitted in JSON */
+.pill-badge.pill-required {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+/* Prominent subject select dropdown styling */
+.hero-select {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+/* Compact Batch Defaults Section: Container for secondary defaults */
+.meta-section-compact {
+  background: rgba(15, 23, 42, 0.3);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Header row for batch defaults section */
+.meta-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Title text for batch defaults */
+.meta-section-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+/* Subtitle explaining batch defaults are optional */
+.meta-section-sub {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+/* 2-Column grid for compact batch metadata inputs */
+.meta-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+}
+
+/* Field spanning both grid columns (for Source URL) */
+.grid-col-span-2 {
+  grid-column: span 2;
+}
+
+/* Compact field group inside the 2-column grid */
+.field-group-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* Compact field label */
+.field-group-compact label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+/* Compact input and select elements */
+.field-input-compact,
+.field-select-compact {
+  background: var(--bg-input);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+/* Dropdown styling for compact select */
+.field-select-compact {
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+}
+
+.field-input-compact:focus,
+.field-select-compact:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+}
+
+/* Textarea header showing label and 4-essential requirements hint */
+.textarea-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.textarea-header label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+/* Requirement hint highlighting the 4 essential fields */
+.textarea-requirement-hint {
+  font-size: 0.68rem;
+  color: #38bdf8;
+}
+
+/* Compact JSON Textarea that fits comfortably on screen */
+.json-textarea-compact {
+  background: var(--bg-input);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  resize: vertical;
+  min-height: 160px;
+  max-height: 360px;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.json-textarea-compact:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+}
+
+.json-textarea-compact::placeholder {
+  color: var(--text-muted);
+  opacity: 0.65;
+}
+
+/* Legacy batch metadata fields support */
 .meta-fields {
   display: flex;
   flex-direction: column;
@@ -590,9 +776,10 @@ body {
   padding-right: 32px;
 }
 
-.field-select option {
-  background-color: var(--bg-input);
-  color: var(--text-primary);
+.field-select option,
+.field-select-compact option {
+  background-color: #0f172a;
+  color: #f1f5f9;
 }
 
 .field-select:focus,
@@ -726,9 +913,78 @@ body {
   backdrop-filter: blur(12px);
 }
 
-.cards-header-info {
+/* Bulk Actions Toolbar: Glassmorphic bar displayed when cards are loaded to apply batch updates */
+.bulk-toolbar {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: var(--radius-md);
+  padding: 10px 16px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(12px);
+  flex-wrap: wrap;
+  animation: fadeIn 0.25s ease-out;
+}
+
+/* Title container with lightning icon */
+.bulk-toolbar-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #38bdf8;
+  letter-spacing: 0.02em;
+}
+
+/* Icon styling */
+.bulk-icon {
+  font-size: 1rem;
+}
+
+/* Controls wrapper */
+.bulk-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Individual label + select pair */
+.bulk-control-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bulk-control-group label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+/* Modern cyan outline button for applying defaults */
+.btn-outline-cyan {
+  background: rgba(56, 189, 248, 0.1);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-outline-cyan:hover {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: #38bdf8;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
+  transform: translateY(-1px);
 }
 
 /* Cards Container: Vertical Flow */
