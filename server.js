@@ -644,13 +644,19 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
     if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
 
     const questionId = str(body.questionId, 60);
-    if (!questionId) { sendJSON(res, 400, { success: false, error: 'Missing questionId' }); return true; }
+    const rowNumber = parseInt(body.rowNumber, 10) || '';
+    if (!questionId && !rowNumber) {
+      sendJSON(res, 400, { success: false, error: 'Missing questionId' });
+      return true;
+    }
     if (!body.fields || typeof body.fields !== 'object') {
       sendJSON(res, 400, { success: false, error: 'Missing fields object' });
       return true;
     }
 
-    const result = await sheets.updateQuestion(subject.value, questionId, body.fields, actor);
+    const result = await sheets.updateQuestion(
+      subject.value, questionId, body.fields, actor, rowNumber, str(body.verifyText, LIMITS.question)
+    );
     sendJSON(res, 200, { success: true, message: result.message });
     return true;
   }
@@ -662,9 +668,15 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
     if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
 
     const questionId = str(body.questionId, 60);
-    if (!questionId) { sendJSON(res, 400, { success: false, error: 'Missing questionId' }); return true; }
+    const rowNumber = parseInt(body.rowNumber, 10) || '';
+    if (!questionId && !rowNumber) {
+      sendJSON(res, 400, { success: false, error: 'Missing questionId' });
+      return true;
+    }
 
-    const result = await sheets.deleteQuestion(subject.value, questionId);
+    const result = await sheets.deleteQuestion(
+      subject.value, questionId, rowNumber, str(body.verifyText, LIMITS.question)
+    );
     sendJSON(res, 200, { success: true, message: result.message });
     return true;
   }

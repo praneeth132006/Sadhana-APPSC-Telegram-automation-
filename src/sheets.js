@@ -264,20 +264,35 @@ async function addQuestions(subject, questions, addedBy, skipDuplicates = true) 
   });
 }
 
-/** Applies an allowlisted field patch to one question. */
-async function updateQuestion(subject, questionId, fields, updatedBy) {
+/**
+ * updateQuestion — applies an allowlisted field patch to one question.
+ *
+ * `rowNumber` and `verifyText` are a fallback for rows that have no Question ID
+ * (written before the 30-column migration, or pasted in by hand). The sheet
+ * only acts on the row number when the question text there still matches, so a
+ * shifted row can never be edited by mistake.
+ */
+async function updateQuestion(subject, questionId, fields, updatedBy, rowNumber, verifyText) {
   return request('POST', {
     action: 'updateQuestion',
     subject,
     questionId,
     fields,
-    updated_by: updatedBy
+    updated_by: updatedBy,
+    rowNumber: rowNumber || '',
+    verifyText: verifyText || ''
   });
 }
 
-/** Permanently removes one question row. */
-async function deleteQuestion(subject, questionId) {
-  return request('POST', { action: 'deleteQuestion', subject, questionId });
+/** Permanently removes one question row. See updateQuestion for the fallback. */
+async function deleteQuestion(subject, questionId, rowNumber, verifyText) {
+  return request('POST', {
+    action: 'deleteQuestion',
+    subject,
+    questionId,
+    rowNumber: rowNumber || '',
+    verifyText: verifyText || ''
+  });
 }
 
 /** Sets Status on many questions at once. */

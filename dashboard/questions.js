@@ -306,7 +306,15 @@ function openEditor(q) {
 
       await api('/api/questions/update', {
         method: 'POST',
-        body: { subject: q.subject, questionId: q.question_id, fields }
+        body: {
+          subject: q.subject,
+          questionId: q.question_id,
+          fields,
+          // Fallback addressing for rows with no Question ID. The sheet only
+          // uses these when the text at that row still matches.
+          rowNumber: q.excel_row,
+          verifyText: q.question_text
+        }
       });
 
       showToast('success', `Saved ${q.question_id}`);
@@ -369,16 +377,22 @@ function openEditor(q) {
 /** Asks before permanently removing a row from the sheet. */
 async function confirmDelete(q) {
   const ok = window.confirm(
-    `Delete ${q.question_id} from "${q.subject}"?\n\n` +
+    `Permanently delete this question from the "${q.subject}" sheet?\n\n` +
+    `${q.question_id || '(no question id)'} — row ${q.excel_row}\n` +
     `"${truncate(q.question_text, 120)}"\n\n` +
-    'This removes the row from Google Sheets permanently.'
+    'The row is removed from Google Sheets and cannot be recovered from here.'
   );
   if (!ok) return;
 
   try {
     await api('/api/questions/delete', {
       method: 'POST',
-      body: { subject: q.subject, questionId: q.question_id }
+      body: {
+        subject: q.subject,
+        questionId: q.question_id,
+        rowNumber: q.excel_row,
+        verifyText: q.question_text
+      }
     });
     showToast('success', `Deleted ${q.question_id}`);
     selected.delete(q.question_id);

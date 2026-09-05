@@ -170,7 +170,18 @@ node schedule.js                          # run the cron scheduler
 node schedule.js --dry-run                # show the schedule without sending
 
 node setup.js                             # create the Telegram forum topics
+node verify-topics.js                     # check every subject's topic still exists
+node verify-topics.js --fix               # …and recreate any that are missing
 ```
+
+Apps Script editor only (destructive, deliberately not exposed over HTTP):
+
+| Function | What it does |
+|---|---|
+| `upgradeSpreadsheet` | Migrate an existing sheet to the 30-column schema, lossless |
+| `clearAllQuestions` | Delete every question from every subject tab; Config untouched |
+| `clearSubjectQuestions("Polity")` | Delete every question in one subject |
+| `backfillQuestionIds` | Give a Question ID and duplicate hash to rows missing them |
 
 Common cron expressions for the Config tab:
 
@@ -304,7 +315,7 @@ Same cause — the deployed script predates those actions. Redeploy a new versio
 npm test
 ```
 
-81 tests across three suites:
+87 tests across three suites:
 
 - `test/server.test.js` — every API route, input validation, and a regression test for
   each security finding (traversal, CORS, SSRF, body limits, forged authorship).
