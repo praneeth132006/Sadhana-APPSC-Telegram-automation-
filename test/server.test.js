@@ -27,6 +27,14 @@ process.env.GOOGLE_SHEET_WEBAPP_URL = 'https://script.google.com/macros/s/TEST/e
 process.env.SHEET_API_TOKEN = 'test-sheet-token';
 process.env.TELEGRAM_BOT_TOKEN = '123:TEST';
 process.env.TELEGRAM_GROUP_ID = '-1001234567890';
+
+// The Rs 1 test pass must never be part of what these tests consider normal.
+// Left to the developer's .env, a machine with TEST_PLAN_ENABLED=true would see
+// a four-plan catalogue and a machine without it three, so the suite would pass
+// or fail depending on whose laptop ran it.
+// Empty rather than deleted: dotenv skips keys already present, but happily
+// fills in a deleted one from the developer's .env when server.js loads it.
+process.env.TEST_PLAN_ENABLED = '';
 process.env.CURATOR_EMAILS = '';
 process.env.RAZORPAY_KEY_ID = 'rzp_test_dummy';
 process.env.RAZORPAY_KEY_SECRET = 'dummy_secret';
@@ -755,4 +763,71 @@ test('an unknown API route 404s instead of falling through to index.html', async
   assert.equal(res.status, 404);
   assert.equal(res.json.success, false);
   assert.ok(!res.text.includes('<!DOCTYPE'), 'an API path served HTML');
+});
+
+// ===========================================================================
+// The scheduled expiry sweep
+// ===========================================================================
+// Removing lapsed members is the half of this that must keep working when
+// nobody is watching, so it runs on a schedule Vercel owns rather than on a
+// laptop. That makes the endpoint reachable from the internet, and the secret
+// is the only thing standing between a stranger and a mass removal.
+
+test('the cron sweep refuses to run without a secret configured', async () => {
+  const before = process.env.CRON_SECRET;
+  try {
+    delete process.env.CRON_SECRET;
+    const res = await call('/api/cron/sweep', { method: 'POST' });
+    assert.equal(res.status, 503);
+    assert.equal(res.json.success, false);
+  } finally {
+    if (before === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = before;
+  }
+});
+
+test('the cron sweep rejects a caller with no or wrong credentials', async () => {
+  const before = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = 'a-secret-for-tests';
+  try {
+    const none = await call('/api/cron/sweep', { method: 'POST' });
+    assert.equal(none.status, 401);
+
+    const wrong = await call('/api/cron/sweep', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer not-the-secret' }
+    });
+    assert.equal(wrong.status, 401);
+  } finally {
+    if (before === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = before;
+  }
+});
+
+test('the cron sweep runs for real when the secret matches', async () => {
+  const before = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = 'a-secret-for-tests';
+
+  const membership = require('../src/membership');
+  const original = membership.runDailyCheck;
+  let ranWith = null;
+  membership.runDailyCheck = async (opts) => {
+    ranWith = opts;
+    return { checked: 0, reminded: [], removed: [], failed: [] };
+  };
+
+  try {
+    const res = await call('/api/cron/sweep', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer a-secret-for-tests' }
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.success, true);
+    // A scheduled run must actually remove people, not rehearse.
+    assert.equal(ranWith.dryRun, false);
+  } finally {
+    membership.runDailyCheck = original;
+    if (before === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = before;
+  }
 });

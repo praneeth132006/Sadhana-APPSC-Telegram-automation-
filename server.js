@@ -22,6 +22,7 @@
 require('dotenv').config();
 
 const http = require('http');
+const crypto = require('crypto');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
@@ -778,6 +779,52 @@ async function handlePublicRoute(pathname, method, req, res) {
   }
 
   // Liveness of the Apps Script deployment, for the header status pill.
+  // ---- Scheduled expiry sweep ---------------------------------------------
+  // Runs the same check membership-cron.js runs, but on a schedule Vercel owns
+  // rather than on a laptop that sleeps. Removing lapsed members is the half of
+  // this product that has to keep working when nobody is watching: without it a
+  // 30-day pass simply never ends, and everyone who ever paid stays forever.
+  //
+  // Public in the routing sense only. Vercel Cron sends
+  // `Authorization: Bearer $CRON_SECRET`, and without a matching secret this
+  // refuses to run — otherwise anyone who found the URL could trigger removals.
+  if (pathname === '/api/cron/sweep' && (method === 'POST' || method === 'GET')) {
+    const secret = String(process.env.CRON_SECRET || '').trim();
+    if (!secret) {
+      sendJSON(res, 503, {
+        success: false,
+        error: 'CRON_SECRET is not set, so the scheduled sweep refuses to run.'
+      });
+      return true;
+    }
+
+    const offered = String(req.headers.authorization || '');
+    // Constant-time compare: a timing oracle on a secret that can remove paying
+    // members is not worth saving three lines over.
+    const expected = `Bearer ${secret}`;
+    const a = Buffer.from(offered);
+    const b = Buffer.from(expected);
+    const authorised = a.length === b.length && crypto.timingSafeEqual(a, b);
+
+    if (!authorised) {
+      sendJSON(res, 401, { success: false, error: 'Unauthorised' });
+      return true;
+    }
+
+    try {
+      const summary = await membership.runDailyCheck({ dryRun: false });
+      console.log(
+        `[cron] sweep: checked ${summary.checked || 0}, ` +
+        `reminded ${(summary.reminded || []).length}, removed ${(summary.removed || []).length}`
+      );
+      sendJSON(res, 200, { success: true, data: summary });
+    } catch (err) {
+      console.error('[cron] sweep failed:', err.message);
+      sendJSON(res, 500, { success: false, error: err.message });
+    }
+    return true;
+  }
+
   if (pathname === '/api/ping' && method === 'GET') {
     if (!sheets.isConfigured()) {
       sendJSON(res, 200, { success: false, status: 'unconfigured', error: 'GOOGLE_SHEET_WEBAPP_URL is not set in .env' });
@@ -857,6 +904,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         recurringPlanReady: Boolean(String(process.env.RAZORPAY_MONTHLY_PLAN_ID || '').trim()),
         premiumGroupSet: Boolean(membership.getPremiumGroupId()),
         dedicatedPaymentBot: paybot.hasDedicatedBot(),
+        cronSecretSet: Boolean(String(process.env.CRON_SECRET || '').trim()),
         testPlanEnabled: plans.testPlanEnabled()
       },
       you: { email: user.email, uid: user.uid, provider: user.signInProvider, emailVerified: user.emailVerified }

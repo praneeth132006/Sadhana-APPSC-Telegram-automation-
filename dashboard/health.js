@@ -156,7 +156,16 @@ function connectivityChecks(data) {
   if (data.payments) {
     const p = data.payments;
 
-    // Two bots is the safer arrangement: the payment bot holds admin rights over
+    // Nothing removes a lapsed member unless something calls the sweep. Said
+  // plainly, because the failure is silent: passes simply never end.
+  checks.push(p.cronSecretSet
+    ? check('pass', 'Automatic expiry sweep',
+        'Scheduled sweep is armed. Lapsed members are removed without anyone running a command.')
+    : check('fail', 'Automatic expiry sweep',
+        'No <code>CRON_SECRET</code>, so <code>/api/cron/sweep</code> refuses to run and nothing ' +
+        'removes expired members. Passes will never actually end.'));
+
+  // Two bots is the safer arrangement: the payment bot holds admin rights over
   // the paid group, so sharing that token with the public posting bot means one
   // leak exposes both.
   checks.push(p.dedicatedPaymentBot

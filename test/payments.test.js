@@ -18,6 +18,7 @@ process.env.RAZORPAY_WEBHOOK_SECRET = 'webhook_secret_for_tests';
 process.env.EXAM_PASS_END_DATE = '30-11-2026';
 process.env.TELEGRAM_BOT_TOKEN = '123:TEST';
 process.env.TELEGRAM_GROUP_ID = '-1001234567890';
+process.env.TEST_PLAN_ENABLED = '';   // never inherit it from a local .env
 
 const razorpay = require('../src/razorpay');
 const plans = require('../src/plans');
