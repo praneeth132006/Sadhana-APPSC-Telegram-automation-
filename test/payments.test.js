@@ -484,3 +484,74 @@ test('a payment link body carries no astral-plane characters', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+// ===========================================================================
+// Group isolation
+// ===========================================================================
+// Five groups, five sheets, and the promise that nothing is mixed. That
+// promise rests on one rule — there is no default group — so these tests are
+// about what happens when a caller forgets to say which group it means.
+
+const groups = require('../src/groups');
+const sheetsModule = require('../src/sheets');
+
+test('every configured group has a unique id and an envPrefix', () => {
+  const all = groups.listGroups();
+  assert.ok(all.length >= 2, 'expected several groups');
+
+  const ids = all.map((g) => g.id);
+  assert.equal(new Set(ids).size, ids.length, 'two groups share an id');
+  all.forEach((g) => assert.ok(g.envPrefix, `${g.id} has no envPrefix`));
+});
+
+test('a data call with no group id is refused, not defaulted', () => {
+  // The whole isolation guarantee is this line. Falling back to "the first
+  // group" or "the legacy group" here is how one group's questions end up in
+  // another group's paid channel.
+  assert.throws(() => groups.requireGroup(''), /must name its group/);
+  assert.throws(() => groups.requireGroup(null), /must name its group/);
+});
+
+test('an unknown group id is refused and the error lists the real ones', () => {
+  assert.throws(() => groups.requireGroup('not_a_group'), (err) => {
+    assert.match(err.message, /Unknown group "not_a_group"/);
+    assert.match(err.message, /Configured groups:/);
+    return true;
+  });
+});
+
+test('two groups never resolve to the same sheet', () => {
+  // Same URL for two groups would silently merge them, and every guarantee
+  // above would still pass while the data was already mixed.
+  const configured = groups.listGroups().filter((g) => g.sheetUrl);
+  const urls = configured.map((g) => g.sheetUrl);
+  assert.equal(new Set(urls).size, urls.length,
+    'two groups point at the same Apps Script URL');
+});
+
+test('prices are per group, not shared', () => {
+  // UPSC is priced differently on purpose; if plansFor ever read a single
+  // global plan table this would start passing by accident.
+  const a = groups.plansFor('appsc_q_en').find((p) => p.id === 'sprint_30');
+  const b = groups.plansFor('upsc').find((p) => p.id === 'sprint_30');
+  assert.ok(a && b);
+  assert.notEqual(a.amountPaise, b.amountPaise);
+  assert.equal(a.groupId, 'appsc_q_en');
+  assert.equal(b.groupId, 'upsc');
+});
+
+test('the test pass is hidden per group unless explicitly included', () => {
+  const hidden = groups.plansFor('upsc');
+  assert.ok(!hidden.some((p) => p.id === 'test_5min'));
+
+  const shown = groups.plansFor('upsc', { includeTest: true });
+  assert.ok(shown.some((p) => p.id === 'test_5min'));
+});
+
+test('a sheets client is bound to one group and exposes the whole API', () => {
+  const client = sheetsModule.forGroup('appsc_q_en');
+  assert.equal(client.groupId, 'appsc_q_en');
+  sheetsModule.API_NAMES.forEach((name) => {
+    assert.equal(typeof client[name], 'function', `${name} missing from the bound client`);
+  });
+});

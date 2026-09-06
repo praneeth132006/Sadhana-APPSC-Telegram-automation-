@@ -19,6 +19,11 @@ const REQUEST_TIMEOUT_MS = 30000;
 /** Largest upstream response we will buffer (Apps Script pages are far smaller). */
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
+const groups = require('./groups');
+
+/** Every operation a sheets client exposes. */
+const API_NAMES = ['ping', 'readConfig', 'getSubjects', 'writeConfig', 'getUnpostedQuestions', 'markAsPosted', 'getStats', 'getAnalytics', 'listQuestions', 'checkDuplicates', 'addQuestions', 'updateQuestion', 'deleteQuestion', 'bulkStatus', 'scheduleQuestions', 'getSubscriber', 'listSubscribers', 'getExpiring', 'getRevenue', 'upsertSubscriber'];
+
 /**
  * getWebAppUrl — resolves and validates the deployed Apps Script URL.
  * Only script.google.com endpoints are accepted, so a mistyped or hostile
@@ -26,65 +31,105 @@ const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
  *
  * @returns {string} The validated Web App URL
  */
-function getWebAppUrl() {
-  const raw = process.env.GOOGLE_SHEET_WEBAPP_URL;
-  if (!raw || !raw.trim()) {
+function validateWebAppUrl(raw, label) {
+  if (!raw || !String(raw).trim()) {
     throw new Error(
-      'GOOGLE_SHEET_WEBAPP_URL is not defined in .env.\n' +
+      `No Apps Script URL for ${label}.\n` +
       'Deploy google_apps_script.js as a Web App and put the /exec URL in .env.'
     );
   }
 
-  const url = raw.trim();
+  const url = String(raw).trim();
   let parsed;
   try {
     parsed = new URL(url);
   } catch (err) {
-    throw new Error('GOOGLE_SHEET_WEBAPP_URL is not a valid URL: ' + url);
+    throw new Error(`Apps Script URL for ${label} is not a valid URL: ` + url);
   }
 
   if (parsed.protocol !== 'https:') {
-    throw new Error('GOOGLE_SHEET_WEBAPP_URL must use https.');
+    throw new Error(`Apps Script URL for ${label} must use https.`);
   }
   if (parsed.hostname !== 'script.google.com' && parsed.hostname !== 'script.googleusercontent.com') {
     throw new Error(
-      'GOOGLE_SHEET_WEBAPP_URL must point at script.google.com. Got: ' + parsed.hostname
+      `Apps Script URL for ${label} must point at script.google.com. Got: ` + parsed.hostname
     );
   }
   if (!parsed.pathname.endsWith('/exec')) {
     throw new Error(
-      'GOOGLE_SHEET_WEBAPP_URL must end in /exec (the deployment URL), not /edit or /dev.'
+      `Apps Script URL for ${label} must end in /exec (the deployment URL), not /edit or /dev.`
     );
   }
 
   return url;
 }
 
-/** Returns the shared secret that authenticates us to the Apps Script. */
-function getApiToken() {
-  return String(process.env.SHEET_API_TOKEN || '').trim();
+/**
+ * contextFor — resolves which sheet a group talks to.
+ *
+ * requireGroup throws on an unknown or missing id, which is the whole point:
+ * a request that cannot say which group it belongs to must fail rather than
+ * fall back to some default sheet and write one group's data into another's.
+ *
+ * @param {string} groupId
+ * @returns {{url: string, token: string, groupId: string, label: string}}
+ */
+function contextFor(groupId) {
+  const group = groups.requireGroup(groupId);
+  return {
+    groupId: group.id,
+    label: group.displayName,
+    url: validateWebAppUrl(group.sheetUrl, group.displayName),
+    token: group.sheetToken
+  };
 }
 
-/** True when the sheet backend is configured well enough to be used. */
-function isConfigured() {
+/**
+ * forGroup — a sheets client bound to exactly one group.
+ *
+ * The only way to reach a sheet. Every method is the same as before with the
+ * group already applied, so a caller cannot accidentally omit it.
+ *
+ * @param {string} groupId
+ * @returns {Object} The same API, bound to that group's sheet
+ */
+function forGroup(groupId) {
+  const ctx = contextFor(groupId);
+  const bound = {};
+  API_NAMES.forEach((name) => {
+    bound[name] = (...args) => module.exports[`_${name}`](ctx, ...args);
+  });
+  bound.groupId = ctx.groupId;
+  bound.label = ctx.label;
+  return bound;
+}
+
+/** True when a group has everything it needs to be reachable. */
+function isConfigured(groupId) {
   try {
-    getWebAppUrl();
+    contextFor(groupId || String(process.env.LEGACY_GROUP_ID || '').trim());
     return true;
   } catch (err) {
     return false;
   }
 }
 
+/** The validated Apps Script URL for one group. */
+function getWebAppUrl(groupId) {
+  return contextFor(groupId || String(process.env.LEGACY_GROUP_ID || '').trim()).url;
+}
+
 /**
  * request — performs one Apps Script call and returns the parsed JSON body.
  *
+ * @param {{url: string, token: string}} ctx Which sheet to talk to
  * @param {'GET'|'POST'} method HTTP method
  * @param {Object} params Query parameters (GET) or body fields (POST)
  * @returns {Promise<Object>} Parsed response payload
  */
-async function request(method, params) {
-  const baseUrl = getWebAppUrl();
-  const token = getApiToken();
+async function request(ctx, method, params) {
+  const baseUrl = ctx.url;
+  const token = ctx.token;
 
   // AbortController gives us a hard timeout; without it a stalled Apps Script
   // would hold the request open indefinitely.
@@ -163,19 +208,19 @@ async function request(method, params) {
 // ---------------------------------------------------------------------------
 
 /** Liveness probe. Also reports whether the script expects a token. */
-async function ping() {
-  return request('GET', { action: 'ping' });
+async function ping(ctx) {
+  return request(ctx, 'GET', { action: 'ping' });
 }
 
 /** Reads the Config tab (subjects, emojis, thread ids, cron, batch size). */
-async function readConfig() {
-  const result = await request('GET', { action: 'getConfig' });
+async function readConfig(ctx) {
+  const result = await request(ctx, 'GET', { action: 'getConfig' });
   return result.data || [];
 }
 
 /** Lists the sheet tabs that hold questions. */
-async function getSubjects() {
-  const result = await request('GET', { action: 'getSubjects' });
+async function getSubjects(ctx) {
+  const result = await request(ctx, 'GET', { action: 'getSubjects' });
   return result.data || [];
 }
 
@@ -186,8 +231,8 @@ async function getSubjects() {
  * @param {number} count Maximum questions to return
  * @param {boolean} requireApproved Only return Approved/Scheduled rows
  */
-async function getUnpostedQuestions(subject, count = 1, requireApproved = false) {
-  const result = await request('GET', {
+async function getUnpostedQuestions(ctx, subject, count = 1, requireApproved = false) {
+  const result = await request(ctx, 'GET', {
     action: 'getQuestions',
     subject,
     limit: count,
@@ -197,27 +242,27 @@ async function getUnpostedQuestions(subject, count = 1, requireApproved = false)
 }
 
 /** Per-subject total / posted / pending counts. */
-async function getStats() {
-  const result = await request('GET', { action: 'getStats' });
+async function getStats(ctx) {
+  const result = await request(ctx, 'GET', { action: 'getStats' });
   return result.data || [];
 }
 
 /** Full analytics payload consumed by the Analytics dashboard. */
-async function getAnalytics() {
-  const result = await request('GET', { action: 'getAnalytics' });
+async function getAnalytics(ctx) {
+  const result = await request(ctx, 'GET', { action: 'getAnalytics' });
   return result.data || null;
 }
 
 /** Filtered, paginated question browse. */
-async function listQuestions(filters = {}) {
-  const result = await request('GET', Object.assign({ action: 'listQuestions' }, filters));
+async function listQuestions(ctx, filters = {}) {
+  const result = await request(ctx, 'GET', Object.assign({ action: 'listQuestions' }, filters));
   return result.data || { total: 0, questions: [], page: 1, totalPages: 1 };
 }
 
 /** Reports which of the supplied duplicate hashes already exist. */
-async function checkDuplicates(hashes = []) {
+async function checkDuplicates(ctx, hashes = []) {
   if (!hashes.length) return { existing: [] };
-  const result = await request('GET', { action: 'checkDuplicates', hashes: hashes.join(',') });
+  const result = await request(ctx, 'GET', { action: 'checkDuplicates', hashes: hashes.join(',') });
   return result.data || { existing: [] };
 }
 
@@ -226,8 +271,8 @@ async function checkDuplicates(hashes = []) {
 // ---------------------------------------------------------------------------
 
 /** Writes topic thread ids back into the Config tab. */
-async function writeConfig(configData) {
-  await request('POST', { action: 'updateConfig', config: configData });
+async function writeConfig(ctx, configData) {
+  await request(ctx, 'POST', { action: 'updateConfig', config: configData });
   return true;
 }
 
@@ -240,9 +285,9 @@ async function writeConfig(configData) {
  * @param {string|number} [threadId] Forum topic thread the poll went to
  * @param {Object} [pollIds] Optional { sheetRowNumber: pollId } map
  */
-async function markAsPosted(subject, rowIndices, messageId = null, threadId = null, pollIds = null) {
+async function markAsPosted(ctx, subject, rowIndices, messageId = null, threadId = null, pollIds = null) {
   if (!rowIndices || rowIndices.length === 0) return 0;
-  const result = await request('POST', {
+  const result = await request(ctx, 'POST', {
     action: 'markPosted',
     subject,
     rowIndices,
@@ -254,8 +299,8 @@ async function markAsPosted(subject, rowIndices, messageId = null, threadId = nu
 }
 
 /** Appends questions from the dashboard, skipping duplicates by default. */
-async function addQuestions(subject, questions, addedBy, skipDuplicates = true) {
-  return request('POST', {
+async function addQuestions(ctx, subject, questions, addedBy, skipDuplicates = true) {
+  return request(ctx, 'POST', {
     action: 'addQuestions',
     subject,
     questions,
@@ -272,8 +317,8 @@ async function addQuestions(subject, questions, addedBy, skipDuplicates = true) 
  * only acts on the row number when the question text there still matches, so a
  * shifted row can never be edited by mistake.
  */
-async function updateQuestion(subject, questionId, fields, updatedBy, rowNumber, verifyText) {
-  return request('POST', {
+async function updateQuestion(ctx, subject, questionId, fields, updatedBy, rowNumber, verifyText) {
+  return request(ctx, 'POST', {
     action: 'updateQuestion',
     subject,
     questionId,
@@ -285,8 +330,8 @@ async function updateQuestion(subject, questionId, fields, updatedBy, rowNumber,
 }
 
 /** Permanently removes one question row. See updateQuestion for the fallback. */
-async function deleteQuestion(subject, questionId, rowNumber, verifyText) {
-  return request('POST', {
+async function deleteQuestion(ctx, subject, questionId, rowNumber, verifyText) {
+  return request(ctx, 'POST', {
     action: 'deleteQuestion',
     subject,
     questionId,
@@ -296,8 +341,8 @@ async function deleteQuestion(subject, questionId, rowNumber, verifyText) {
 }
 
 /** Sets Status on many questions at once. */
-async function bulkStatus(subject, questionIds, status, updatedBy) {
-  const result = await request('POST', {
+async function bulkStatus(ctx, subject, questionIds, status, updatedBy) {
+  const result = await request(ctx, 'POST', {
     action: 'bulkStatus',
     subject,
     questionIds,
@@ -308,8 +353,8 @@ async function bulkStatus(subject, questionIds, status, updatedBy) {
 }
 
 /** Stamps Scheduled For and flips Status to Scheduled. */
-async function scheduleQuestions(subject, questionIds, scheduledFor, updatedBy) {
-  const result = await request('POST', {
+async function scheduleQuestions(ctx, subject, questionIds, scheduledFor, updatedBy) {
+  const result = await request(ctx, 'POST', {
     action: 'scheduleQuestions',
     subject,
     questionIds,
@@ -329,14 +374,14 @@ async function scheduleQuestions(subject, questionIds, scheduledFor, updatedBy) 
  * @param {string|number} telegramId
  * @returns {Promise<Object|null>} The member, or null when they have never paid
  */
-async function getSubscriber(telegramId) {
-  const result = await request('GET', { action: 'getSubscriber', telegramId });
+async function getSubscriber(ctx, telegramId) {
+  const result = await request(ctx, 'GET', { action: 'getSubscriber', telegramId });
   return result.data || null;
 }
 
 /** Filtered, paginated member list for the Members dashboard. */
-async function listSubscribers(filters = {}) {
-  const result = await request('GET', Object.assign({ action: 'listSubscribers' }, filters));
+async function listSubscribers(ctx, filters = {}) {
+  const result = await request(ctx, 'GET', Object.assign({ action: 'listSubscribers' }, filters));
   return result.data || { total: 0, subscribers: [], page: 1, totalPages: 1 };
 }
 
@@ -344,14 +389,14 @@ async function listSubscribers(filters = {}) {
  * getExpiring — active members whose access ends within `days`.
  * Pass 0 for those already past expiry.
  */
-async function getExpiring(days = 0) {
-  const result = await request('GET', { action: 'getExpiring', days });
+async function getExpiring(ctx, days = 0) {
+  const result = await request(ctx, 'GET', { action: 'getExpiring', days });
   return result.data || [];
 }
 
 /** Revenue and membership totals. */
-async function getRevenue() {
-  const result = await request('GET', { action: 'getRevenue' });
+async function getRevenue(ctx) {
+  const result = await request(ctx, 'GET', { action: 'getRevenue' });
   return result.data || null;
 }
 
@@ -363,32 +408,63 @@ async function getRevenue() {
  * @param {Object} subscriber Fields to write; telegram_id is required
  * @param {string} [event] Label recorded in the payment log
  */
-async function upsertSubscriber(subscriber, event = 'payment') {
-  const result = await request('POST', { action: 'upsertSubscriber', subscriber, event });
+async function upsertSubscriber(ctx, subscriber, event = 'payment') {
+  const result = await request(ctx, 'POST', { action: 'upsertSubscriber', subscriber, event });
   return result.data;
 }
 
 module.exports = {
+  forGroup,
+  contextFor,
   isConfigured,
   getWebAppUrl,
-  ping,
-  readConfig,
-  getSubjects,
-  writeConfig,
-  getUnpostedQuestions,
-  markAsPosted,
-  getStats,
-  getAnalytics,
-  listQuestions,
-  checkDuplicates,
-  addQuestions,
-  updateQuestion,
-  deleteQuestion,
-  bulkStatus,
-  scheduleQuestions,
-  getSubscriber,
-  listSubscribers,
-  getExpiring,
-  getRevenue,
-  upsertSubscriber
+  validateWebAppUrl,
+  API_NAMES
 };
+
+// ---------------------------------------------------------------------------
+// Transitional single-group API
+// ---------------------------------------------------------------------------
+// TEMPORARY. These are the old, group-less exports, bound to the group named
+// by LEGACY_GROUP_ID. They exist so the running system keeps selling passes
+// and posting questions while call sites move to forGroup() one file at a
+// time — a migration that touches six files, and doing it in one commit means
+// every one of them is unverifiable at once.
+//
+// They are the one place a default group exists, which is exactly what this
+// design forbids, so they are deliberately loud: without LEGACY_GROUP_ID set
+// they throw rather than guess. DELETE THIS BLOCK once no caller uses it.
+
+/** The migration group, or a clear error if nobody has named one. */
+function legacyGroupId() {
+  const id = String(process.env.LEGACY_GROUP_ID || '').trim();
+  if (!id) {
+    throw new Error(
+      'This call did not name a group and LEGACY_GROUP_ID is not set. ' +
+      'Use sheets.forGroup(groupId) — there is no default group.'
+    );
+  }
+  return id;
+}
+
+API_NAMES.forEach((name) => {
+  module.exports[name] = (...args) => forGroup(legacyGroupId())[name](...args);
+});
+
+// The raw, context-taking implementations. forGroup() binds these; nothing
+// outside this module should call them directly, which is what the underscore
+// says. Listed explicitly rather than resolved by name at runtime, so a typo
+// is a startup crash instead of a method that is silently missing.
+const IMPLEMENTATIONS = {
+  ping, readConfig, getSubjects, writeConfig, getUnpostedQuestions, markAsPosted,
+  getStats, getAnalytics, listQuestions, checkDuplicates, addQuestions,
+  updateQuestion, deleteQuestion, bulkStatus, scheduleQuestions, getSubscriber,
+  listSubscribers, getExpiring, getRevenue, upsertSubscriber
+};
+
+API_NAMES.forEach((name) => {
+  if (typeof IMPLEMENTATIONS[name] !== 'function') {
+    throw new Error(`sheets.js: API_NAMES lists "${name}" but there is no such function.`);
+  }
+  module.exports[`_${name}`] = IMPLEMENTATIONS[name];
+});
