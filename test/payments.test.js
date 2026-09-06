@@ -424,3 +424,63 @@ test('a paying member is never removed by the guard', async () => {
     stub.restore();
   }
 });
+
+// ===========================================================================
+// Text sent to Razorpay
+// ===========================================================================
+
+test('emoji are stripped from anything sent to Razorpay', () => {
+  // Razorpay answers HTTP 400 "Error 3988: Conversion from collation
+  // utf8mb3_general_ci into utf8mb4_0900_ai_ci impossible" if any string holds
+  // a character outside the Basic Multilingual Plane. Telegram display names
+  // routinely do, and the bot could only report "could not create your payment
+  // link" — the buyer had no way to know their own name was the problem.
+  assert.equal(razorpay.bmpOnly('Praneeth \u{1F3AF}\u{1F525}'), 'Praneeth');
+  assert.equal(razorpay.bmpOnly('user\u{1F680}name'), 'username');
+
+  // Ordinary non-English text is inside the BMP and must survive untouched.
+  assert.equal(razorpay.bmpOnly('\u0C38\u0C3E\u0C27\u0C28'), '\u0C38\u0C3E\u0C27\u0C28');
+  assert.equal(razorpay.bmpOnly('Rs 299 \u2014 pass'), 'Rs 299 \u2014 pass');
+
+  // A name of nothing but emoji collapses to empty, so the caller can drop it
+  // rather than sending an empty customer object.
+  assert.equal(razorpay.bmpOnly('\u{1F600}\u{1F601}'), '');
+
+  assert.equal(razorpay.bmpOnly('abcdef', 3), 'abc');
+});
+
+test('a payment link body carries no astral-plane characters', async () => {
+  const originalFetch = globalThis.fetch;
+  let sentBody = null;
+  globalThis.fetch = async (url, opts) => {
+    sentBody = opts.body;
+    const payload = JSON.stringify({ id: 'plink_x', short_url: 'https://rzp.io/x' });
+    return {
+      ok: true,
+      status: 200,
+      text: async () => payload,
+      json: async () => JSON.parse(payload)
+    };
+  };
+
+  try {
+    await razorpay.createPaymentLink({
+      plan: plans.getPlan('sprint_30'),
+      telegramId: '4242',
+      name: 'Praneeth \u{1F3AF}',
+      username: 'user\u{1F680}name',
+      callbackUrl: 'https://example.com/done'
+    });
+
+    const body = JSON.parse(sentBody);
+    const asText = JSON.stringify(body);
+    assert.equal(
+      Array.from(asText).some((ch) => ch.codePointAt(0) > 0xFFFF), false,
+      'an emoji reached Razorpay'
+    );
+    assert.equal(body.customer.name, 'Praneeth');
+    assert.equal(body.notes.telegram_username, 'username');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
