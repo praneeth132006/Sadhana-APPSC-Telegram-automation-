@@ -10,8 +10,9 @@
 // the Economy topic, and there is nothing in the sheet to say so. Each group's
 // ids therefore go into that group's Config tab and nowhere else.
 //
-// Safe to re-run. A subject that already has a thread id is skipped, so this
-// never creates the same topic twice.
+// Only creates topics for subjects with no thread id yet. It never inspects or
+// modifies an existing topic — see the note in the loop below for why.
+// To rebuild a group whose ids are wrong, use reset-topics.js.
 //
 //   node setup-topics.js              — every configured group
 //   node setup-topics.js <groupId>    — one group
@@ -87,55 +88,6 @@ async function createTopic(chatId, title) {
 }
 
 /**
- * topicExists — is this thread id a real topic in this group?
- *
- * Telegram offers no "get topic" call, so this renames the topic to the title
- * it should already have. On a real topic that is a no-op; on an id that was
- * never created it fails, which is the answer we want.
- *
- * @param {string|number} chatId
- * @param {string|number} threadId
- * @param {string} title
- * @returns {Promise<boolean>}
- */
-async function topicExists(chatId, threadId, title) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      await postingBot().editForumTopic(chatId, threadId, { name: title });
-      return true;
-    } catch (err) {
-      // A rate limit says nothing about whether the topic exists. Treating it
-      // as "missing" is how a second run recreated sixteen topics that were
-      // already there, leaving the group full of duplicates and the sheet
-      // pointing at the newest of each pair.
-      const wait = retryAfterSeconds(err);
-      if (wait) {
-        console.log(`      rate limited while checking, waiting ${wait}s…`);
-        await pause((wait + 2) * 1000);
-        continue;
-      }
-
-      // TOPIC_NOT_MODIFIED means the rename changed nothing because the name
-      // already matched — which is proof the topic is there. It arrives as an
-      // error only because Telegram reports a no-op edit that way.
-      if (/TOPIC_NOT_MODIFIED/i.test(String(err && err.message ? err.message : ''))) {
-        return true;
-      }
-
-      // Only a definite "no such topic" counts as missing. Anything else —
-      // a network blip, a permissions problem — must not silently cause a
-      // duplicate, so it is raised.
-      const message = String(err && err.message ? err.message : '');
-      if (/TOPIC_ID_INVALID|thread not found|message thread not found/i.test(message)) {
-        return false;
-      }
-      throw err;
-    }
-  }
-  throw new Error('rate limited repeatedly while checking whether a topic exists');
-}
-
-/**
  * setupGroup — creates whatever topics this group is still missing.
  *
  * @param {Object} group From the registry
@@ -167,19 +119,18 @@ async function setupGroup(group) {
     const title = row.emoji ? `${row.emoji} ${row.subject}` : row.subject;
 
     if (row.topic_thread_id) {
-      // The id in the sheet is not proof the topic exists. setupSpreadsheet
-      // seeds Config with placeholder ids counting up from 6, and a placeholder
-      // looks exactly like a real one — so trusting it means every question for
-      // that subject is posted to a thread that was never created, or worse, to
-      // whichever unrelated topic happens to hold that id.
-      const exists = await topicExists(group.telegramGroupId, row.topic_thread_id, title);
-      if (exists) {
-        console.log(`   ⏭  ${title} — thread ${row.topic_thread_id} exists`);
-        skipped += 1;
-        continue;
-      }
-      console.log(`   ⚠  ${title} — thread ${row.topic_thread_id} does not exist, recreating`);
-      row.topic_thread_id = '';
+      // Trusted as-is, and never probed. An earlier version checked existence
+      // by renaming the topic to the name it should already have — a no-op on a
+      // real topic, but on a placeholder id it renamed whatever unrelated topic
+      // held that id. Groups ended up with two subjects sharing one topic and
+      // half the names wrong, and nothing in the sheet showed it.
+      //
+      // There is no way to ask Telegram whether a topic exists without a call
+      // that can change something, so this does not ask. If the ids are wrong,
+      // reset-topics.js rebuilds the group from scratch.
+      console.log(`   ⏭  ${title} — thread ${row.topic_thread_id}`);
+      skipped += 1;
+      continue;
     }
 
     if (dryRun) {
