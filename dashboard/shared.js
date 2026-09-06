@@ -19,9 +19,6 @@ import {
   browserLocalPersistence,
   signInWithPopup,
   GoogleAuthProvider,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  sendEmailVerification,
   signOut,
   onAuthStateChanged
 } from 'https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js';
@@ -296,53 +293,55 @@ function buildTopBar(activePage) {
     ]))
   );
 
-  const connectionPill = el('div', { class: 'sheet-connection-pill', id: 'sheetConnectionPill' }, [
-    el('span', { id: 'connectionStatus', class: 'status-dot offline' }),
-    el('span', { id: 'connectionStatusText', class: 'connection-status-text', text: 'Sheets: connecting…' })
+  // Which group is being worked in, directly under the title. It is the single
+  // most consequential thing on the page: uploading a Telugu batch into the
+  // UPSC sheet looks identical to doing it right, and nothing else would say.
+  const groupSelect = el('select', {
+    class: 'group-select',
+    id: 'groupSelect',
+    title: 'Everything on this page belongs to the selected group',
+    onchange: (e) => {
+      setSelectedGroup(e.target.value);
+      // A reload rather than a re-render: every panel is holding the previous
+      // group's data, and a partial refresh is how the two mix on screen.
+      window.location.reload();
+    }
+  });
+
+  const identity = el('div', { class: 'top-identity' }, [
+    el('h1', { class: 'top-title', text: 'Questions Dashboard' }),
+    el('div', { class: 'top-group', id: 'groupSwitcher' }, [
+      el('span', { class: 'top-group-label', text: 'Posting to' }),
+      groupSelect
+    ])
   ]);
 
-  const profileChip = el('div', { id: 'userProfileChip', class: 'user-profile-chip', style: 'display:none' }, [
+  const connectionPill = el('div', { class: 'sheet-pill', id: 'sheetConnectionPill' }, [
+    el('span', { id: 'connectionStatus', class: 'status-dot offline' }),
+    el('span', { id: 'connectionStatusText', class: 'sheet-pill-text', text: 'Sheets: connecting…' })
+  ]);
+
+  const profileChip = el('div', { id: 'userProfileChip', class: 'user-chip', style: 'display:none' }, [
     el('div', { class: 'user-avatar', id: 'userAvatar', text: 'U' }),
-    el('div', { class: 'user-info' }, [
-      el('span', { class: 'user-email', id: 'userEmail', text: '' }),
-      el('span', { class: 'user-role-badge', text: 'Curator' })
+    el('div', { class: 'user-meta' }, [
+      el('span', { class: 'user-name', id: 'userEmail', text: '' }),
+      el('span', { class: 'user-role', text: 'Curator' })
     ]),
     el('button', {
-      class: 'btn-signout',
+      class: 'user-signout',
       title: 'Sign out',
-      text: 'Sign Out',
+      text: 'Sign out',
       onclick: () => signOut(auth)
     })
   ]);
 
-  // Which group you are working in, always on screen. It is the difference
-  // between uploading a Telugu question bank and uploading it into the UPSC
-  // sheet, and nothing else on the page would tell you which you had done.
-  const groupSwitcher = el('div', { class: 'group-switcher', id: 'groupSwitcher' }, [
-    el('span', { class: 'group-switcher-label', text: 'Group' }),
-    el('select', {
-      class: 'group-switcher-select',
-      id: 'groupSelect',
-      title: 'Everything on this page belongs to the selected group',
-      onchange: (e) => {
-        setSelectedGroup(e.target.value);
-        // A full reload rather than a re-render: every panel on the page is
-        // holding the previous group's data, and a partial refresh is how the
-        // two end up mixed on screen.
-        window.location.reload();
-      }
-    })
-  ]);
-
-  return el('header', { class: 'top-bar' }, [
-    el('div', { class: 'brand' }, [
-      el('h1', { class: 'brand-title', text: 'Sadhana APPSC' }),
-      el('span', { class: 'brand-subtitle', text: 'Question Ops' })
-    ]),
+  return el('header', { class: 'top-bar', id: 'topBar' }, [
+    identity,
     nav,
-    el('div', { class: 'top-controls' }, [groupSwitcher, connectionPill, profileChip])
+    el('div', { class: 'top-right' }, [connectionPill, profileChip])
   ]);
 }
+
 
 /**
  * buildGroupChooser — the full-screen picker shown when nothing is selected.
@@ -405,7 +404,10 @@ async function applyGroupSelection() {
     ready.forEach((group) => {
       const option = document.createElement('option');
       option.value = group.id;
-      option.textContent = group.displayName;
+      // Short in the bar, full name on hover: a truncated group name is the
+      // one field that must never be ambiguous.
+      option.textContent = group.shortName || group.displayName;
+      option.title = group.displayName;
       if (group.id === selected) option.selected = true;
       select.appendChild(option);
     });
@@ -416,109 +418,43 @@ async function applyGroupSelection() {
 
 /** Builds the full-screen sign-in gate shown to logged-out visitors. */
 function buildAuthGate() {
-  const emailInput = el('input', {
-    type: 'email', id: 'gateAuthEmail', class: 'field-input',
-    placeholder: 'curator@example.com', required: 'required', autocomplete: 'email'
-  });
-  const passwordInput = el('input', {
-    type: 'password', id: 'gateAuthPassword', class: 'field-input',
-    placeholder: '••••••••', required: 'required', autocomplete: 'current-password'
-  });
   const errorBox = el('div', { id: 'gateAuthError', class: 'auth-error-text', style: 'display:none' });
-  const submitBtn = el('button', { type: 'submit', class: 'btn btn-primary btn-block', text: 'Sign In' });
-
-  let mode = 'signin';
 
   const showAuthError = (message) => {
     errorBox.textContent = message;
     errorBox.style.display = 'block';
   };
-  const clearAuthError = () => {
-    errorBox.textContent = '';
-    errorBox.style.display = 'none';
-  };
 
-  const tabSignIn = el('button', { class: 'auth-tab active', type: 'button', text: 'Sign In' });
-  const tabRegister = el('button', { class: 'auth-tab', type: 'button', text: 'Create Account' });
-
-  const setMode = (next) => {
-    mode = next;
-    tabSignIn.classList.toggle('active', next === 'signin');
-    tabRegister.classList.toggle('active', next === 'register');
-    submitBtn.textContent = next === 'signin' ? 'Sign In' : 'Create Account';
-    passwordInput.setAttribute('autocomplete', next === 'signin' ? 'current-password' : 'new-password');
-    clearAuthError();
-  };
-  tabSignIn.addEventListener('click', () => setMode('signin'));
-  tabRegister.addEventListener('click', () => setMode('register'));
-
-  const googleBtn = el('button', { class: 'btn btn-google btn-hero', title: 'Sign in with Google' }, [
-    el('span', { class: 'google-mark', text: 'G' }),
+  // Google only. Email-and-password sign-in was removed: the server accepts an
+  // address only if it is on the curator allowlist or has a verified email, so
+  // a self-registered password account could not curate anything — it produced
+  // a working sign-in that then failed on every request, which reads as a
+  // broken dashboard rather than as "you are not a curator".
+  const googleBtn = el('button', { class: 'auth-google-btn', type: 'button' }, [
+    el('span', { class: 'auth-google-mark', text: 'G' }),
     el('span', { text: 'Continue with Google' })
   ]);
 
   googleBtn.addEventListener('click', async () => {
-    clearAuthError();
+    errorBox.style.display = 'none';
+    googleBtn.disabled = true;
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err) {
       showAuthError(friendlyAuthError(err));
-    }
-  });
-
-  const form = el('form', { class: 'auth-form' }, [
-    el('div', { class: 'auth-field' }, [el('label', { for: 'gateAuthEmail', text: 'Email Address' }), emailInput]),
-    el('div', { class: 'auth-field' }, [el('label', { for: 'gateAuthPassword', text: 'Password' }), passwordInput]),
-    submitBtn
-  ]);
-
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    clearAuthError();
-    submitBtn.disabled = true;
-    try {
-      if (mode === 'signin') {
-        await signInWithEmailAndPassword(auth, emailInput.value.trim(), passwordInput.value);
-      } else {
-        const credential = await createUserWithEmailAndPassword(auth, emailInput.value.trim(), passwordInput.value);
-        // A brand-new password account has an unverified address, and the
-        // server rejects those unless the email is on the curator allowlist.
-        await sendEmailVerification(credential.user);
-        showToast('info', 'Account created. Check your inbox to verify the address before curating.');
-      }
-    } catch (err) {
-      showAuthError(friendlyAuthError(err));
     } finally {
-      submitBtn.disabled = false;
+      googleBtn.disabled = false;
     }
   });
 
-  const registerTabWrapper = el('div', { class: 'auth-gate-tabs', id: 'gateTabs' }, [tabSignIn, tabRegister]);
-
-  return el('div', { id: 'authGate', class: 'auth-gate-hero' }, [
-    el('div', { class: 'auth-gate-card' }, [
-      el('div', { class: 'auth-gate-badge' }, [
-        el('span', { class: 'auth-badge-icon', text: '🔒' }),
-        el('span', { text: 'Authentication Required' })
-      ]),
-      el('h2', { class: 'auth-gate-title', text: 'Sadhana APPSC Question Hub' }),
-      el('p', {
-        class: 'auth-gate-subtitle',
-        text: 'Sign in to reach the upload, analytics, question bank, automation and health dashboards.'
-      }),
-      el('div', { class: 'auth-features-preview' }, [
-        ['📤', 'Upload and validate question batches'],
-        ['📊', 'Track coverage, runway and curator activity'],
-        ['🤖', 'Publish to Telegram without touching the CLI']
-      ].map(([icon, label]) => el('div', { class: 'auth-feature-item' }, [
-        el('span', { class: 'auth-feature-check', text: icon }),
-        el('span', { text: label })
-      ]))),
+  return el('div', { id: 'authGate', class: 'auth-gate' }, [
+    el('div', { class: 'auth-card' }, [
+      el('div', { class: 'auth-logo', text: 'SA' }),
+      el('h1', { class: 'auth-title', text: 'Questions Dashboard' }),
+      el('p', { class: 'auth-sub', text: 'Sign in to manage question banks and paid groups.' }),
       googleBtn,
-      el('div', { class: 'auth-gate-divider' }, [el('span', { text: 'or continue with email' })]),
-      registerTabWrapper,
-      form,
-      errorBox
+      errorBox,
+      el('p', { class: 'auth-foot', text: 'Curator access only' })
     ])
   ]);
 }
@@ -632,12 +568,25 @@ function friendlyAuthError(err) {
   return table[code] || (err && err.message) || 'Sign-in failed.';
 }
 
-/** Updates the Google Sheets status pill. */
-function setConnectionStatus(state, text) {
+/**
+ * Updates the Google Sheets status pill.
+ *
+ * The pill shows a short form and carries the full text as a tooltip. The long
+ * version — "Sheets: connected · v6 (30 columns + membership)" — pushed the
+ * account chip off the bar and then truncated anyway, so the one word that
+ * matters was the one that got cut.
+ *
+ * @param {'online'|'offline'|'warn'} state Dot colour
+ * @param {string} text Full description, kept as the title
+ * @param {string} [short] What to display; defaults to the full text
+ */
+function setConnectionStatus(state, text, short) {
   const dot = $('connectionStatus');
   const label = $('connectionStatusText');
-  if (dot) { dot.className = 'status-dot ' + state; dot.title = text; }
-  if (label) label.textContent = text;
+  const pill = $('sheetConnectionPill');
+  if (dot) { dot.className = 'status-dot ' + state; }
+  if (pill) pill.title = text;
+  if (label) label.textContent = short || text;
 }
 
 /**
@@ -674,19 +623,19 @@ export function showBanner(tone, title, detail) {
 
 /** Pings the sheet backend and reflects the result in the header pill. */
 async function refreshConnectionStatus() {
-  setConnectionStatus('loading', 'Sheets: connecting…');
+  setConnectionStatus('loading', 'Sheets: connecting…', 'Connecting…');
   try {
     const res = await fetch('/api/ping');
     const payload = await res.json();
 
     if (!payload.success) {
-      setConnectionStatus('offline', 'Sheets: ' + (payload.error || 'offline'));
+      setConnectionStatus('offline', 'Sheets: ' + (payload.error || 'offline'), 'Sheets offline');
       return;
     }
 
     if (payload.unbound) {
       // v5 is deployed but it cannot see any spreadsheet.
-      setConnectionStatus('warn', 'Sheets: script not attached to a sheet');
+      setConnectionStatus('warn', 'Sheets: script not attached to a sheet', 'Not attached');
       showBanner('error', 'The Apps Script is not attached to your spreadsheet.',
         'It was created as a standalone project rather than from inside the Sheet. Open your Google ' +
         'Sheet → Extensions → Apps Script, paste google_apps_script.js there, run upgradeSpreadsheet, ' +
@@ -696,12 +645,12 @@ async function refreshConnectionStatus() {
 
     if (payload.outdated) {
       // Reachable, but running an older script than these dashboards need.
-      setConnectionStatus('warn', `Sheets: ${payload.version} — upgrade needed`);
+      setConnectionStatus('warn', `Sheets: ${payload.version} — upgrade needed`, 'Upgrade needed');
       showBanner('warn', 'Google Apps Script needs upgrading.',
         payload.upgradeHint ||
         `The deployed backend is ${payload.version}, but the dashboards need ${payload.requiredVersion}.`);
     } else {
-      setConnectionStatus('online', `Sheets: connected · ${payload.version}`);
+      setConnectionStatus('online', `Sheets: connected · ${payload.version}`, 'Sheets connected');
     }
 
     if (payload.tokenRequired === false) {
@@ -711,7 +660,7 @@ async function refreshConnectionStatus() {
         'already in your .env, then redeploy. See the Health dashboard for details.');
     }
   } catch (err) {
-    setConnectionStatus('offline', 'Sheets: local server unreachable');
+    setConnectionStatus('offline', 'Sheets: local server unreachable', 'Server offline');
   }
 }
 
@@ -771,10 +720,6 @@ export async function initDashboard({ page, onReady }) {
     if (!serverConfig.authEnforced) {
       showToast('warn', 'Server auth is not configured (FIREBASE_PROJECT_ID missing) — the API is locked.', 12000);
     }
-    if (!serverConfig.allowRegistration) {
-      const tabs = $('gateTabs');
-      if (tabs) tabs.style.display = 'none';
-    }
   } catch (err) {
     showToast('error', 'Cannot reach the local server. Start it with: npm run dashboard');
   }
@@ -812,6 +757,10 @@ export async function initDashboard({ page, onReady }) {
       /* What it brings: Prompts visitor with sign-in controls */
       /* Where changes can be seen: Center of the screen */
       if (authGate) authGate.style.display = 'flex';
+      // Nothing from the dashboard shows behind the gate: the nav, the group
+      // switcher and the sheet pill all describe data the visitor cannot see.
+      const bar = $('topBar');
+      if (bar) bar.style.display = 'none';
       /* What this line does: Strictly hides pageRoot with !important priority and adds is-auth-hidden class */
       /* What it brings: Prevents any dashboard content from peeking out or leaking behind the modal */
       /* Where changes can be seen: Bottom or background of the screen */
@@ -845,6 +794,8 @@ export async function initDashboard({ page, onReady }) {
     /* What it brings: Dismisses login card upon successful sign-in */
     /* Where changes can be seen: Center modal disappears */
     if (authGate) authGate.style.display = 'none';
+    const topBar = $('topBar');
+    if (topBar) topBar.style.display = '';
     /* What this line does: Unhides pageRoot and removes is-auth-hidden class */
     /* What it brings: Smoothly reveals the full curation workspace */
     /* Where changes can be seen: Main dashboard panels appear */
@@ -893,6 +844,7 @@ export async function initDashboard({ page, onReady }) {
         anchor.style.display = 'none';
         anchor.parentNode.insertBefore(buildGroupChooser(selection.groups), anchor);
       }
+      // The switcher is meaningless until a group exists to switch from.
       const switcher = $('groupSwitcher');
       if (switcher) switcher.style.display = 'none';
       return;

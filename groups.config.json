@@ -18,7 +18,8 @@
     "subjects is the tab list for that group's sheet. The Apps Script reads it from",
     "a SUBJECTS_JSON script property, so the same google_apps_script.js is pasted",
     "into every sheet and each one declares its own subjects rather than five",
-    "copies of the file drifting apart."
+    "copies of the file drifting apart.",
+    "shortName is what the dashboard switcher shows. The full label and language are too long for the header, and a truncated group name is worse than a short one: it is the field that says which sheet you are about to write to."
   ],
   "planShapes": {
     "sprint_30": {
@@ -93,7 +94,8 @@
         "Environment",
         "General Studies",
         "Disaster Management"
-      ]
+      ],
+      "shortName": "Newspaper · English"
     },
     {
       "id": "appsc_news_te",
@@ -124,7 +126,8 @@
         "Environment",
         "General Studies",
         "Disaster Management"
-      ]
+      ],
+      "shortName": "Newspaper · Telugu"
     },
     {
       "id": "appsc_q_en",
@@ -155,7 +158,8 @@
         "Current Affairs",
         "Indian Society",
         "Disaster Management"
-      ]
+      ],
+      "shortName": "Sadhana APPSC · English"
     },
     {
       "id": "appsc_q_te",
@@ -186,7 +190,8 @@
         "Current Affairs",
         "Indian Society",
         "Disaster Management"
-      ]
+      ],
+      "shortName": "Sadhana APPSC · Telugu"
     },
     {
       "id": "upsc",
@@ -213,7 +218,8 @@
         "Science and Technology",
         "Current Affairs",
         "Art and Culture"
-      ]
+      ],
+      "shortName": "UPSC Prelims"
     }
   ]
 }

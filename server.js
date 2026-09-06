@@ -899,6 +899,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         label: g.label,
         language: g.language,
         displayName: g.displayName,
+        shortName: g.shortName,
         ready: g.ready,
         missing: g.missing,
         subjects: g.subjects || [],
