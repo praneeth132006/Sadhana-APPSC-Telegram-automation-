@@ -29,7 +29,12 @@ require('dotenv').config();
 const g = require('./src/groups');
 const need = new Set([
   'TELEGRAM_BOT_TOKEN','RAZORPAY_KEY_ID','RAZORPAY_KEY_SECRET','RAZORPAY_WEBHOOK_SECRET',
-  'PUBLIC_BASE_URL','EXAM_PASS_END_DATE','FIREBASE_PROJECT_ID','CURATOR_EMAILS','CRON_SECRET'
+  'PUBLIC_BASE_URL','EXAM_PASS_END_DATE','FIREBASE_PROJECT_ID','CURATOR_EMAILS','CRON_SECRET',
+  // /api/ping and /api/config still answer through the transitional
+  // single-group API. Without this they report the whole system as
+  // unconfigured — a red 'Sheets offline' pill on a deployment where every
+  // group is in fact fine.
+  'LEGACY_GROUP_ID'
 ]);
 g.listGroups().forEach((x) => {
   need.add('SHEET_URL_' + x.envPrefix);
@@ -70,3 +75,22 @@ echo
 
 # Environment variables only reach the running app on the next deployment.
 vercel --prod
+
+echo
+echo "Checking what the deployed server can actually see…"
+sleep 4
+
+BASE=$(node -e "require('dotenv').config(); process.stdout.write(String(process.env.PUBLIC_BASE_URL||''))")
+if [ -n "$BASE" ]; then
+  PING=$(curl -s --max-time 25 "$BASE/api/ping" || true)
+  case "$PING" in
+    *spreadsheetName*)
+      echo "  ✅ The deployment is reading your sheets."
+      echo "     $(printf '%s' "$PING" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);console.log(j.spreadsheetName+' — '+j.version)}catch(e){console.log(d.slice(0,120))}})")"
+      ;;
+    *)
+      echo "  ❌ The deployment still cannot reach a sheet:"
+      echo "     $(printf '%s' "$PING" | head -c 200)"
+      ;;
+  esac
+fi
