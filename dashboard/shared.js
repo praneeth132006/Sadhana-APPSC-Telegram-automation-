@@ -193,23 +193,53 @@ export function showToast(type, message, durationMs = 5000) {
 
 const GROUP_STORAGE_KEY = 'sadhana.selectedGroup';
 
-/** The group id this browser last chose, or '' if none. */
+/**
+ * getSelectedGroup — the group this page is showing.
+ *
+ * The URL wins, localStorage is only a memory of last time. Storage alone was
+ * a trap: a browser that refuses site data — a private window, strict privacy
+ * settings, an in-app browser — made the write fail silently, so choosing a
+ * group reloaded straight back to the chooser. Clicking appeared to do nothing,
+ * forever, with no error anywhere.
+ *
+ * Putting it in the URL also makes the current group visible and linkable.
+ *
+ * @returns {string} A group id, or '' when none is chosen
+ */
 export function getSelectedGroup() {
+  const fromUrl = new URLSearchParams(window.location.search).get('group');
+  if (fromUrl) return String(fromUrl);
+
   try {
     return String(localStorage.getItem(GROUP_STORAGE_KEY) || '');
   } catch (err) {
-    // Private windows can refuse storage entirely; the picker still works,
-    // it just asks again next time.
     return '';
   }
 }
 
-/** Remembers the chosen group for next time. */
-export function setSelectedGroup(groupId) {
+/** Remembers the chosen group, best effort. Never throws. */
+export function rememberSelectedGroup(groupId) {
   try {
     if (groupId) localStorage.setItem(GROUP_STORAGE_KEY, groupId);
     else localStorage.removeItem(GROUP_STORAGE_KEY);
-  } catch (err) { /* not worth failing a page load over */ }
+  } catch (err) { /* storage is a convenience; the URL is the truth */ }
+}
+
+/**
+ * selectGroup — switch the page to a group.
+ *
+ * Navigates rather than reloading, so the choice is carried in the URL and
+ * takes effect even where storage is unavailable. A full navigation rather
+ * than a re-render because every panel is holding the previous group's data,
+ * and a partial refresh is how the two end up mixed on screen.
+ *
+ * @param {string} groupId
+ */
+export function selectGroup(groupId) {
+  rememberSelectedGroup(groupId);
+  const url = new URL(window.location.href);
+  url.searchParams.set('group', groupId);
+  window.location.assign(url.toString());
 }
 
 /** The groups this curator can work in. Fetched once per page. */
@@ -282,10 +312,16 @@ export async function api(path, options = {}) {
 
 /** Builds the top bar: brand, page nav, connection pill, profile chip. */
 function buildTopBar(activePage) {
+  // Each link carries the current group, so moving between pages cannot lose
+  // it. Without this the group would survive only in localStorage, and a
+  // browser refusing site data would drop back to the chooser on every click.
+  const selected = getSelectedGroup();
+  const withGroup = (href) => (selected ? `${href}?group=${encodeURIComponent(selected)}` : href);
+
   const nav = el('nav', { class: 'main-nav' },
     PAGES.map((page) => el('a', {
       class: 'nav-link' + (page.id === activePage ? ' active' : ''),
-      href: page.href,
+      href: withGroup(page.href),
       title: page.hint
     }, [
       el('span', { class: 'nav-icon', text: page.icon }),
@@ -300,12 +336,7 @@ function buildTopBar(activePage) {
     class: 'group-select',
     id: 'groupSelect',
     title: 'Everything on this page belongs to the selected group',
-    onchange: (e) => {
-      setSelectedGroup(e.target.value);
-      // A reload rather than a re-render: every panel is holding the previous
-      // group's data, and a partial refresh is how the two mix on screen.
-      window.location.reload();
-    }
+    onchange: (e) => selectGroup(e.target.value)
   });
 
   const identity = el('div', { class: 'top-identity' }, [
@@ -354,10 +385,7 @@ function buildGroupChooser(groups) {
   const cards = groups.map((group) => el('button', {
     class: 'group-card' + (group.ready ? '' : ' is-unready'),
     disabled: group.ready ? undefined : 'disabled',
-    onclick: () => {
-      setSelectedGroup(group.id);
-      window.location.reload();
-    }
+    onclick: () => selectGroup(group.id)
   }, [
     el('div', { class: 'group-card-name', text: group.label }),
     el('div', { class: 'group-card-lang', text: group.language || '' }),
@@ -396,7 +424,7 @@ async function applyGroupSelection() {
 
   // A group that has been removed or unconfigured since the last visit must not
   // leave the page pointed at it.
-  if (selected && !valid) setSelectedGroup('');
+  if (selected && !valid) rememberSelectedGroup('');
 
   const select = $('groupSelect');
   if (select) {
