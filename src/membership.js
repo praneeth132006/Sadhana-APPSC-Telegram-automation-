@@ -12,21 +12,39 @@
 
 const sheets = require('./sheets');
 const paybot = require('./paybot');
+const groups = require('./groups');
 const plans = require('./plans');
 
 /**
- * getPremiumGroupId — the private group paying members join.
- * Falls back to the main group so a single-group setup works unchanged.
+ * contextFor — everything one group needs for a membership operation.
  *
- * @returns {string}
+ * Which chat to invite into, which bot does the inviting, and which sheet
+ * records it. Resolving all three together means a group can never be invited
+ * into with one family's bot while its members are recorded in another's
+ * sheet — the three have to agree, so they are fetched as one.
+ *
+ * @param {string} groupId
+ * @returns {{groupId: string, label: string, chatId: string, botEnv: string, sheet: Object}}
  */
-function getPremiumGroupId() {
-  return String(
-    process.env.TELEGRAM_PREMIUM_GROUP_ID || process.env.TELEGRAM_GROUP_ID || ''
-  ).trim();
+function contextFor(groupId) {
+  const group = groups.requireGroup(groupId);
+  if (!group.telegramGroupId) {
+    throw new Error(`No Telegram group configured for ${group.displayName}.`);
+  }
+  return {
+    groupId: group.id,
+    label: group.displayName,
+    chatId: group.telegramGroupId,
+    botEnv: group.paymentBotEnv,
+    sheet: sheets.forGroup(group.id)
+  };
 }
 
-/** Formats a Date the way every timestamp in the sheet is stored. */
+/** The chat id paying members of one group join. */
+function getPremiumGroupId(groupId) {
+  return groups.requireGroup(groupId).telegramGroupId;
+}
+
 function formatIst(date) {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Kolkata',
@@ -68,11 +86,6 @@ function parseIst(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** Ensures a premium group is configured before any group operation. */
-function ensureTelegram() {
-  if (!getPremiumGroupId()) throw new Error('No premium group configured.');
-}
-
 /**
  * isEligible — may this Telegram id be in the premium group right now?
  *
@@ -83,8 +96,9 @@ function ensureTelegram() {
  * @param {string|number} telegramId
  * @returns {Promise<{ok: boolean, reason: string, subscriber: Object|null}>}
  */
-async function isEligible(telegramId) {
-  const subscriber = await sheets.getSubscriber(telegramId);
+async function isEligible(groupId, telegramId) {
+  const ctx = contextFor(groupId);
+  const subscriber = await ctx.sheet.getSubscriber(telegramId);
   if (!subscriber) return { ok: false, reason: 'no subscription on record', subscriber: null };
   if (subscriber.status !== 'active') {
     return { ok: false, reason: `subscription is ${subscriber.status}`, subscriber };
@@ -107,16 +121,16 @@ async function isEligible(telegramId) {
  * @param {string|number} telegramId The account asking to join
  * @returns {Promise<{approved: boolean, reason: string}>}
  */
-async function handleJoinRequest(telegramId) {
-  const groupId = getPremiumGroupId();
-  const verdict = await isEligible(telegramId);
+async function handleJoinRequest(groupId, telegramId) {
+  const ctx = contextFor(groupId);
+  const verdict = await isEligible(groupId, telegramId);
 
   try {
     if (verdict.ok) {
-      await paybot.approveJoinRequest(groupId, telegramId);
+      await paybot.approveJoinRequest(ctx.botEnv, ctx.chatId, telegramId);
       return { approved: true, reason: verdict.reason };
     }
-    await paybot.declineJoinRequest(groupId, telegramId);
+    await paybot.declineJoinRequest(ctx.botEnv, ctx.chatId, telegramId);
     return { approved: false, reason: verdict.reason };
   } catch (err) {
     // A request already handled, or withdrawn, is not worth failing over.
@@ -135,11 +149,11 @@ async function handleJoinRequest(telegramId) {
  * @param {string|number} telegramId Whoever just appeared in the group
  * @returns {Promise<{removed: boolean, reason: string}>}
  */
-async function enforceMembership(telegramId) {
-  const verdict = await isEligible(telegramId);
+async function enforceMembership(groupId, telegramId) {
+  const verdict = await isEligible(groupId, telegramId);
   if (verdict.ok) return { removed: false, reason: verdict.reason };
 
-  const removed = await removeMember(telegramId);
+  const removed = await removeMember(groupId, telegramId);
   return { removed, reason: verdict.reason };
 }
 
@@ -153,12 +167,9 @@ async function enforceMembership(telegramId) {
  * @param {string|number} telegramId Who it is for, used only for the link name
  * @returns {Promise<string>} The invite URL
  */
-async function createSingleUseInvite(telegramId) {
-  ensureTelegram();
-  const groupId = getPremiumGroupId();
-  if (!groupId) throw new Error('No premium group configured.');
-
-  return paybot.createJoinRequestInvite(groupId, telegramId);
+async function createSingleUseInvite(groupId, telegramId) {
+  const ctx = contextFor(groupId);
+  return paybot.createJoinRequestInvite(ctx.botEnv, ctx.chatId, telegramId);
 }
 
 /**
@@ -182,15 +193,16 @@ async function createSingleUseInvite(telegramId) {
  */
 async function grantAccess(options) {
   const {
-    telegramId, planId, paymentId, amountPaise,
+    groupId, telegramId, planId, paymentId, amountPaise,
     username, name, linkId, subscriptionId, event
   } = options;
 
-  const plan = plans.getPlan(planId);
+  const ctx = contextFor(groupId);
+  const plan = groups.getPlanFor(groupId, planId, { includeTest: true });
   if (!plan) throw new Error(`Unknown plan "${planId}"`);
   if (!telegramId) throw new Error('grantAccess requires a telegramId');
 
-  const existing = await sheets.getSubscriber(telegramId);
+  const existing = await ctx.sheet.getSubscriber(telegramId);
 
   // Razorpay retries on any non-2xx, so the same payment can arrive twice.
   if (existing && paymentId && existing.payment_id === paymentId) {
@@ -206,7 +218,7 @@ async function grantAccess(options) {
   const isRejoining = !existing || existing.status !== 'active';
   if (!inviteLink || isRejoining) {
     try {
-      inviteLink = await createSingleUseInvite(telegramId);
+      inviteLink = await createSingleUseInvite(groupId, telegramId);
     } catch (err) {
       // The payment is real even if Telegram is briefly unreachable. Record it
       // and let the student retry with /status rather than losing the sale.
@@ -215,7 +227,7 @@ async function grantAccess(options) {
     }
   }
 
-  const subscriber = await sheets.upsertSubscriber({
+  const subscriber = await ctx.sheet.upsertSubscriber({
     telegram_id: String(telegramId),
     username: username || (existing ? existing.username : ''),
     name: name || (existing ? existing.name : ''),
@@ -249,13 +261,11 @@ async function grantAccess(options) {
  * @param {string|number} telegramId
  * @returns {Promise<boolean>} Whether Telegram accepted the removal
  */
-async function removeMember(telegramId) {
-  ensureTelegram();
-  const groupId = getPremiumGroupId();
-  if (!groupId) throw new Error('No premium group configured.');
+async function removeMember(groupId, telegramId) {
+  const ctx = contextFor(groupId);
 
   try {
-    await paybot.removeFromChat(groupId, telegramId);
+    await paybot.removeFromChat(ctx.botEnv, ctx.chatId, telegramId);
     return true;
   } catch (err) {
     // Already gone, or never joined — not a failure worth stopping the run for.
@@ -270,8 +280,8 @@ async function removeMember(telegramId) {
  * @param {Object} subscriber The stored member
  * @param {boolean} removed Whether they were actually removed from the group
  */
-async function markExpired(subscriber, removed) {
-  return sheets.upsertSubscriber({
+async function markExpired(groupId, subscriber, removed) {
+  return contextFor(groupId).sheet.upsertSubscriber({
     telegram_id: subscriber.telegram_id,
     status: removed ? 'removed' : 'expired',
     // Clear the invite so a lapsed member cannot rejoin on an old link.
@@ -287,8 +297,8 @@ async function markExpired(subscriber, removed) {
  * @param {Object} subscriber The stored member
  * @param {number} daysLeft Days until expiry
  */
-async function sendRenewalReminder(subscriber, daysLeft) {
-  ensureTelegram();
+async function sendRenewalReminder(groupId, subscriber, daysLeft) {
+  const ctx = contextFor(groupId);
 
   const plan = plans.getPlan(subscriber.plan);
   const label = plan ? plan.label : subscriber.plan_label || 'your pass';
@@ -301,11 +311,11 @@ async function sendRenewalReminder(subscriber, daysLeft) {
     `Renew to keep your access to the APPSC premium group and daily quizzes.\n\n` +
     `Send /plans to this bot to renew in a couple of taps.`;
 
-  await paybot.sendDirectMessage(subscriber.telegram_id, message);
+  await paybot.sendDirectMessage(ctx.botEnv, subscriber.telegram_id, message);
 
   // Record which expiry this reminder was for, so a renewal (new expiry) makes
   // the member eligible for a reminder again, but today's is not repeated.
-  await sheets.upsertSubscriber({
+  await ctx.sheet.upsertSubscriber({
     telegram_id: subscriber.telegram_id,
     reminder_sent: subscriber.expiry_date,
     is_payment: false
@@ -320,12 +330,13 @@ async function sendRenewalReminder(subscriber, daysLeft) {
  * @param {boolean} [options.dryRun] Report what would happen, change nothing
  * @returns {Promise<Object>} Summary of the run
  */
-async function runDailyCheck({ dryRun = false } = {}) {
+async function runDailyCheck({ groupId, dryRun = false } = {}) {
+  const ctx = contextFor(groupId);
   const summary = { checked: 0, reminded: [], removed: [], failed: [], dryRun };
 
   // Widest reminder window of any plan, so one query covers every case.
   const lookAhead = Math.max(...plans.listPlans().map((p) => p.reminderDaysBefore || 0), 0);
-  const candidates = await sheets.getExpiring(lookAhead);
+  const candidates = await ctx.sheet.getExpiring(lookAhead);
   summary.checked = candidates.length;
 
   for (const subscriber of candidates) {
@@ -342,10 +353,10 @@ async function runDailyCheck({ dryRun = false } = {}) {
       if (daysLeft <= 0) {
         // Past expiry: remove from the group and mark the row.
         if (!dryRun) {
-          const removed = await removeMember(subscriber.telegram_id);
-          await markExpired(subscriber, removed);
+          const removed = await removeMember(groupId, subscriber.telegram_id);
+          await markExpired(groupId, subscriber, removed);
           try {
-            await paybot.sendDirectMessage(
+            await paybot.sendDirectMessage(ctx.botEnv,
               subscriber.telegram_id,
               `Your <b>${subscriber.plan_label || 'pass'}</b> has expired and your group access has ended.\n\n` +
               `Send /plans to rejoin whenever you are ready — your progress and history are kept.`
@@ -367,7 +378,7 @@ async function runDailyCheck({ dryRun = false } = {}) {
       const alreadyReminded = subscriber.reminder_sent === subscriber.expiry_date;
 
       if (window > 0 && daysLeft <= window && !alreadyReminded) {
-        if (!dryRun) await sendRenewalReminder(subscriber, daysLeft);
+        if (!dryRun) await sendRenewalReminder(groupId, subscriber, daysLeft);
         summary.reminded.push({
           telegram_id: subscriber.telegram_id,
           username: subscriber.username,
@@ -411,7 +422,45 @@ function describeStatus(subscriber) {
          `Send /plans to rejoin.`;
 }
 
+/**
+ * runDailyCheckAllGroups — sweeps every group that is ready.
+ *
+ * The scheduled job must not stop at the first group with a bad token or an
+ * unreachable sheet: the other four still have members whose passes have run
+ * out, and skipping them means those seats never expire. Failures are recorded
+ * per group and the sweep continues.
+ *
+ * @param {Object} [options]
+ * @param {boolean} [options.dryRun]
+ * @returns {Promise<Object>} Per-group summaries plus totals
+ */
+async function runDailyCheckAllGroups({ dryRun = false } = {}) {
+  const results = [];
+  let reminded = 0;
+  let removed = 0;
+
+  for (const group of groups.listGroups()) {
+    if (!group.ready) {
+      results.push({ groupId: group.id, skipped: 'not configured' });
+      continue;
+    }
+    try {
+      const summary = await runDailyCheck({ groupId: group.id, dryRun });
+      reminded += (summary.reminded || []).length;
+      removed += (summary.removed || []).length;
+      results.push(Object.assign({ groupId: group.id }, summary));
+    } catch (err) {
+      console.error(`[membership] sweep failed for ${group.id}: ${err.message}`);
+      results.push({ groupId: group.id, error: err.message });
+    }
+  }
+
+  return { groups: results, totals: { reminded, removed }, dryRun };
+}
+
 module.exports = {
+  contextFor,
+  runDailyCheckAllGroups,
   getPremiumGroupId,
   isEligible,
   handleJoinRequest,

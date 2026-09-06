@@ -21,6 +21,27 @@ const plans = require('./src/plans');
 const sheets = require('./src/sheets');
 const membership = require('./src/membership');
 const razorpay = require('./src/razorpay');
+const groupRegistry = require('./src/groups');
+
+// TODO(groups): the bot will list every group and let the student choose. Until
+// that lands it serves one, named explicitly — never defaulted — so the seam is
+// visible rather than hidden behind a fallback.
+const ACTIVE_GROUP = String(process.env.LEGACY_GROUP_ID || '').trim();
+
+/** The passes this bot sells, at this group's prices. */
+function activePlans() {
+  return groupRegistry.plansFor(ACTIVE_GROUP, { includeTest: plans.testPlanEnabled() });
+}
+
+/** One pass within the active group. */
+function activePlan(planId) {
+  return groupRegistry.getPlanFor(ACTIVE_GROUP, planId, { includeTest: plans.testPlanEnabled() });
+}
+
+/** This group's sheet. */
+function activeSheet() {
+  return sheets.forGroup(ACTIVE_GROUP);
+}
 
 // This process is the PAYMENT bot: it sells passes and guards the group. The
 // questions bot is a different token entirely and is driven by send.js and
@@ -35,7 +56,13 @@ function checkConfig() {
   const missing = [];
   if (!PAYMENT_TOKEN) missing.push('TELEGRAM_PAYMENT_BOT_TOKEN (or TELEGRAM_BOT_TOKEN)');
   if (!razorpay.isConfigured()) missing.push('RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET');
-  if (!membership.getPremiumGroupId()) missing.push('TELEGRAM_PREMIUM_GROUP_ID or TELEGRAM_GROUP_ID');
+  if (!ACTIVE_GROUP) {
+    missing.push('LEGACY_GROUP_ID (which group this bot sells)');
+  } else {
+    const group = groupRegistry.getGroup(ACTIVE_GROUP);
+    if (!group) missing.push(`LEGACY_GROUP_ID names "${ACTIVE_GROUP}", which is not in groups.config.json`);
+    else if (!group.ready) missing.push(`${group.displayName}: ${group.missing.join(', ')}`);
+  }
 
   if (missing.length) {
     console.error('❌ Cannot start. Missing in .env:\n   ' + missing.join('\n   '));
@@ -75,7 +102,7 @@ function esc(text) {
 /** The inline keyboard listing the three passes. */
 function planKeyboard() {
   return {
-    inline_keyboard: plans.listPlans().map((plan) => ([{
+    inline_keyboard: activePlans().map((plan) => ([{
       text: `${plan.emoji} ${plan.label} — ${plans.formatAmount(plan.amountPaise)}`,
       callback_data: `buy:${plan.id}`
     }]))
@@ -91,7 +118,7 @@ function plansMessage() {
     ''
   ];
 
-  plans.listPlans().forEach((plan, index) => {
+  activePlans().forEach((plan, index) => {
     lines.push(
       `${index + 1}. ${plan.emoji} <b>${esc(plan.label)}</b> — ${plans.formatAmount(plan.amountPaise)}` +
       (plan.type === 'recurring' ? '/month' : '')
@@ -138,7 +165,7 @@ bot.onText(/^\/plans/, async (msg) => {
 
 bot.onText(/^\/status/, async (msg) => {
   try {
-    const subscriber = await sheets.getSubscriber(msg.from.id);
+    const subscriber = await activeSheet().getSubscriber(msg.from.id);
     const text = membership.describeStatus(subscriber);
 
     // Offer a rejoin link only when they actually hold access but lost the link.
@@ -173,7 +200,7 @@ bot.onText(/^\/help/, async (msg) => {
 
 bot.onText(/^\/cancel/, async (msg) => {
   try {
-    const subscriber = await sheets.getSubscriber(msg.from.id);
+    const subscriber = await activeSheet().getSubscriber(msg.from.id);
 
     if (!subscriber || !subscriber.subscription_id) {
       await bot.sendMessage(msg.chat.id,
@@ -184,7 +211,7 @@ bot.onText(/^\/cancel/, async (msg) => {
 
     // Cancel at cycle end: they keep what they already paid for.
     await razorpay.cancelSubscription(subscriber.subscription_id, true);
-    await sheets.upsertSubscriber({
+    await activeSheet().upsertSubscriber({
       telegram_id: String(msg.from.id),
       status: 'cancelled',
       notes: `Cancelled by user on ${membership.formatIst(new Date())}`,
@@ -214,7 +241,7 @@ bot.on('callback_query', async (query) => {
   }
 
   const planId = data.slice(4);
-  const plan = plans.getPlan(planId);
+  const plan = activePlan(planId);
   const user = query.from;
 
   if (!plan) {
@@ -234,7 +261,7 @@ bot.on('callback_query', async (query) => {
 
   try {
     // If they already hold access, say so rather than quietly selling again.
-    const existing = await sheets.getSubscriber(user.id);
+    const existing = await activeSheet().getSubscriber(user.id);
     if (existing && existing.status === 'active') {
       await bot.sendMessage(user.id,
         `ℹ️ You already have an active <b>${esc(existing.plan_label)}</b> until ` +
@@ -279,9 +306,15 @@ async function createCheckout(plan, user) {
   const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
 
   if (plan.type === 'recurring') {
-    const razorpayPlanId = String(process.env[plan.razorpayPlanIdEnv] || '').trim();
+    // Each group needs its own Razorpay plan, because the price is baked into
+    // the plan and the groups charge different amounts. groups.plansFor()
+    // resolves it from RAZORPAY_PLAN_<envPrefix>.
+    const razorpayPlanId = String(plan.razorpayPlanId || '').trim();
     if (!razorpayPlanId) {
-      throw new Error(`${plan.razorpayPlanIdEnv} is not set — run "node setup-razorpay.js" first.`);
+      const group = groupRegistry.requireGroup(ACTIVE_GROUP);
+      throw new Error(
+        `RAZORPAY_PLAN_${group.envPrefix} is not set — run "node setup-razorpay.js" for ${group.displayName}.`
+      );
     }
     const subscription = await razorpay.createSubscription({
       plan, razorpayPlanId, telegramId: user.id, username: user.username
@@ -313,13 +346,13 @@ async function createCheckout(plan, user) {
 // everything else. This is what stops a forwarded link admitting a stranger.
 bot.on('chat_join_request', async (req) => {
   const user = req.from || {};
-  const chatId = (req.chat && req.chat.id) || membership.getPremiumGroupId();
+  const chatId = (req.chat && req.chat.id) || membership.getPremiumGroupId(ACTIVE_GROUP);
 
   // Requests for some other chat this bot administers are none of our business.
-  if (String(chatId) !== String(membership.getPremiumGroupId())) return;
+  if (String(chatId) !== String(membership.getPremiumGroupId(ACTIVE_GROUP))) return;
 
   try {
-    const result = await membership.handleJoinRequest(user.id);
+    const result = await membership.handleJoinRequest(ACTIVE_GROUP, user.id);
     console.log(
       `[join] ${result.approved ? 'APPROVED' : 'DECLINED'} ${user.id} (@${user.username}) — ${result.reason}`
     );
@@ -347,7 +380,7 @@ bot.on('chat_join_request', async (req) => {
 // client rather than by this code.
 bot.on('chat_member', async (update) => {
   const chatId = (update.chat && update.chat.id) || '';
-  if (String(chatId) !== String(membership.getPremiumGroupId())) return;
+  if (String(chatId) !== String(membership.getPremiumGroupId(ACTIVE_GROUP))) return;
 
   const next = update.new_chat_member || {};
   const user = next.user || {};
@@ -355,7 +388,7 @@ bot.on('chat_member', async (update) => {
   if (user.is_bot) return;
 
   try {
-    const result = await membership.enforceMembership(user.id);
+    const result = await membership.enforceMembership(ACTIVE_GROUP, user.id);
     if (result.removed) {
       console.log(`[guard] removed ${user.id} (@${user.username}) — ${result.reason}`);
     }
@@ -371,8 +404,8 @@ bot.on('polling_error', (err) => {
 console.log('════════════════════════════════════════════════════');
 console.log('🤖 Sadhana APPSC subscription bot is running');
 console.log(`   Razorpay : ${razorpay.isTestMode() ? 'TEST mode' : 'LIVE mode'}`);
-console.log(`   Group    : ${membership.getPremiumGroupId()}`);
-console.log(`   Plans    : ${plans.listPlans().map((p) => p.label).join(', ')}`);
+console.log(`   Group    : ${groupRegistry.getGroup(ACTIVE_GROUP).displayName} (${membership.getPremiumGroupId(ACTIVE_GROUP)})`);
+console.log(`   Plans    : ${activePlans().map((p) => p.label + ' ' + plans.formatAmount(p.amountPaise)).join(', ')}`);
 console.log('   Commands : /start /plans /status /cancel /help');
 console.log('════════════════════════════════════════════════════');
 

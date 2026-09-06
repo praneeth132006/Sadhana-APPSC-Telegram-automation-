@@ -141,8 +141,71 @@ var PAYMENT_HEADERS = [
   'Expiry After'
 ];
 
-/** Master subject list with default Telegram thread ids and cron schedules. */
-var SUBJECT_CONFIG_LIST = [
+/**
+ * subjectConfigList — the subjects THIS sheet tracks.
+ *
+ * Five sheets run this same file, and they do not share a syllabus: the
+ * newspaper groups, Sadhana APPSC and UPSC each want a different set of tabs.
+ * Keeping the list in code would mean five copies of this script drifting
+ * apart, and a fix applied to four of them.
+ *
+ * So each sheet declares its own list in a SUBJECTS_JSON script property —
+ * File > Project Settings > Script Properties — as a JSON array of names:
+ *   ["Ancient India", "Medieval India", ...]
+ * Thread ids and cron schedules are generated from position, then overwritten
+ * by whatever is already in Config, so real Telegram topic ids survive a
+ * re-run.
+ *
+ * With no property set, the built-in list below is used, which is what the
+ * original single-sheet setup had.
+ *
+ * @returns {Array<Object>} Subject config rows for this sheet
+ */
+var SUBJECT_CONFIG_CACHE = null;
+
+function subjectConfigList() {
+  if (SUBJECT_CONFIG_CACHE) return SUBJECT_CONFIG_CACHE;
+
+  var raw = '';
+  try {
+    raw = PropertiesService.getScriptProperties().getProperty('SUBJECTS_JSON') || '';
+  } catch (err) {
+    raw = '';
+  }
+
+  if (!raw) {
+    SUBJECT_CONFIG_CACHE = SUBJECT_CONFIG_LIST_DEFAULT;
+    return SUBJECT_CONFIG_CACHE;
+  }
+
+  var names;
+  try {
+    names = JSON.parse(raw);
+  } catch (err) {
+    throw new Error('SUBJECTS_JSON is not valid JSON: ' + err.message);
+  }
+  if (!Array.isArray(names) || !names.length) {
+    throw new Error('SUBJECTS_JSON must be a non-empty JSON array of subject names.');
+  }
+
+  SUBJECT_CONFIG_CACHE = names.map(function (name, i) {
+    var clean = String(name).trim();
+    return {
+      subject: clean,
+      // Topic ids here are placeholders. `node setup.js` creates the real
+      // forum topics and writes their ids into Config, and setupSpreadsheet
+      // preserves those, so these are only ever a starting point.
+      threadId: 6 + i,
+      cron: '0 */3 * * *',
+      count: 5,
+      code: clean.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3) || 'SUB'
+    };
+  });
+  return SUBJECT_CONFIG_CACHE;
+}
+
+/** Fallback subject list, used when no SUBJECTS_JSON property is set. */
+var SUBJECT_CONFIG_LIST_DEFAULT = [
   { subject: 'History',                threadId: 6,  cron: '0 9,18 * * *',    count: 5, code: 'HIS' },
   { subject: 'AP History',             threadId: 7,  cron: '0 */3 * * *',     count: 5, code: 'APH' },
   { subject: 'Geography',              threadId: 8,  cron: '0 */3 * * *',     count: 5, code: 'GEO' },
@@ -1914,7 +1977,7 @@ function setupSpreadsheet() {
 
   // Read any thread ids and cron settings that already exist BEFORE clearing.
   // These are the real Telegram forum topic ids created by `node setup.js`;
-  // overwriting them with the defaults in SUBJECT_CONFIG_LIST would point every
+  // overwriting them with the defaults from subjectConfigList() would point every
   // subject at a topic that may not exist, which looks exactly like the topics
   // having been deleted.
   var existing = {};
@@ -1942,7 +2005,7 @@ function setupSpreadsheet() {
     .setFontWeight('bold').setFontColor('#ffffff').setBackground('#1a237e');
   config.setFrozenRows(1);
 
-  var configRows = SUBJECT_CONFIG_LIST.map(function (s) {
+  var configRows = subjectConfigList().map(function (s) {
     var prev = existing[s.subject];
     return [
       s.subject,
@@ -1957,8 +2020,8 @@ function setupSpreadsheet() {
   config.getRange(2, 1, configRows.length, configHeaders.length).setValues(configRows);
   [160, 70, 130, 150, 170, 80].forEach(function (w, i) { config.setColumnWidth(i + 1, w); });
 
-  for (var i = 0; i < SUBJECT_CONFIG_LIST.length; i++) {
-    var name = SUBJECT_CONFIG_LIST[i].subject;
+  for (var i = 0; i < subjectConfigList().length; i++) {
+    var name = subjectConfigList()[i].subject;
     var sheet = ss.getSheetByName(name);
     if (!sheet) {
       sheet = ss.insertSheet(name);
@@ -1969,7 +2032,7 @@ function setupSpreadsheet() {
   }
 
   book().toast(
-    'Setup complete — ' + SUBJECT_CONFIG_LIST.length + ' subject tabs on the 30-column schema.',
+    'Setup complete — ' + subjectConfigList().length + ' subject tabs on the 30-column schema.',
     'Sadhana APPSC', 10
   );
 }
@@ -1991,8 +2054,8 @@ function upgradeSpreadsheet() {
   }
 
   // Make sure every configured subject has a tab, even if it was never created.
-  for (var j = 0; j < SUBJECT_CONFIG_LIST.length; j++) {
-    var wanted = SUBJECT_CONFIG_LIST[j].subject;
+  for (var j = 0; j < subjectConfigList().length; j++) {
+    var wanted = subjectConfigList()[j].subject;
     if (!ss.getSheetByName(wanted)) {
       formatSheetHeaders(ss.insertSheet(wanted));
       report.push(wanted + ': created');
@@ -2117,8 +2180,8 @@ function istNow() {
 
 /** Three-letter prefix for Question IDs, from the master list or the name itself. */
 function subjectCode(subject) {
-  for (var i = 0; i < SUBJECT_CONFIG_LIST.length; i++) {
-    if (SUBJECT_CONFIG_LIST[i].subject === subject) return SUBJECT_CONFIG_LIST[i].code;
+  for (var i = 0; i < subjectConfigList().length; i++) {
+    if (subjectConfigList()[i].subject === subject) return subjectConfigList()[i].code;
   }
   return String(subject || 'GEN').toUpperCase().replace(/[^A-Z]/g, '').substring(0, 3) || 'GEN';
 }

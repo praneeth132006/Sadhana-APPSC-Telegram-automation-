@@ -20,6 +20,16 @@ process.env.TELEGRAM_BOT_TOKEN = '123:TEST';
 process.env.TELEGRAM_GROUP_ID = '-1001234567890';
 process.env.TEST_PLAN_ENABLED = '';   // never inherit it from a local .env
 
+// Tests configure their own groups. Without this the suite would pass or fail
+// depending on which groups happen to be set up in the developer's .env.
+process.env.LEGACY_GROUP_ID = '';
+['APPSC_NEWS_EN', 'APPSC_Q_EN', 'UPSC'].forEach((prefix, i) => {
+  process.env[`SHEET_URL_${prefix}`] =
+    `https://script.google.com/macros/s/test-${prefix.toLowerCase()}/exec`;
+  process.env[`SHEET_TOKEN_${prefix}`] = `token-${prefix}`;
+  process.env[`TELEGRAM_GROUP_${prefix}`] = `-100${1000 + i}`;
+});
+
 const razorpay = require('../src/razorpay');
 const plans = require('../src/plans');
 
@@ -319,14 +329,22 @@ const membership = require('../src/membership');
 const sheets = require('../src/sheets');
 const paybot = require('../src/paybot');
 
-/** Runs `fn` with getSubscriber stubbed to return `row`, then restores it. */
+const TEST_GROUP = 'appsc_q_en';
+
+/** Runs `fn` with the bound sheets client stubbed to return `row`. */
 async function withSubscriber(row, fn) {
-  const original = sheets.getSubscriber;
-  sheets.getSubscriber = async () => row;
+  const original = sheets.forGroup;
+  sheets.forGroup = (groupId) => {
+    const real = original(groupId);
+    return Object.assign({}, real, {
+      getSubscriber: async () => row,
+      upsertSubscriber: async (data) => data
+    });
+  };
   try {
     return await fn();
   } finally {
-    sheets.getSubscriber = original;
+    sheets.forGroup = original;
   }
 }
 
@@ -338,9 +356,9 @@ function stubPaybot() {
     declineJoinRequest: paybot.declineJoinRequest,
     removeFromChat: paybot.removeFromChat
   };
-  paybot.approveJoinRequest = async (c, u) => { calls.push(['approve', String(u)]); };
-  paybot.declineJoinRequest = async (c, u) => { calls.push(['decline', String(u)]); };
-  paybot.removeFromChat = async (c, u) => { calls.push(['remove', String(u)]); };
+  paybot.approveJoinRequest = async (env, c, u) => { calls.push(['approve', String(u), env]); };
+  paybot.declineJoinRequest = async (env, c, u) => { calls.push(['decline', String(u), env]); };
+  paybot.removeFromChat = async (env, c, u) => { calls.push(['remove', String(u), env]); };
   return {
     calls,
     restore() { Object.assign(paybot, originals); }
@@ -355,9 +373,10 @@ const activeRow = {
 test('the paying account is approved when it asks to join', async () => {
   const stub = stubPaybot();
   try {
-    const result = await withSubscriber(activeRow, () => membership.handleJoinRequest('111'));
+    const result = await withSubscriber(activeRow, () => membership.handleJoinRequest(TEST_GROUP, '111'));
     assert.equal(result.approved, true);
-    assert.deepEqual(stub.calls, [['approve', '111']]);
+    assert.deepEqual(stub.calls.map((c) => c.slice(0, 2)), [['approve', '111']]);
+    assert.equal(stub.calls[0][2], 'TELEGRAM_PAYBOT_SADHANA', 'wrong payment bot for this group');
   } finally {
     stub.restore();
   }
@@ -367,9 +386,9 @@ test('a forwarded invite does not admit someone who never paid', async () => {
   // The exact hole: the buyer hands their link to a friend, the friend taps it.
   const stub = stubPaybot();
   try {
-    const result = await withSubscriber(null, () => membership.handleJoinRequest('999'));
+    const result = await withSubscriber(null, () => membership.handleJoinRequest(TEST_GROUP, '999'));
     assert.equal(result.approved, false);
-    assert.deepEqual(stub.calls, [['decline', '999']]);
+    assert.deepEqual(stub.calls.map((c) => c.slice(0, 2)), [['decline', '999']]);
   } finally {
     stub.restore();
   }
@@ -381,7 +400,7 @@ test('an expired subscription is turned away at the door', async () => {
     expiry_date: '01-01-2020, 12:00:00 AM IST'
   });
   try {
-    const result = await withSubscriber(expired, () => membership.handleJoinRequest('111'));
+    const result = await withSubscriber(expired, () => membership.handleJoinRequest(TEST_GROUP, '111'));
     assert.equal(result.approved, false);
     assert.match(result.reason, /expired/);
   } finally {
@@ -394,7 +413,7 @@ test('a cancelled subscription that has not yet run out still gets in', async ()
   const stub = stubPaybot();
   const cancelled = Object.assign({}, activeRow, { status: 'cancelled' });
   try {
-    const result = await withSubscriber(cancelled, () => membership.handleJoinRequest('111'));
+    const result = await withSubscriber(cancelled, () => membership.handleJoinRequest(TEST_GROUP, '111'));
     // status is the record of intent, so a cancelled row is not active access.
     assert.equal(result.approved, false);
   } finally {
@@ -406,9 +425,9 @@ test('someone added to the group by hand without paying is removed', async () =>
   // The net behind join requests: an admin adding a friend never triggers one.
   const stub = stubPaybot();
   try {
-    const result = await withSubscriber(null, () => membership.enforceMembership('777'));
+    const result = await withSubscriber(null, () => membership.enforceMembership(TEST_GROUP, '777'));
     assert.equal(result.removed, true);
-    assert.deepEqual(stub.calls, [['remove', '777']]);
+    assert.deepEqual(stub.calls.map((c) => c.slice(0, 2)), [['remove', '777']]);
   } finally {
     stub.restore();
   }
@@ -417,7 +436,7 @@ test('someone added to the group by hand without paying is removed', async () =>
 test('a paying member is never removed by the guard', async () => {
   const stub = stubPaybot();
   try {
-    const result = await withSubscriber(activeRow, () => membership.enforceMembership('111'));
+    const result = await withSubscriber(activeRow, () => membership.enforceMembership(TEST_GROUP, '111'));
     assert.equal(result.removed, false);
     assert.deepEqual(stub.calls, []);
   } finally {
