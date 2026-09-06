@@ -186,6 +186,42 @@ export function showToast(type, message, durationMs = 5000) {
 // API client
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Which group the dashboard is looking at
+// ---------------------------------------------------------------------------
+// Every data request carries a group, and there is no default. A curator with
+// nothing selected sees a picker rather than somebody's data — because a page
+// that quietly showed "the first group" would look exactly like a page showing
+// the group they meant, and questions would be uploaded into the wrong sheet.
+
+const GROUP_STORAGE_KEY = 'sadhana.selectedGroup';
+
+/** The group id this browser last chose, or '' if none. */
+export function getSelectedGroup() {
+  try {
+    return String(localStorage.getItem(GROUP_STORAGE_KEY) || '');
+  } catch (err) {
+    // Private windows can refuse storage entirely; the picker still works,
+    // it just asks again next time.
+    return '';
+  }
+}
+
+/** Remembers the chosen group for next time. */
+export function setSelectedGroup(groupId) {
+  try {
+    if (groupId) localStorage.setItem(GROUP_STORAGE_KEY, groupId);
+    else localStorage.removeItem(GROUP_STORAGE_KEY);
+  } catch (err) { /* not worth failing a page load over */ }
+}
+
+/** The groups this curator can work in. Fetched once per page. */
+let groupsCache = null;
+export async function listGroups() {
+  if (!groupsCache) groupsCache = await api('/api/groups');
+  return groupsCache;
+}
+
 /**
  * api — calls the local server with a fresh Firebase ID token attached.
  * Tokens are short lived, so `getIdToken()` is called per request and the SDK
@@ -198,15 +234,23 @@ export function showToast(type, message, durationMs = 5000) {
 export async function api(path, options = {}) {
   const { method = 'GET', body = null, query = null } = options;
 
-  let url = path;
+  const params = new URLSearchParams();
   if (query) {
-    const params = new URLSearchParams();
     Object.entries(query).forEach(([k, v]) => {
       if (v !== null && v !== undefined && v !== '') params.set(k, String(v));
     });
-    const qs = params.toString();
-    if (qs) url += '?' + qs;
   }
+
+  // The group travels on every request. /api/groups is how the picker learns
+  // what exists, so it is the one call that cannot require a selection.
+  if (path !== '/api/groups' && !params.has('group')) {
+    const selected = getSelectedGroup();
+    if (selected) params.set('group', selected);
+  }
+
+  let url = path;
+  const qs = params.toString();
+  if (qs) url += '?' + qs;
 
   const headers = {};
   if (currentUser) {
@@ -271,14 +315,103 @@ function buildTopBar(activePage) {
     })
   ]);
 
+  // Which group you are working in, always on screen. It is the difference
+  // between uploading a Telugu question bank and uploading it into the UPSC
+  // sheet, and nothing else on the page would tell you which you had done.
+  const groupSwitcher = el('div', { class: 'group-switcher', id: 'groupSwitcher' }, [
+    el('span', { class: 'group-switcher-label', text: 'Group' }),
+    el('select', {
+      class: 'group-switcher-select',
+      id: 'groupSelect',
+      title: 'Everything on this page belongs to the selected group',
+      onchange: (e) => {
+        setSelectedGroup(e.target.value);
+        // A full reload rather than a re-render: every panel on the page is
+        // holding the previous group's data, and a partial refresh is how the
+        // two end up mixed on screen.
+        window.location.reload();
+      }
+    })
+  ]);
+
   return el('header', { class: 'top-bar' }, [
     el('div', { class: 'brand' }, [
       el('h1', { class: 'brand-title', text: 'Sadhana APPSC' }),
       el('span', { class: 'brand-subtitle', text: 'Question Ops' })
     ]),
     nav,
-    el('div', { class: 'top-controls' }, [connectionPill, profileChip])
+    el('div', { class: 'top-controls' }, [groupSwitcher, connectionPill, profileChip])
   ]);
+}
+
+/**
+ * buildGroupChooser — the full-screen picker shown when nothing is selected.
+ *
+ * Deliberately blocking. Guessing a group for the curator would mean the first
+ * upload of a session could land in the wrong sheet, and there is no undo for a
+ * question posted to a paying group.
+ */
+function buildGroupChooser(groups) {
+  const cards = groups.map((group) => el('button', {
+    class: 'group-card' + (group.ready ? '' : ' is-unready'),
+    disabled: group.ready ? undefined : 'disabled',
+    onclick: () => {
+      setSelectedGroup(group.id);
+      window.location.reload();
+    }
+  }, [
+    el('div', { class: 'group-card-name', text: group.label }),
+    el('div', { class: 'group-card-lang', text: group.language || '' }),
+    el('div', {
+      class: 'group-card-meta',
+      text: group.ready
+        ? `${(group.subjects || []).length} subjects`
+        : 'not configured'
+    })
+  ]));
+
+  return el('div', { id: 'groupChooser', class: 'group-chooser' }, [
+    el('div', { class: 'group-chooser-card' }, [
+      el('h2', { class: 'group-chooser-title', text: 'Choose a group' }),
+      el('p', {
+        class: 'group-chooser-sub',
+        text: 'Every page, upload and payment below belongs to the group you pick. Nothing is shared between them.'
+      }),
+      el('div', { class: 'group-card-grid' }, cards)
+    ])
+  ]);
+}
+
+/** Fills the top-bar switcher and returns whether a valid group is selected. */
+async function applyGroupSelection() {
+  let groups = [];
+  try {
+    groups = await listGroups();
+  } catch (err) {
+    return { ok: false, groups: [], error: err.message };
+  }
+
+  const ready = groups.filter((g) => g.ready);
+  const selected = getSelectedGroup();
+  const valid = ready.some((g) => g.id === selected);
+
+  // A group that has been removed or unconfigured since the last visit must not
+  // leave the page pointed at it.
+  if (selected && !valid) setSelectedGroup('');
+
+  const select = $('groupSelect');
+  if (select) {
+    select.innerHTML = '';
+    ready.forEach((group) => {
+      const option = document.createElement('option');
+      option.value = group.id;
+      option.textContent = group.displayName;
+      if (group.id === selected) option.selected = true;
+      select.appendChild(option);
+    });
+  }
+
+  return { ok: valid, groups, error: null };
 }
 
 /** Builds the full-screen sign-in gate shown to logged-out visitors. */
@@ -745,6 +878,25 @@ export async function initDashboard({ page, onReady }) {
 
     if (started) return;
     started = true;
+
+    // Nothing on the page may load until a group is chosen. Everything below
+    // this point reads or writes one group's sheet, so starting without one
+    // would mean the first request of the session picks a group by accident.
+    const selection = await applyGroupSelection();
+    if (!selection.ok) {
+      if (selection.error) {
+        showBanner('error', 'Could not load the group list.', selection.error);
+        return;
+      }
+      const anchor = $('pageRoot');
+      if (anchor && anchor.parentNode) {
+        anchor.style.display = 'none';
+        anchor.parentNode.insertBefore(buildGroupChooser(selection.groups), anchor);
+      }
+      const switcher = $('groupSwitcher');
+      if (switcher) switcher.style.display = 'none';
+      return;
+    }
 
     try {
       await onReady(user);

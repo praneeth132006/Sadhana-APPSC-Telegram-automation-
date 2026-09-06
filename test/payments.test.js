@@ -209,7 +209,7 @@ test('handlePaymentEvent grants access from a paid payment link', async () => {
       payment_link: {
         entity: {
           id: 'plink_1',
-          notes: { telegram_id: '555', plan_id: 'sprint_30', telegram_username: 'student' }
+          notes: { telegram_id: '555', plan_id: 'sprint_30', telegram_username: 'student', group_id: 'appsc_news_en' }
         }
       },
       payment: { entity: { id: 'pay_1', amount: 29900 } }
@@ -220,6 +220,9 @@ test('handlePaymentEvent grants access from a paid payment link', async () => {
   assert.equal(calls.grantAccess.length, 1);
 
   const granted = calls.grantAccess[0];
+  // The group must come from the notes we set, never from anything the payer
+  // supplies, or a payment could be recorded against the wrong group's sheet.
+  assert.equal(granted.groupId, 'appsc_news_en');
   assert.equal(granted.telegramId, '555');
   assert.equal(granted.planId, 'sprint_30');
   assert.equal(granted.paymentId, 'pay_1');
@@ -247,7 +250,7 @@ test('a subscription charge extends the same member', async () => {
   const result = await handler({
     event: 'subscription.charged',
     payload: {
-      subscription: { entity: { id: 'sub_1', notes: { telegram_id: '777', plan_id: 'autopay_monthly' } } },
+      subscription: { entity: { id: 'sub_1', notes: { telegram_id: '777', plan_id: 'autopay_monthly', group_id: 'appsc_news_en' } } },
       payment: { entity: { id: 'pay_3', amount: 24900 } }
     }
   });
@@ -264,7 +267,7 @@ test('cancelling a subscription does not revoke access immediately', async () =>
 
   const result = await handler({
     event: 'subscription.cancelled',
-    payload: { subscription: { entity: { id: 'sub_2', notes: { telegram_id: '888' } } } }
+    payload: { subscription: { entity: { id: 'sub_2', notes: { telegram_id: '888', group_id: 'appsc_news_en' } } } }
   });
 
   assert.equal(result.handled, true);
@@ -304,10 +307,14 @@ function loadServerWithStubs() {
     return { subscriber: { telegram_id: options.telegramId }, inviteLink: 'https://t.me/+stub', alreadyProcessed: false };
   };
   membership.formatIst = () => '05-09-2026, 10:00:00 AM IST';
-  sheets.upsertSubscriber = async (subscriber) => {
+  // The cancellation branch writes through the group-bound client, so the stub
+  // has to sit on what forGroup returns rather than on the module.
+  const upsert = async (subscriber) => {
     calls.upsert.push(subscriber);
     return subscriber;
   };
+  sheets.upsertSubscriber = upsert;
+  sheets.forGroup = (groupId) => ({ groupId, upsertSubscriber: upsert });
 
   const server = require('../server');
   return { handler: server.handlePaymentEvent, calls };

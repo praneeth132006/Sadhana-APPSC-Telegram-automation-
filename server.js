@@ -517,7 +517,7 @@ async function createCheckoutForStudent({ plan, telegramId, username, name }) {
  * @param {Object} plan   The plan bought
  * @param {string|number} telegramId
  */
-async function deliverAccess(result, plan, telegramId) {
+async function deliverAccess(result, plan, telegramId, groupId) {
   if (!result || !result.inviteLink) {
     console.error('[payments] no invite link to deliver for', telegramId);
     return;
@@ -534,7 +534,7 @@ async function deliverAccess(result, plan, telegramId) {
     'Send /status any time to see how long you have left.';
 
   try {
-    await paybot.sendDirectMessage(telegramId, text);
+    await paybot.sendDirectMessage(groupRegistry.requireGroup(groupId).paymentBotEnv, telegramId, text);
   } catch (err) {
     // Telegram forbids a bot from opening a conversation, so this also fires
     // for someone who paid without ever messaging the bot.
@@ -555,11 +555,12 @@ async function handlePaymentEvent(event) {
     const payment = (payload.payment && payload.payment.entity) || {};
     const notes = notesFrom(link);
 
-    if (!notes.telegram_id || !notes.plan_id) {
-      return { handled: false, reason: 'payment link had no telegram_id/plan_id in notes' };
+    if (!notes.telegram_id || !notes.plan_id || !notes.group_id) {
+      return { handled: false, reason: 'payment link notes lacked telegram_id / plan_id / group_id' };
     }
 
     const granted = await membership.grantAccess({
+      groupId: notes.group_id,
       telegramId: notes.telegram_id,
       planId: notes.plan_id,
       username: notes.telegram_username,
@@ -571,7 +572,7 @@ async function handlePaymentEvent(event) {
 
     // A repeat delivery of the same payment must not send a second message.
     if (!granted.alreadyProcessed) {
-      await deliverAccess(granted, plans.getPlan(notes.plan_id), notes.telegram_id);
+      await deliverAccess(granted, groupRegistry.getPlanFor(notes.group_id, notes.plan_id, { includeTest: true }), notes.telegram_id, notes.group_id);
     }
     return { handled: true };
   }
@@ -582,11 +583,12 @@ async function handlePaymentEvent(event) {
     const payment = (payload.payment && payload.payment.entity) || {};
     const notes = notesFrom(subscription);
 
-    if (!notes.telegram_id || !notes.plan_id) {
-      return { handled: false, reason: 'subscription had no telegram_id/plan_id in notes' };
+    if (!notes.telegram_id || !notes.plan_id || !notes.group_id) {
+      return { handled: false, reason: 'subscription notes lacked telegram_id / plan_id / group_id' };
     }
 
     const charged = await membership.grantAccess({
+      groupId: notes.group_id,
       telegramId: notes.telegram_id,
       planId: notes.plan_id,
       username: notes.telegram_username,
@@ -602,7 +604,7 @@ async function handlePaymentEvent(event) {
     // already in the group are skipped: they need no invite, and a monthly link
     // is something members would learn to forward.
     if (!charged.alreadyProcessed && charged.isRejoining) {
-      await deliverAccess(charged, plans.getPlan(notes.plan_id), notes.telegram_id);
+      await deliverAccess(charged, groupRegistry.getPlanFor(notes.group_id, notes.plan_id, { includeTest: true }), notes.telegram_id, notes.group_id);
     }
     return { handled: true };
   }
@@ -613,9 +615,11 @@ async function handlePaymentEvent(event) {
   if (type === 'subscription.cancelled' || type === 'subscription.halted') {
     const subscription = (payload.subscription && payload.subscription.entity) || {};
     const notes = notesFrom(subscription);
-    if (!notes.telegram_id) return { handled: false, reason: 'no telegram_id in notes' };
+    if (!notes.telegram_id || !notes.group_id) {
+      return { handled: false, reason: 'no telegram_id / group_id in notes' };
+    }
 
-    await sheets.upsertSubscriber({
+    await sheets.forGroup(notes.group_id).upsertSubscriber({
       telegram_id: notes.telegram_id,
       status: 'cancelled',
       subscription_id: subscription.id,
@@ -880,6 +884,52 @@ async function handlePublicRoute(pathname, method, req, res) {
  * @returns {Promise<boolean>} true when the route was handled
  */
 async function handleAuthedRoute(pathname, method, req, res, query, user) {
+
+  // Which group this request is about. Required on every data route, and
+  // deliberately not defaulted: a request that cannot say which group it means
+  // must fail rather than quietly read or write whichever one came first.
+  const groupId = String(query.get('group') || '').trim();
+
+  // The two routes that are about the system rather than about one group.
+  if (pathname === '/api/groups' && method === 'GET') {
+    sendJSON(res, 200, {
+      success: true,
+      data: groupRegistry.listGroups().map((g) => ({
+        id: g.id,
+        label: g.label,
+        language: g.language,
+        displayName: g.displayName,
+        ready: g.ready,
+        missing: g.missing,
+        subjects: g.subjects || [],
+        plans: groupRegistry.plansFor(g.id).map((plan) => ({
+          id: plan.id, label: plan.label, emoji: plan.emoji,
+          amountPaise: plan.amountPaise, type: plan.type
+        }))
+      }))
+    });
+    return true;
+  }
+
+  const NO_GROUP_NEEDED = ['/api/health'];
+
+  let db = null;
+  if (!NO_GROUP_NEEDED.includes(pathname)) {
+    if (!groupId) {
+      sendJSON(res, 400, {
+        success: false,
+        error: 'No group selected. Every request must name a group with ?group=<id>.'
+      });
+      return true;
+    }
+    try {
+      db = sheets.forGroup(groupId);
+    } catch (err) {
+      sendJSON(res, 400, { success: false, error: err.message.split('\n')[0] });
+      return true;
+    }
+  }
+
   const actor = user.name ? `${user.name} (${user.email})` : user.email;
 
   // ---- System health -------------------------------------------------------
@@ -888,7 +938,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
       server: { ok: true, port: PORT, host: HOST, node: process.version, uptimeSeconds: Math.round(process.uptime()) },
       auth: auth.describeConfig(),
       sheets: {
-        configured: sheets.isConfigured(), reachable: false, version: null,
+        configured: groupRegistry.listGroups().some((g) => g.ready), reachable: false, version: null,
         requiredVersion: REQUIRED_SHEET_VERSION,
         tokenRequired: null, current: false, bound: null, spreadsheetName: null,
         membershipReady: null, membershipError: null, error: null
@@ -920,9 +970,14 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
       you: { email: user.email, uid: user.uid, provider: user.signInProvider, emailVerified: user.emailVerified }
     };
 
-    if (sheets.isConfigured()) {
+    // Health is about the system, so with no group named it reports on the
+    // first one that is actually usable rather than refusing to say anything.
+    const healthGroup = groupId ||
+      (groupRegistry.listGroups().find((g) => g.ready) || {}).id || '';
+
+    if (healthGroup && sheets.isConfigured(healthGroup)) {
       try {
-        const ping = await sheets.ping();
+        const ping = await sheets.forGroup(healthGroup).ping();
         health.sheets.reachable = true;
         health.sheets.version = ping.version ||
           (String(ping.message || '').match(/v\d+[^)"]*/) || [null])[0];
@@ -935,7 +990,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         // payments release. Probe one so the dashboard can say so plainly
         // rather than letting a webhook fail mysteriously at 2am.
         try {
-          await sheets.getRevenue();
+          await sheets.forGroup(healthGroup).getRevenue();
           health.sheets.membershipReady = true;
         } catch (err) {
           health.sheets.membershipReady = false;
@@ -966,24 +1021,24 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
 
   // ---- Subjects / config ---------------------------------------------------
   if (pathname === '/api/subjects' && method === 'GET') {
-    sendJSON(res, 200, { success: true, data: await sheets.readConfig() });
+    sendJSON(res, 200, { success: true, data: await db.readConfig() });
     return true;
   }
 
   // ---- Analytics -----------------------------------------------------------
   if (pathname === '/api/analytics' && method === 'GET') {
-    sendJSON(res, 200, { success: true, data: await sheets.getAnalytics() });
+    sendJSON(res, 200, { success: true, data: await db.getAnalytics() });
     return true;
   }
 
   if (pathname === '/api/stats' && method === 'GET') {
-    sendJSON(res, 200, { success: true, data: await sheets.getStats() });
+    sendJSON(res, 200, { success: true, data: await db.getStats() });
     return true;
   }
 
   // ---- Question browse -----------------------------------------------------
   if (pathname === '/api/questions' && method === 'GET') {
-    const data = await sheets.listQuestions({
+    const data = await db.listQuestions({
       subject: str(query.get('subject'), 60) || 'all',
       status: str(query.get('status'), 20),
       posted: str(query.get('posted'), 4),
@@ -1009,7 +1064,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
     if (!batch.ok) { sendJSON(res, 400, { success: false, error: batch.error }); return true; }
 
     // Attribution comes from the verified token, never from the request body.
-    const result = await sheets.addQuestions(subject.value, batch.value, actor, body.skipDuplicates !== false);
+    const result = await db.addQuestions(subject.value, batch.value, actor, body.skipDuplicates !== false);
     sendJSON(res, 200, {
       success: true,
       addedCount: result.addedCount || 0,
@@ -1038,7 +1093,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
       return true;
     }
 
-    const result = await sheets.updateQuestion(
+    const result = await db.updateQuestion(
       subject.value, questionId, body.fields, actor, rowNumber, str(body.verifyText, LIMITS.question)
     );
     sendJSON(res, 200, { success: true, message: result.message });
@@ -1058,7 +1113,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
       return true;
     }
 
-    const result = await sheets.deleteQuestion(
+    const result = await db.deleteQuestion(
       subject.value, questionId, rowNumber, str(body.verifyText, LIMITS.question)
     );
     sendJSON(res, 200, { success: true, message: result.message });
@@ -1078,7 +1133,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
     const status = str(body.status, 20);
     if (!status) { sendJSON(res, 400, { success: false, error: 'Missing status' }); return true; }
 
-    const updatedCount = await sheets.bulkStatus(subject.value, ids, status, actor);
+    const updatedCount = await db.bulkStatus(subject.value, ids, status, actor);
     sendJSON(res, 200, { success: true, updatedCount });
     return true;
   }
@@ -1092,14 +1147,14 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
     const ids = Array.isArray(body.questionIds) ? body.questionIds.map((id) => str(id, 60)).filter(Boolean) : [];
     if (!ids.length) { sendJSON(res, 400, { success: false, error: 'No questionIds provided' }); return true; }
 
-    const updatedCount = await sheets.scheduleQuestions(subject.value, ids, str(body.scheduledFor, 40), actor);
+    const updatedCount = await db.scheduleQuestions(subject.value, ids, str(body.scheduledFor, 40), actor);
     sendJSON(res, 200, { success: true, updatedCount });
     return true;
   }
 
   // ---- Members -------------------------------------------------------------
   if (pathname === '/api/members' && method === 'GET') {
-    const data = await sheets.listSubscribers({
+    const data = await db.listSubscribers({
       status: str(query.get('status'), 20),
       plan: str(query.get('plan'), 40),
       search: str(query.get('search'), 120),
@@ -1111,7 +1166,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
   }
 
   if (pathname === '/api/members/revenue' && method === 'GET') {
-    sendJSON(res, 200, { success: true, data: await sheets.getRevenue() });
+    sendJSON(res, 200, { success: true, data: await db.getRevenue() });
     return true;
   }
 
@@ -1197,7 +1252,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
     }
 
     // Resolve the forum topic for this subject from the Config tab.
-    const config = await sheets.readConfig();
+    const config = await db.readConfig();
     const subjectConfig = config.find((c) => c.subject === subject.value);
     if (!subjectConfig) {
       sendJSON(res, 400, { success: false, error: `"${subject.value}" is not in the Config tab` });
@@ -1208,7 +1263,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
       return true;
     }
 
-    const questions = await sheets.getUnpostedQuestions(subject.value, count, requireApproved);
+    const questions = await db.getUnpostedQuestions(subject.value, count, requireApproved);
     if (!questions.length) {
       sendJSON(res, 200, {
         success: true,
@@ -1243,7 +1298,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
     }
 
     if (postedRowIndices.length) {
-      await sheets.markAsPosted(
+      await db.markAsPosted(
         subject.value, postedRowIndices, lastMessageId, subjectConfig.topic_thread_id, pollIds
       );
     }

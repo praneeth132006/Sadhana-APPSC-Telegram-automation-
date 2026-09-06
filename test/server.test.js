@@ -63,11 +63,18 @@ const telegram = require('../src/telegram');
 const calls = [];
 
 /** Replaces a module method with a recorder returning `result`. */
+// Stubs for the group-bound sheets client. The server reaches every sheet
+// through sheets.forGroup(id), so replacing sheets.ping no longer intercepts
+// anything — the stub has to live on what forGroup hands back.
+const clientStubs = {};
+
 function stub(module, name, result) {
-  module[name] = async (...args) => {
+  const fn = async (...args) => {
     calls.push({ name, args });
     return typeof result === 'function' ? result(...args) : result;
   };
+  module[name] = fn;
+  clientStubs[name] = fn;
 }
 
 stub(sheets, 'ping', { status: 'ok', version: 'v6 (30 columns + membership)', tokenRequired: true });
@@ -156,8 +163,35 @@ async function call(pathname, options = {}) {
   return { status: res.status, headers: res.headers, text, json };
 }
 
-/** Shorthand for an authenticated request. */
-const authed = (pathname, options = {}) => call(pathname, { ...options, token: 'valid-token' });
+// Any group id resolves to the same stubbed client: these tests are about the
+// routes, not about which sheet a group points at. The group-isolation tests
+// live in payments.test.js and use the real registry.
+const groupRegistry = require('../src/groups');
+sheets.forGroup = (groupId) => {
+  // Still runs the real lookup, so an unknown group is rejected here exactly as
+  // it would be in production. Stubbing that away would make the isolation
+  // tests pass against a server that had stopped checking.
+  groupRegistry.requireGroup(groupId);
+  return Object.assign({ groupId }, clientStubs);
+};
+
+/** The group these tests operate on. Data routes now require one. */
+const TEST_GROUP = 'appsc_news_en';
+
+/**
+ * Shorthand for an authenticated request against the test group.
+ *
+ * The group is appended here rather than typed into every path, so a test that
+ * forgets it is testing the missing-group behaviour on purpose — see
+ * 'a data route refuses a request that names no group'.
+ */
+const authed = (pathname, options = {}) => {
+  const joiner = pathname.includes('?') ? '&' : '?';
+  const path = pathname.startsWith('/api/') && !pathname.includes('group=')
+    ? `${pathname}${joiner}group=${TEST_GROUP}`
+    : pathname;
+  return call(path, { ...options, token: 'valid-token' });
+};
 
 // ===========================================================================
 // Public endpoints
@@ -477,14 +511,15 @@ test('the posting batch size is capped at 20', async () => {
 });
 
 test('posting to a subject with no configured thread is refused', async () => {
-  const original = sheets.readConfig;
-  sheets.readConfig = async () => [{ subject: 'Polity', topic_thread_id: null, active: true }];
+  // Override on the bound client, which is what the route actually reads.
+  const original = clientStubs.readConfig;
+  clientStubs.readConfig = async () => [{ subject: 'Polity', topic_thread_id: null, active: true }];
   try {
     const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
     assert.equal(res.status, 400);
     assert.match(res.json.error, /topic thread/i);
   } finally {
-    sheets.readConfig = original;
+    clientStubs.readConfig = original;
   }
 });
 
@@ -551,7 +586,7 @@ test('a webhook with a valid signature is processed', async () => {
   const body = JSON.stringify({
     event: 'payment_link.paid',
     payload: {
-      payment_link: { entity: { id: 'plink_x', notes: { telegram_id: '4242', plan_id: 'sprint_30' } } },
+      payment_link: { entity: { id: 'plink_x', notes: { telegram_id: '4242', plan_id: 'sprint_30', group_id: 'appsc_news_en' } } },
       payment: { entity: { id: 'pay_x', amount: 29900 } }
     }
   });
@@ -565,6 +600,7 @@ test('a webhook with a valid signature is processed', async () => {
   assert.equal(res.status, 200);
   assert.equal(paymentCalls.length, 1);
   assert.equal(paymentCalls[0].telegramId, '4242');
+  assert.equal(paymentCalls[0].groupId, 'appsc_news_en');
 });
 
 test('a webhook with a forged signature grants nothing', async () => {
@@ -841,4 +877,49 @@ test('the cron sweep runs for real when the secret matches', async () => {
     if (before === undefined) delete process.env.CRON_SECRET;
     else process.env.CRON_SECRET = before;
   }
+});
+
+// ===========================================================================
+// Group scoping on the API
+// ===========================================================================
+
+test('a data route refuses a request that names no group', async () => {
+  // The isolation guarantee in one assertion. If this ever defaults instead of
+  // refusing, a curator with no group selected silently reads — or writes —
+  // whichever group the server picked, and nothing in the response says so.
+  const res = await call('/api/questions', { token: 'valid-token' });
+  assert.equal(res.status, 400);
+  assert.match(res.json.error, /must name a group/i);
+});
+
+test('a data route refuses an unknown group', async () => {
+  const res = await call('/api/questions?group=not_a_real_group', { token: 'valid-token' });
+  assert.equal(res.status, 400);
+  assert.match(res.json.error, /Unknown group/i);
+});
+
+test('GET /api/groups lists the groups without leaking their secrets', async () => {
+  const res = await authed('/api/groups');
+  assert.equal(res.status, 200);
+
+  const list = res.json.data;
+  assert.ok(Array.isArray(list) && list.length >= 2);
+  list.forEach((g) => {
+    assert.ok(g.id && g.displayName);
+    assert.ok(Array.isArray(g.plans));
+  });
+
+  // Sheet URLs and tokens must never reach the browser: the dashboard talks to
+  // this server, and the server talks to the sheets.
+  assert.ok(!res.text.includes('script.google.com'), 'a sheet URL reached the client');
+  assert.ok(!res.text.includes('token-for-tests'), 'a sheet token reached the client');
+});
+
+test('the group picker shows each group its own prices', async () => {
+  const res = await authed('/api/groups');
+  const byId = Object.fromEntries(res.json.data.map((g) => [g.id, g]));
+
+  const sprint = (g) => (g.plans.find((p) => p.id === 'sprint_30') || {}).amountPaise;
+  assert.notEqual(sprint(byId.appsc_news_en), sprint(byId.upsc),
+    'every group is showing the same price');
 });

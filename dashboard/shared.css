@@ -896,3 +896,108 @@
 /* ---- Page header -------------------------------------------------------- */
 .page-header > div:first-child { flex: 1 1 320px; min-width: 0; }
 .page-actions { flex: 0 1 auto; }
+
+/* ---------------------------------------------------------------------------
+   Group switcher and chooser
+   ---------------------------------------------------------------------------
+   Which group you are working in has to be visible at all times. Uploading a
+   Telugu question bank into the UPSC sheet looks identical to doing it right,
+   and there is no undo once a question reaches a paying group. */
+
+.group-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 12px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 999px;
+}
+
+.group-switcher-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.group-switcher-select {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.86rem;
+  cursor: pointer;
+  outline: none;
+  max-width: 260px;
+}
+
+.group-switcher-select option { color: #111; }
+
+/* ---- the blocking chooser ------------------------------------------------ */
+
+.group-chooser {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #0b0d10;
+  overflow-y: auto;
+}
+
+.group-chooser-card {
+  width: 100%;
+  max-width: 780px;
+}
+
+.group-chooser-title {
+  margin: 0 0 8px;
+  font-size: 1.75rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.group-chooser-sub {
+  margin: 0 0 28px;
+  opacity: 0.7;
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.group-card-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.group-card {
+  text-align: left;
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.group-card:hover:not(.is-unready) {
+  border-color: rgba(59, 130, 246, 0.75);
+  background: rgba(59, 130, 246, 0.1);
+  transform: translateY(-2px);
+}
+
+.group-card.is-unready {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.group-card-name { font-size: 1.02rem; font-weight: 700; margin-bottom: 3px; }
+.group-card-lang { font-size: 0.85rem; opacity: 0.72; margin-bottom: 12px; }
+.group-card-meta { font-size: 0.78rem; opacity: 0.55; }

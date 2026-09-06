@@ -170,7 +170,13 @@ async function createPaymentLink({ plan, telegramId, name, username, callbackUrl
     notes: {
       telegram_id: String(telegramId),
       telegram_username: bmpOnly(username, 60),
-      plan_id: plan.id
+      plan_id: plan.id,
+      // Which group this pass is for. It rides in notes, the same channel the
+      // telegram id uses, because Razorpay echoes notes back on the webhook
+      // untouched — so the group is something we set, never something the
+      // payer can choose. Without it the webhook has no way to know which of
+      // five sheets to record the sale in.
+      group_id: String(plan.groupId || '')
     },
     notify: { sms: false, email: false },
     reminder_enable: false
@@ -237,7 +243,8 @@ async function createSubscription({ plan, razorpayPlanId, telegramId, username }
     notes: {
       telegram_id: String(telegramId),
       telegram_username: bmpOnly(username, 60),
-      plan_id: plan.id
+      plan_id: plan.id,
+      group_id: String(plan.groupId || '')
     }
   });
 }
