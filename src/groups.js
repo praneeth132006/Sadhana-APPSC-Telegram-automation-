@@ -149,6 +149,8 @@ function decorate(group) {
 
   return Object.assign({}, group, {
     displayName: displayName(group),
+    // Falls back to the full name, so a group without one still works.
+    shortName: group.shortName || displayName(group),
     sheetUrl,
     sheetToken,
     telegramGroupId,

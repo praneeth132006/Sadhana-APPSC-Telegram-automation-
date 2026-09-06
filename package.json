@@ -15,7 +15,13 @@
     "membership-cron": "node membership-cron.js",
     "setup-razorpay": "node setup-razorpay.js",
     "group-setup": "node group-setup.js",
-    "build-scripts": "node build-apps-scripts.js"
+    "build-scripts": "node build-apps-scripts.js",
+    "verify-groups": "node verify-groups.js",
+    "setup-topics": "node setup-topics.js",
+    "reset-topics": "node reset-topics.js",
+    "bot:news": "PAYBOT_ENV=TELEGRAM_PAYBOT_NEWS node bot.js",
+    "bot:sadhana": "PAYBOT_ENV=TELEGRAM_PAYBOT_SADHANA node bot.js",
+    "bot:upsc": "PAYBOT_ENV=TELEGRAM_PAYBOT_UPSC node bot.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

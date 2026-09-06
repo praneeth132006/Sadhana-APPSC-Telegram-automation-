@@ -209,7 +209,7 @@ test('handlePaymentEvent grants access from a paid payment link', async () => {
       payment_link: {
         entity: {
           id: 'plink_1',
-          notes: { telegram_id: '555', plan_id: 'sprint_30', telegram_username: 'student' }
+          notes: { telegram_id: '555', plan_id: 'sprint_30', telegram_username: 'student', group_id: 'appsc_news_en' }
         }
       },
       payment: { entity: { id: 'pay_1', amount: 29900 } }
@@ -220,6 +220,9 @@ test('handlePaymentEvent grants access from a paid payment link', async () => {
   assert.equal(calls.grantAccess.length, 1);
 
   const granted = calls.grantAccess[0];
+  // The group must come from the notes we set, never from anything the payer
+  // supplies, or a payment could be recorded against the wrong group's sheet.
+  assert.equal(granted.groupId, 'appsc_news_en');
   assert.equal(granted.telegramId, '555');
   assert.equal(granted.planId, 'sprint_30');
   assert.equal(granted.paymentId, 'pay_1');
@@ -247,7 +250,7 @@ test('a subscription charge extends the same member', async () => {
   const result = await handler({
     event: 'subscription.charged',
     payload: {
-      subscription: { entity: { id: 'sub_1', notes: { telegram_id: '777', plan_id: 'autopay_monthly' } } },
+      subscription: { entity: { id: 'sub_1', notes: { telegram_id: '777', plan_id: 'autopay_monthly', group_id: 'appsc_news_en' } } },
       payment: { entity: { id: 'pay_3', amount: 24900 } }
     }
   });
@@ -264,7 +267,7 @@ test('cancelling a subscription does not revoke access immediately', async () =>
 
   const result = await handler({
     event: 'subscription.cancelled',
-    payload: { subscription: { entity: { id: 'sub_2', notes: { telegram_id: '888' } } } }
+    payload: { subscription: { entity: { id: 'sub_2', notes: { telegram_id: '888', group_id: 'appsc_news_en' } } } }
   });
 
   assert.equal(result.handled, true);
@@ -304,10 +307,14 @@ function loadServerWithStubs() {
     return { subscriber: { telegram_id: options.telegramId }, inviteLink: 'https://t.me/+stub', alreadyProcessed: false };
   };
   membership.formatIst = () => '05-09-2026, 10:00:00 AM IST';
-  sheets.upsertSubscriber = async (subscriber) => {
+  // The cancellation branch writes through the group-bound client, so the stub
+  // has to sit on what forGroup returns rather than on the module.
+  const upsert = async (subscriber) => {
     calls.upsert.push(subscriber);
     return subscriber;
   };
+  sheets.upsertSubscriber = upsert;
+  sheets.forGroup = (groupId) => ({ groupId, upsertSubscriber: upsert });
 
   const server = require('../server');
   return { handler: server.handlePaymentEvent, calls };
@@ -573,4 +580,89 @@ test('a sheets client is bound to one group and exposes the whole API', () => {
   sheetsModule.API_NAMES.forEach((name) => {
     assert.equal(typeof client[name], 'function', `${name} missing from the bound client`);
   });
+});
+
+// ===========================================================================
+// One payment bot per family
+// ===========================================================================
+// Each bot sells only its own groups. The UPSC bot cannot sell a newspaper
+// pass and the Sadhana bot cannot hand out a UPSC invite — not by choosing not
+// to, but because those groups are not in its list at all.
+
+/** The groups one payment bot serves. Mirrors familyGroups() in bot.js. */
+function familyOf(botEnv) {
+  return groups.listGroups().filter((g) => g.paymentBotEnv === botEnv);
+}
+
+test('every group belongs to exactly one payment bot', () => {
+  groups.listGroups().forEach((g) => {
+    assert.ok(g.paymentBotEnv, `${g.id} has no paymentBotEnv`);
+  });
+
+  // A group listed under two bots would be sellable twice, and a student could
+  // be admitted by one bot and removed by the other.
+  const families = {};
+  groups.listGroups().forEach((g) => {
+    families[g.paymentBotEnv] = (families[g.paymentBotEnv] || 0) + 1;
+  });
+  assert.ok(Object.keys(families).length >= 2, 'expected several payment bots');
+});
+
+test('a payment bot sees only its own groups', () => {
+  const upsc = familyOf('TELEGRAM_PAYBOT_UPSC').map((g) => g.id);
+  const sadhana = familyOf('TELEGRAM_PAYBOT_SADHANA').map((g) => g.id);
+  const news = familyOf('TELEGRAM_PAYBOT_NEWS').map((g) => g.id);
+
+  assert.deepEqual(upsc, ['upsc']);
+  assert.deepEqual(sadhana.sort(), ['appsc_q_en', 'appsc_q_te']);
+  assert.deepEqual(news.sort(), ['appsc_news_en', 'appsc_news_te']);
+
+  // No group appears under two bots.
+  const all = [...upsc, ...sadhana, ...news];
+  assert.equal(new Set(all).size, all.length);
+});
+
+test('the two languages in a family cost the same but are separate groups', () => {
+  // Same price, different chat: paying for English must not open Telugu.
+  const [en, te] = familyOf('TELEGRAM_PAYBOT_SADHANA');
+  const price = (g) => groups.plansFor(g.id).find((p) => p.id === 'sprint_30').amountPaise;
+
+  assert.equal(price(en), price(te), 'the two languages should cost the same');
+  assert.notEqual(en.telegramGroupId, te.telegramGroupId,
+    'the two languages must be different Telegram groups');
+});
+
+test('UPSC is priced on its own', () => {
+  const upsc = familyOf('TELEGRAM_PAYBOT_UPSC')[0];
+  const news = familyOf('TELEGRAM_PAYBOT_NEWS')[0];
+  const price = (g) => groups.plansFor(g.id).find((p) => p.id === 'sprint_30').amountPaise;
+  assert.notEqual(price(upsc), price(news));
+});
+
+test('a pass for one group does not admit its sibling', async () => {
+  // The exact case: an English buyer taps their link on the Telugu group. The
+  // check runs against the chat being joined, not against "any group they hold".
+  const [en, te] = familyOf('TELEGRAM_PAYBOT_SADHANA');
+
+  const original = sheets.forGroup;
+  sheets.forGroup = (groupId) => ({
+    groupId,
+    // Active in English only.
+    getSubscriber: async () => (groupId === en.id
+      ? { telegram_id: '321', status: 'active', expiry_date: '31-12-2030, 11:59:00 PM IST' }
+      : null),
+    upsertSubscriber: async (d) => d
+  });
+
+  const stub = stubPaybot();
+  try {
+    const intoEnglish = await membership.handleJoinRequest(en.id, '321');
+    assert.equal(intoEnglish.approved, true, 'the group they paid for should admit them');
+
+    const intoTelugu = await membership.handleJoinRequest(te.id, '321');
+    assert.equal(intoTelugu.approved, false, 'the other language must not admit them');
+  } finally {
+    stub.restore();
+    sheets.forGroup = original;
+  }
 });

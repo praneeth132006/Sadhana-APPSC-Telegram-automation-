@@ -13,6 +13,7 @@
 //   node group-setup.js                 — status of every group
 //   node group-setup.js <groupId>       — what that group still needs
 //   node group-setup.js --chat-ids      — group ids the payment bots can see
+//   node group-setup.js --invite-links  — links that add each bot with the right rights
 // ============================================================================
 
 require('dotenv').config();
@@ -129,9 +130,57 @@ async function chatIds() {
   console.log('If a group is missing, send any message there and run this again.');
 }
 
+
+/**
+ * inviteLinks — deep links that add each bot with its rights already ticked.
+ *
+ * A bot cannot add itself to a group: Telegram requires a person to do it, and
+ * there is no API for it at all. What Telegram does support is ?startgroup with
+ * an admin= list, which opens the group picker with exactly those rights
+ * pre-selected — so the rights cannot be got wrong by hand, which is the part
+ * that actually breaks setups. Manage Topics missing on the posting bot means
+ * no topic can be created; invite_users missing on a payment bot means nobody
+ * who pays can be let in.
+ */
+async function inviteLinks() {
+  const postingToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+
+  heading('Add the POSTING bot to all five groups');
+  if (!postingToken) {
+    console.log('  TELEGRAM_BOT_TOKEN is not set.');
+  } else {
+    const me = await (await fetch(`https://api.telegram.org/bot${postingToken}/getMe`)).json();
+    const username = me.result && me.result.username;
+    // manage_topics is the one that matters; the other two are conveniences.
+    const rights = 'manage_topics+pin_messages+delete_messages';
+    console.log(`\n  Bot: @${username}`);
+    console.log('  Open this link once PER GROUP — it pre-ticks the rights:\n');
+    console.log(`  https://t.me/${username}?startgroup=true&admin=${rights}`);
+    console.log('\n  Tap it, choose a group, confirm. Repeat for all five.');
+  }
+
+  heading('Payment bots (already done, here for reference)');
+  const seen = new Set();
+  for (const group of groups.listGroups()) {
+    if (seen.has(group.paymentBotEnv)) continue;
+    seen.add(group.paymentBotEnv);
+    const token = String(process.env[group.paymentBotEnv] || '').trim();
+    if (!token) {
+      console.log(`\n  ${group.paymentBotEnv}: no token set`);
+      continue;
+    }
+    const me = await (await fetch(`https://api.telegram.org/bot${token}/getMe`)).json();
+    const username = me.result && me.result.username;
+    console.log(`\n  @${username}`);
+    console.log(`  https://t.me/${username}?startgroup=true&admin=invite_users+restrict_members`);
+  }
+  console.log('');
+}
+
 (async () => {
   try {
     if (args.includes('--chat-ids')) return await chatIds();
+    if (args.includes('--invite-links')) return await inviteLinks();
     if (args[0] && !args[0].startsWith('--')) return detail(args[0]);
     return status();
   } catch (err) {
