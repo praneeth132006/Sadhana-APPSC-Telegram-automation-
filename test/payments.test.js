@@ -20,6 +20,16 @@ process.env.TELEGRAM_BOT_TOKEN = '123:TEST';
 process.env.TELEGRAM_GROUP_ID = '-1001234567890';
 process.env.TEST_PLAN_ENABLED = '';   // never inherit it from a local .env
 
+// Tests configure their own groups. Without this the suite would pass or fail
+// depending on which groups happen to be set up in the developer's .env.
+process.env.LEGACY_GROUP_ID = '';
+['APPSC_NEWS_EN', 'APPSC_Q_EN', 'UPSC'].forEach((prefix, i) => {
+  process.env[`SHEET_URL_${prefix}`] =
+    `https://script.google.com/macros/s/test-${prefix.toLowerCase()}/exec`;
+  process.env[`SHEET_TOKEN_${prefix}`] = `token-${prefix}`;
+  process.env[`TELEGRAM_GROUP_${prefix}`] = `-100${1000 + i}`;
+});
+
 const razorpay = require('../src/razorpay');
 const plans = require('../src/plans');
 
@@ -319,14 +329,22 @@ const membership = require('../src/membership');
 const sheets = require('../src/sheets');
 const paybot = require('../src/paybot');
 
-/** Runs `fn` with getSubscriber stubbed to return `row`, then restores it. */
+const TEST_GROUP = 'appsc_q_en';
+
+/** Runs `fn` with the bound sheets client stubbed to return `row`. */
 async function withSubscriber(row, fn) {
-  const original = sheets.getSubscriber;
-  sheets.getSubscriber = async () => row;
+  const original = sheets.forGroup;
+  sheets.forGroup = (groupId) => {
+    const real = original(groupId);
+    return Object.assign({}, real, {
+      getSubscriber: async () => row,
+      upsertSubscriber: async (data) => data
+    });
+  };
   try {
     return await fn();
   } finally {
-    sheets.getSubscriber = original;
+    sheets.forGroup = original;
   }
 }
 
@@ -338,9 +356,9 @@ function stubPaybot() {
     declineJoinRequest: paybot.declineJoinRequest,
     removeFromChat: paybot.removeFromChat
   };
-  paybot.approveJoinRequest = async (c, u) => { calls.push(['approve', String(u)]); };
-  paybot.declineJoinRequest = async (c, u) => { calls.push(['decline', String(u)]); };
-  paybot.removeFromChat = async (c, u) => { calls.push(['remove', String(u)]); };
+  paybot.approveJoinRequest = async (env, c, u) => { calls.push(['approve', String(u), env]); };
+  paybot.declineJoinRequest = async (env, c, u) => { calls.push(['decline', String(u), env]); };
+  paybot.removeFromChat = async (env, c, u) => { calls.push(['remove', String(u), env]); };
   return {
     calls,
     restore() { Object.assign(paybot, originals); }
@@ -355,9 +373,10 @@ const activeRow = {
 test('the paying account is approved when it asks to join', async () => {
   const stub = stubPaybot();
   try {
-    const result = await withSubscriber(activeRow, () => membership.handleJoinRequest('111'));
+    const result = await withSubscriber(activeRow, () => membership.handleJoinRequest(TEST_GROUP, '111'));
     assert.equal(result.approved, true);
-    assert.deepEqual(stub.calls, [['approve', '111']]);
+    assert.deepEqual(stub.calls.map((c) => c.slice(0, 2)), [['approve', '111']]);
+    assert.equal(stub.calls[0][2], 'TELEGRAM_PAYBOT_SADHANA', 'wrong payment bot for this group');
   } finally {
     stub.restore();
   }
@@ -367,9 +386,9 @@ test('a forwarded invite does not admit someone who never paid', async () => {
   // The exact hole: the buyer hands their link to a friend, the friend taps it.
   const stub = stubPaybot();
   try {
-    const result = await withSubscriber(null, () => membership.handleJoinRequest('999'));
+    const result = await withSubscriber(null, () => membership.handleJoinRequest(TEST_GROUP, '999'));
     assert.equal(result.approved, false);
-    assert.deepEqual(stub.calls, [['decline', '999']]);
+    assert.deepEqual(stub.calls.map((c) => c.slice(0, 2)), [['decline', '999']]);
   } finally {
     stub.restore();
   }
@@ -381,7 +400,7 @@ test('an expired subscription is turned away at the door', async () => {
     expiry_date: '01-01-2020, 12:00:00 AM IST'
   });
   try {
-    const result = await withSubscriber(expired, () => membership.handleJoinRequest('111'));
+    const result = await withSubscriber(expired, () => membership.handleJoinRequest(TEST_GROUP, '111'));
     assert.equal(result.approved, false);
     assert.match(result.reason, /expired/);
   } finally {
@@ -394,7 +413,7 @@ test('a cancelled subscription that has not yet run out still gets in', async ()
   const stub = stubPaybot();
   const cancelled = Object.assign({}, activeRow, { status: 'cancelled' });
   try {
-    const result = await withSubscriber(cancelled, () => membership.handleJoinRequest('111'));
+    const result = await withSubscriber(cancelled, () => membership.handleJoinRequest(TEST_GROUP, '111'));
     // status is the record of intent, so a cancelled row is not active access.
     assert.equal(result.approved, false);
   } finally {
@@ -406,9 +425,9 @@ test('someone added to the group by hand without paying is removed', async () =>
   // The net behind join requests: an admin adding a friend never triggers one.
   const stub = stubPaybot();
   try {
-    const result = await withSubscriber(null, () => membership.enforceMembership('777'));
+    const result = await withSubscriber(null, () => membership.enforceMembership(TEST_GROUP, '777'));
     assert.equal(result.removed, true);
-    assert.deepEqual(stub.calls, [['remove', '777']]);
+    assert.deepEqual(stub.calls.map((c) => c.slice(0, 2)), [['remove', '777']]);
   } finally {
     stub.restore();
   }
@@ -417,10 +436,141 @@ test('someone added to the group by hand without paying is removed', async () =>
 test('a paying member is never removed by the guard', async () => {
   const stub = stubPaybot();
   try {
-    const result = await withSubscriber(activeRow, () => membership.enforceMembership('111'));
+    const result = await withSubscriber(activeRow, () => membership.enforceMembership(TEST_GROUP, '111'));
     assert.equal(result.removed, false);
     assert.deepEqual(stub.calls, []);
   } finally {
     stub.restore();
   }
+});
+
+// ===========================================================================
+// Text sent to Razorpay
+// ===========================================================================
+
+test('emoji are stripped from anything sent to Razorpay', () => {
+  // Razorpay answers HTTP 400 "Error 3988: Conversion from collation
+  // utf8mb3_general_ci into utf8mb4_0900_ai_ci impossible" if any string holds
+  // a character outside the Basic Multilingual Plane. Telegram display names
+  // routinely do, and the bot could only report "could not create your payment
+  // link" — the buyer had no way to know their own name was the problem.
+  assert.equal(razorpay.bmpOnly('Praneeth \u{1F3AF}\u{1F525}'), 'Praneeth');
+  assert.equal(razorpay.bmpOnly('user\u{1F680}name'), 'username');
+
+  // Ordinary non-English text is inside the BMP and must survive untouched.
+  assert.equal(razorpay.bmpOnly('\u0C38\u0C3E\u0C27\u0C28'), '\u0C38\u0C3E\u0C27\u0C28');
+  assert.equal(razorpay.bmpOnly('Rs 299 \u2014 pass'), 'Rs 299 \u2014 pass');
+
+  // A name of nothing but emoji collapses to empty, so the caller can drop it
+  // rather than sending an empty customer object.
+  assert.equal(razorpay.bmpOnly('\u{1F600}\u{1F601}'), '');
+
+  assert.equal(razorpay.bmpOnly('abcdef', 3), 'abc');
+});
+
+test('a payment link body carries no astral-plane characters', async () => {
+  const originalFetch = globalThis.fetch;
+  let sentBody = null;
+  globalThis.fetch = async (url, opts) => {
+    sentBody = opts.body;
+    const payload = JSON.stringify({ id: 'plink_x', short_url: 'https://rzp.io/x' });
+    return {
+      ok: true,
+      status: 200,
+      text: async () => payload,
+      json: async () => JSON.parse(payload)
+    };
+  };
+
+  try {
+    await razorpay.createPaymentLink({
+      plan: plans.getPlan('sprint_30'),
+      telegramId: '4242',
+      name: 'Praneeth \u{1F3AF}',
+      username: 'user\u{1F680}name',
+      callbackUrl: 'https://example.com/done'
+    });
+
+    const body = JSON.parse(sentBody);
+    const asText = JSON.stringify(body);
+    assert.equal(
+      Array.from(asText).some((ch) => ch.codePointAt(0) > 0xFFFF), false,
+      'an emoji reached Razorpay'
+    );
+    assert.equal(body.customer.name, 'Praneeth');
+    assert.equal(body.notes.telegram_username, 'username');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ===========================================================================
+// Group isolation
+// ===========================================================================
+// Five groups, five sheets, and the promise that nothing is mixed. That
+// promise rests on one rule — there is no default group — so these tests are
+// about what happens when a caller forgets to say which group it means.
+
+const groups = require('../src/groups');
+const sheetsModule = require('../src/sheets');
+
+test('every configured group has a unique id and an envPrefix', () => {
+  const all = groups.listGroups();
+  assert.ok(all.length >= 2, 'expected several groups');
+
+  const ids = all.map((g) => g.id);
+  assert.equal(new Set(ids).size, ids.length, 'two groups share an id');
+  all.forEach((g) => assert.ok(g.envPrefix, `${g.id} has no envPrefix`));
+});
+
+test('a data call with no group id is refused, not defaulted', () => {
+  // The whole isolation guarantee is this line. Falling back to "the first
+  // group" or "the legacy group" here is how one group's questions end up in
+  // another group's paid channel.
+  assert.throws(() => groups.requireGroup(''), /must name its group/);
+  assert.throws(() => groups.requireGroup(null), /must name its group/);
+});
+
+test('an unknown group id is refused and the error lists the real ones', () => {
+  assert.throws(() => groups.requireGroup('not_a_group'), (err) => {
+    assert.match(err.message, /Unknown group "not_a_group"/);
+    assert.match(err.message, /Configured groups:/);
+    return true;
+  });
+});
+
+test('two groups never resolve to the same sheet', () => {
+  // Same URL for two groups would silently merge them, and every guarantee
+  // above would still pass while the data was already mixed.
+  const configured = groups.listGroups().filter((g) => g.sheetUrl);
+  const urls = configured.map((g) => g.sheetUrl);
+  assert.equal(new Set(urls).size, urls.length,
+    'two groups point at the same Apps Script URL');
+});
+
+test('prices are per group, not shared', () => {
+  // UPSC is priced differently on purpose; if plansFor ever read a single
+  // global plan table this would start passing by accident.
+  const a = groups.plansFor('appsc_q_en').find((p) => p.id === 'sprint_30');
+  const b = groups.plansFor('upsc').find((p) => p.id === 'sprint_30');
+  assert.ok(a && b);
+  assert.notEqual(a.amountPaise, b.amountPaise);
+  assert.equal(a.groupId, 'appsc_q_en');
+  assert.equal(b.groupId, 'upsc');
+});
+
+test('the test pass is hidden per group unless explicitly included', () => {
+  const hidden = groups.plansFor('upsc');
+  assert.ok(!hidden.some((p) => p.id === 'test_5min'));
+
+  const shown = groups.plansFor('upsc', { includeTest: true });
+  assert.ok(shown.some((p) => p.id === 'test_5min'));
+});
+
+test('a sheets client is bound to one group and exposes the whole API', () => {
+  const client = sheetsModule.forGroup('appsc_q_en');
+  assert.equal(client.groupId, 'appsc_q_en');
+  sheetsModule.API_NAMES.forEach((name) => {
+    assert.equal(typeof client[name], 'function', `${name} missing from the bound client`);
+  });
 });

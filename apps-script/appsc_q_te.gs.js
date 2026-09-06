@@ -1,3 +1,18 @@
+// ==========================================================================
+// APPSC Questions (Telugu)
+// ==========================================================================
+// GENERATED FILE — DO NOT EDIT HERE.
+//
+// Built from google_apps_script.js by `node build-apps-scripts.js`.
+// Edit that file and re-run the builder; editing this copy means the fix
+// lives in one of 5 sheets and is lost the next time it is rebuilt.
+//
+// Group id : appsc_q_te
+// Subjects : 16
+//            Ancient India, Medieval India, Modern India, AP History, Physical Geography, Indian Geography, AP Geography, Indian Economy, AP Economy, Environment, Polity, International Relations, Science and Technology, Current Affairs, Indian Society, Disaster Management
+// Built    : 2026-09-06T13:34:30.790Z
+// ==========================================================================
+
 // ============================================================================
 // Google Apps Script — APPSC Telegram Quiz Automation Backend (v5)
 // ============================================================================
@@ -206,22 +221,22 @@ function subjectConfigList() {
 
 /** Fallback subject list, used when no SUBJECTS_JSON property is set. */
 var SUBJECT_CONFIG_LIST_DEFAULT = [
-  { subject: 'History',                threadId: 6,  cron: '0 9,18 * * *',    count: 5, code: 'HIS' },
-  { subject: 'AP History',             threadId: 7,  cron: '0 */3 * * *',     count: 5, code: 'APH' },
-  { subject: 'Geography',              threadId: 8,  cron: '0 */3 * * *',     count: 5, code: 'GEO' },
-  { subject: 'AP Geography',           threadId: 9,  cron: '0 */3 * * *',     count: 5, code: 'APG' },
-  { subject: 'Economy',                threadId: 10, cron: '0 */3 * * *',     count: 5, code: 'ECO' },
-  { subject: 'AP Economy',             threadId: 11, cron: '0 */3 * * *',     count: 5, code: 'APE' },
-  { subject: 'Polity',                 threadId: 12, cron: '0 */2 * * *',     count: 5, code: 'POL' },
-  { subject: 'Society',                threadId: 13, cron: '0 */4 * * *',     count: 5, code: 'SOC' },
-  { subject: 'Current Affairs',        threadId: 14, cron: '0 8,14,20 * * *', count: 5, code: 'CUR' },
-  { subject: 'Science and Technology', threadId: 15, cron: '0 */3 * * *',     count: 5, code: 'SCI' },
-  { subject: 'Biology',                threadId: 16, cron: '0 */4 * * *',     count: 5, code: 'BIO' },
-  { subject: 'Chemistry',              threadId: 17, cron: '0 */4 * * *',     count: 5, code: 'CHE' },
-  { subject: 'Physics',                threadId: 18, cron: '0 */4 * * *',     count: 5, code: 'PHY' },
-  { subject: 'Environment',            threadId: 19, cron: '0 */3 * * *',     count: 5, code: 'ENV' },
-  { subject: 'General Studies',        threadId: 20, cron: '0 */3 * * *',     count: 5, code: 'GEN' },
-  { subject: 'Disaster Management',    threadId: 21, cron: '0 */4 * * *',     count: 5, code: 'DIS' }
+  { subject: "Ancient India", threadId: 6, cron: '0 */3 * * *', count: 5, code: 'ANC' },
+  { subject: "Medieval India", threadId: 7, cron: '0 */3 * * *', count: 5, code: 'MED' },
+  { subject: "Modern India", threadId: 8, cron: '0 */3 * * *', count: 5, code: 'MOD' },
+  { subject: "AP History", threadId: 9, cron: '0 */3 * * *', count: 5, code: 'APH' },
+  { subject: "Physical Geography", threadId: 10, cron: '0 */3 * * *', count: 5, code: 'PHY' },
+  { subject: "Indian Geography", threadId: 11, cron: '0 */3 * * *', count: 5, code: 'IND' },
+  { subject: "AP Geography", threadId: 12, cron: '0 */3 * * *', count: 5, code: 'APG' },
+  { subject: "Indian Economy", threadId: 13, cron: '0 */3 * * *', count: 5, code: 'IND' },
+  { subject: "AP Economy", threadId: 14, cron: '0 */3 * * *', count: 5, code: 'APE' },
+  { subject: "Environment", threadId: 15, cron: '0 */3 * * *', count: 5, code: 'ENV' },
+  { subject: "Polity", threadId: 16, cron: '0 */3 * * *', count: 5, code: 'POL' },
+  { subject: "International Relations", threadId: 17, cron: '0 */3 * * *', count: 5, code: 'INT' },
+  { subject: "Science and Technology", threadId: 18, cron: '0 */3 * * *', count: 5, code: 'SCI' },
+  { subject: "Current Affairs", threadId: 19, cron: '0 */3 * * *', count: 5, code: 'CUR' },
+  { subject: "Indian Society", threadId: 20, cron: '0 */3 * * *', count: 5, code: 'IND' },
+  { subject: "Disaster Management", threadId: 21, cron: '0 */3 * * *', count: 5, code: 'DIS' }
 ];
 
 // ============================================================================

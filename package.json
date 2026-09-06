@@ -13,7 +13,9 @@
     "verify-topics": "node verify-topics.js",
     "bot": "node bot.js",
     "membership-cron": "node membership-cron.js",
-    "setup-razorpay": "node setup-razorpay.js"
+    "setup-razorpay": "node setup-razorpay.js",
+    "group-setup": "node group-setup.js",
+    "build-scripts": "node build-apps-scripts.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

@@ -35,6 +35,14 @@ process.env.TELEGRAM_GROUP_ID = '-1001234567890';
 // Empty rather than deleted: dotenv skips keys already present, but happily
 // fills in a deleted one from the developer's .env when server.js loads it.
 process.env.TEST_PLAN_ENABLED = '';
+
+// These tests exercise the server through its transitional single-group API,
+// so they configure one group of their own rather than inheriting whatever the
+// developer happens to have set up.
+process.env.SHEET_URL_APPSC_NEWS_EN = 'https://script.google.com/macros/s/test-news-en/exec';
+process.env.SHEET_TOKEN_APPSC_NEWS_EN = 'token-for-tests';
+process.env.TELEGRAM_GROUP_APPSC_NEWS_EN = '-1001234567890';
+process.env.LEGACY_GROUP_ID = 'appsc_news_en';
 process.env.CURATOR_EMAILS = '';
 process.env.RAZORPAY_KEY_ID = 'rzp_test_dummy';
 process.env.RAZORPAY_KEY_SECRET = 'dummy_secret';
@@ -809,11 +817,14 @@ test('the cron sweep runs for real when the secret matches', async () => {
   process.env.CRON_SECRET = 'a-secret-for-tests';
 
   const membership = require('../src/membership');
-  const original = membership.runDailyCheck;
+  const original = membership.runDailyCheckAllGroups;
   let ranWith = null;
-  membership.runDailyCheck = async (opts) => {
+  // The scheduled sweep must cover every group, not one. A cron that swept a
+  // single group would leave the other four full of expired members while
+  // reporting success.
+  membership.runDailyCheckAllGroups = async (opts) => {
     ranWith = opts;
-    return { checked: 0, reminded: [], removed: [], failed: [] };
+    return { groups: [], totals: { reminded: 0, removed: 0 }, dryRun: opts.dryRun };
   };
 
   try {
@@ -826,7 +837,7 @@ test('the cron sweep runs for real when the secret matches', async () => {
     // A scheduled run must actually remove people, not rehearse.
     assert.equal(ranWith.dryRun, false);
   } finally {
-    membership.runDailyCheck = original;
+    membership.runDailyCheckAllGroups = original;
     if (before === undefined) delete process.env.CRON_SECRET;
     else process.env.CRON_SECRET = before;
   }

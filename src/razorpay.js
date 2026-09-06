@@ -128,26 +128,58 @@ async function request(method, path, body = null) {
  * @param {string} [options.callbackUrl] Where to send the browser after paying
  * @returns {Promise<Object>} The created payment link
  */
+/**
+ * bmpOnly — strips characters Razorpay's storage cannot hold.
+ *
+ * Razorpay rejects an entire request with
+ *   "Error 3988: Conversion from collation utf8mb3_general_ci into
+ *    utf8mb4_0900_ai_ci impossible for parameter"
+ * when any string carries a character outside the Basic Multilingual Plane —
+ * in practice, an emoji. Telegram display names are full of them and we build
+ * the text we send from them, so a student whose name contained one simply
+ * could not buy: the bot could only say "could not create your payment link".
+ *
+ * Stripping at this boundary makes every field sent to Razorpay safe by
+ * construction, rather than each call site having to remember.
+ *
+ * @param {string} value
+ * @param {number} [max] Truncate to this many characters afterwards
+ * @returns {string} The text with astral-plane characters removed
+ */
+function bmpOnly(value, max) {
+  // Iterate by code point, so a surrogate pair is dropped whole rather than
+  // leaving half of one behind.
+  const cleaned = Array.from(String(value == null ? '' : value))
+    .filter((ch) => ch.codePointAt(0) <= 0xFFFF)
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return max ? cleaned.slice(0, max) : cleaned;
+}
+
 async function createPaymentLink({ plan, telegramId, name, username, callbackUrl }) {
   const body = {
     amount: plan.amountPaise,
     currency: 'INR',
     accept_partial: false,
-    description: `${plan.label} — APPSC Premium Group`,
+    description: bmpOnly(`${plan.label} - APPSC Premium Group`, 255),
     // Expire the link so a stale one cannot be paid weeks later and grant
     // access the student no longer expects.
     expire_by: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
     reference_id: `tg_${telegramId}_${plan.id}_${Date.now()}`,
     notes: {
       telegram_id: String(telegramId),
-      telegram_username: String(username || ''),
+      telegram_username: bmpOnly(username, 60),
       plan_id: plan.id
     },
     notify: { sms: false, email: false },
     reminder_enable: false
   };
 
-  if (name) body.customer = { name: String(name).slice(0, 100) };
+  // A name made entirely of emoji sanitises to nothing, and an empty customer
+  // object is worse than none, so only send it when something survives.
+  const safeName = bmpOnly(name, 100);
+  if (safeName) body.customer = { name: safeName };
   if (callbackUrl) {
     body.callback_url = callbackUrl;
     body.callback_method = 'get';
@@ -204,7 +236,7 @@ async function createSubscription({ plan, razorpayPlanId, telegramId, username }
     customer_notify: 0,
     notes: {
       telegram_id: String(telegramId),
-      telegram_username: String(username || ''),
+      telegram_username: bmpOnly(username, 60),
       plan_id: plan.id
     }
   });
@@ -292,6 +324,7 @@ function verifyPaymentLinkSignature({ paymentLinkId, paymentId, referenceId, sta
 }
 
 module.exports = {
+  bmpOnly,
   isConfigured,
   isTestMode,
   createPaymentLink,

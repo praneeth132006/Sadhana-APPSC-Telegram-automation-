@@ -48,7 +48,16 @@ async function sweep() {
     // membership builds its own payment-bot client on demand (src/paybot.js),
     // so nothing needs initialising here — and the sweep must never message a
     // student from the questions bot.
-    report(await membership.runDailyCheck({ dryRun: isDryRun }));
+    // Sweeps every configured group. One group having a bad token must not
+    // stop the other four, whose members' passes have still run out.
+    const summary = await membership.runDailyCheckAllGroups({ dryRun: isDryRun });
+    summary.groups.forEach((g) => {
+      if (g.skipped) return console.log(`   ${g.groupId}: skipped (${g.skipped})`);
+      if (g.error) return console.log(`   ${g.groupId}: FAILED — ${g.error}`);
+      console.log(`   ${g.groupId}:`);
+      report(g);
+    });
+    console.log(`   totals: reminded ${summary.totals.reminded}, removed ${summary.totals.removed}`);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Sweep failed: ${err.message}`);
     if (!isWatch) process.exitCode = 1;

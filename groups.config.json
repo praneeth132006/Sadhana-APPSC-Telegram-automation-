@@ -1,0 +1,219 @@
+{
+  "_comment": [
+    "The groups this system runs. Each has its own Google Sheet, its own",
+    "Telegram group, and its own prices. Nothing is shared between them except",
+    "the payments bot and the posting bot.",
+    "",
+    "Secrets are NOT here. For a group with envPrefix APPSC_NEWS_EN, .env must",
+    "carry SHEET_URL_APPSC_NEWS_EN, SHEET_TOKEN_APPSC_NEWS_EN and",
+    "TELEGRAM_GROUP_APPSC_NEWS_EN. Keeping the shape here and the secrets there",
+    "means this file can be read, reviewed and committed safely.",
+    "",
+    "planShapes below defines what a pass IS. Each group then sets what it",
+    "COSTS, so a price can differ per group without five copies of the wording.",
+    "",
+    "paymentBotEnv says which payment bot sells this group. Groups sharing a value",
+    "share a bot, so a student buying either newspaper group talks to one bot.",
+    "",
+    "subjects is the tab list for that group's sheet. The Apps Script reads it from",
+    "a SUBJECTS_JSON script property, so the same google_apps_script.js is pasted",
+    "into every sheet and each one declares its own subjects rather than five",
+    "copies of the file drifting apart."
+  ],
+  "planShapes": {
+    "sprint_30": {
+      "label": "30-Day Sprint Pass",
+      "emoji": "🗓️",
+      "type": "one_time",
+      "durationDays": 30,
+      "tagline": "30 days validity, renew manually",
+      "description": "Full access to every subject topic for 30 days.",
+      "reminderDaysBefore": 3
+    },
+    "autopay_monthly": {
+      "label": "Monthly Auto-Pay",
+      "emoji": "🔄",
+      "type": "recurring",
+      "durationDays": 30,
+      "tagline": "Auto-renews monthly, cancel anytime",
+      "description": "Renews itself every 30 days over UPI AutoPay or card. Cancel whenever you like.",
+      "reminderDaysBefore": 0,
+      "intervalMonths": 1,
+      "totalBillingCycles": 12
+    },
+    "exam_pass": {
+      "label": "Target 2026 Pass",
+      "emoji": "🎯",
+      "type": "one_time",
+      "durationDays": null,
+      "tagline": "Valid until exam day — best value",
+      "description": "One payment, access right through to the exam. No renewals to remember.",
+      "reminderDaysBefore": 7,
+      "fixedEndDateEnv": "EXAM_PASS_END_DATE"
+    },
+    "test_5min": {
+      "label": "Test Pass (5 minutes)",
+      "emoji": "🧪",
+      "type": "one_time",
+      "durationDays": null,
+      "durationMinutes": 5,
+      "tagline": "Internal testing only — expires in 5 minutes",
+      "description": "Internal test pass. Access ends five minutes after payment.",
+      "reminderDaysBefore": 0,
+      "testOnly": true
+    }
+  },
+  "groups": [
+    {
+      "id": "appsc_news_en",
+      "label": "APPSC Newspaper Questions",
+      "language": "English",
+      "envPrefix": "APPSC_NEWS_EN",
+      "plans": {
+        "sprint_30": 29900,
+        "autopay_monthly": 24900,
+        "exam_pass": 79900,
+        "test_5min": 100
+      },
+      "paymentBotEnv": "TELEGRAM_PAYBOT_NEWS",
+      "subjects": [
+        "History",
+        "AP History",
+        "Geography",
+        "AP Geography",
+        "Economy",
+        "AP Economy",
+        "Polity",
+        "Society",
+        "Current Affairs",
+        "Science and Technology",
+        "Biology",
+        "Chemistry",
+        "Physics",
+        "Environment",
+        "General Studies",
+        "Disaster Management"
+      ]
+    },
+    {
+      "id": "appsc_news_te",
+      "label": "APPSC Newspaper Questions",
+      "language": "Telugu",
+      "envPrefix": "APPSC_NEWS_TE",
+      "plans": {
+        "sprint_30": 29900,
+        "autopay_monthly": 24900,
+        "exam_pass": 79900,
+        "test_5min": 100
+      },
+      "paymentBotEnv": "TELEGRAM_PAYBOT_NEWS",
+      "subjects": [
+        "History",
+        "AP History",
+        "Geography",
+        "AP Geography",
+        "Economy",
+        "AP Economy",
+        "Polity",
+        "Society",
+        "Current Affairs",
+        "Science and Technology",
+        "Biology",
+        "Chemistry",
+        "Physics",
+        "Environment",
+        "General Studies",
+        "Disaster Management"
+      ]
+    },
+    {
+      "id": "appsc_q_en",
+      "label": "APPSC Questions",
+      "language": "English",
+      "envPrefix": "APPSC_Q_EN",
+      "plans": {
+        "sprint_30": 29900,
+        "autopay_monthly": 24900,
+        "exam_pass": 79900,
+        "test_5min": 100
+      },
+      "paymentBotEnv": "TELEGRAM_PAYBOT_SADHANA",
+      "subjects": [
+        "Ancient India",
+        "Medieval India",
+        "Modern India",
+        "AP History",
+        "Physical Geography",
+        "Indian Geography",
+        "AP Geography",
+        "Indian Economy",
+        "AP Economy",
+        "Environment",
+        "Polity",
+        "International Relations",
+        "Science and Technology",
+        "Current Affairs",
+        "Indian Society",
+        "Disaster Management"
+      ]
+    },
+    {
+      "id": "appsc_q_te",
+      "label": "APPSC Questions",
+      "language": "Telugu",
+      "envPrefix": "APPSC_Q_TE",
+      "plans": {
+        "sprint_30": 29900,
+        "autopay_monthly": 24900,
+        "exam_pass": 79900,
+        "test_5min": 100
+      },
+      "paymentBotEnv": "TELEGRAM_PAYBOT_SADHANA",
+      "subjects": [
+        "Ancient India",
+        "Medieval India",
+        "Modern India",
+        "AP History",
+        "Physical Geography",
+        "Indian Geography",
+        "AP Geography",
+        "Indian Economy",
+        "AP Economy",
+        "Environment",
+        "Polity",
+        "International Relations",
+        "Science and Technology",
+        "Current Affairs",
+        "Indian Society",
+        "Disaster Management"
+      ]
+    },
+    {
+      "id": "upsc",
+      "label": "UPSC",
+      "language": "English",
+      "envPrefix": "UPSC",
+      "plans": {
+        "sprint_30": 39900,
+        "autopay_monthly": 34900,
+        "exam_pass": 99900,
+        "test_5min": 100
+      },
+      "paymentBotEnv": "TELEGRAM_PAYBOT_UPSC",
+      "subjects": [
+        "Ancient India",
+        "Medieval India",
+        "Modern India",
+        "Physical Geography",
+        "Indian Geography",
+        "Economy",
+        "Environment",
+        "Polity",
+        "International Relations",
+        "Science and Technology",
+        "Current Affairs",
+        "Art and Culture"
+      ]
+    }
+  ]
+}

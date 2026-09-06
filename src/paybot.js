@@ -18,63 +18,84 @@
 
 const TelegramBot = require('node-telegram-bot-api');
 
-/** The payment bot client. Created on first use, never polled from here. */
-let client = null;
-
-/** Which env var supplied the token, for the health dashboard to report. */
-let tokenSource = null;
+// One client per payment bot, keyed by the env var holding its token. Groups
+// are sold by families — both newspaper groups share a bot, both Sadhana APPSC
+// groups share another, UPSC has its own — so there are three clients, not one
+// and not five.
+const clients = new Map();
 
 /**
- * paymentToken — the token this bot should use.
+ * tokenFor — the token behind one payment-bot env var.
  *
- * @returns {string} The payment bot token, or the shared one as a fallback
+ * Falls back to TELEGRAM_PAYMENT_BOT_TOKEN and then TELEGRAM_BOT_TOKEN, so a
+ * setup that has not yet split its bots keeps working while the new tokens are
+ * created one at a time.
+ *
+ * @param {string} envName e.g. 'TELEGRAM_PAYBOT_UPSC'
+ * @returns {{token: string, source: string}}
  */
-function paymentToken() {
-  const dedicated = String(process.env.TELEGRAM_PAYMENT_BOT_TOKEN || '').trim();
-  if (dedicated) {
-    tokenSource = 'TELEGRAM_PAYMENT_BOT_TOKEN';
-    return dedicated;
+function tokenFor(envName) {
+  const candidates = [envName, 'TELEGRAM_PAYMENT_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN'];
+  for (const name of candidates) {
+    if (!name) continue;
+    const value = String(process.env[name] || '').trim();
+    if (value) return { token: value, source: name };
   }
-  tokenSource = 'TELEGRAM_BOT_TOKEN';
-  return String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  return { token: '', source: '' };
 }
 
-/** Whether a dedicated payment bot token is configured. */
-function hasDedicatedBot() {
-  return Boolean(String(process.env.TELEGRAM_PAYMENT_BOT_TOKEN || '').trim());
+/** Whether this payment bot has a token of its very own. */
+function hasDedicatedBot(envName) {
+  return Boolean(String(process.env[envName] || '').trim());
 }
 
-/** Which env var the active token came from. Null until first use. */
-function getTokenSource() {
-  return tokenSource;
+/** Which env var a payment bot's token actually came from. */
+function getTokenSource(envName) {
+  return tokenFor(envName).source || null;
 }
 
 /**
- * bot — the shared client, created on first call.
+ * botFor — the client for one payment bot, created on first use.
  *
- * polling is false: this client only ever makes API calls. bot.js runs its own
- * polling client for commands and join requests.
+ * polling is false: these clients only make API calls. bot.js runs its own
+ * polling client per bot for commands and join requests.
  *
+ * @param {string} envName Which payment bot
  * @returns {TelegramBot}
  */
-function bot() {
-  if (client) return client;
+function botFor(envName) {
+  if (clients.has(envName)) return clients.get(envName);
 
-  const token = paymentToken();
+  const { token } = tokenFor(envName);
   if (!token) {
     throw new Error(
-      'No payment bot token. Set TELEGRAM_PAYMENT_BOT_TOKEN (preferred) or TELEGRAM_BOT_TOKEN.'
+      `No token for payment bot ${envName}. Set ${envName} in .env ` +
+      '(or TELEGRAM_PAYMENT_BOT_TOKEN as a fallback).'
     );
   }
 
-  client = new TelegramBot(token, { polling: false });
+  const client = new TelegramBot(token, { polling: false });
+  clients.set(envName, client);
   return client;
 }
 
-/** Drops the cached client, so a token change is picked up. Tests use this. */
+/**
+ * forGroup — the payment bot that sells a given group.
+ *
+ * Every membership operation goes through here, so a group can never be
+ * invited into, or removed from, by another family's bot.
+ *
+ * @param {string} groupId
+ * @returns {TelegramBot}
+ */
+function forGroup(groupId) {
+  const groups = require('./groups');
+  return botFor(groups.requireGroup(groupId).paymentBotEnv);
+}
+
+/** Drops cached clients, so a token change is picked up. Tests use this. */
 function reset() {
-  client = null;
-  tokenSource = null;
+  clients.clear();
 }
 
 /**
@@ -96,8 +117,8 @@ function reset() {
  * @param {number} [ttlSeconds]     How long the link stays usable
  * @returns {Promise<string>} The invite URL
  */
-async function createJoinRequestInvite(chatId, telegramId, ttlSeconds = 24 * 60 * 60) {
-  return (await bot().createChatInviteLink(chatId, {
+async function createJoinRequestInvite(envName, chatId, telegramId, ttlSeconds = 24 * 60 * 60) {
+  return (await botFor(envName).createChatInviteLink(chatId, {
     creates_join_request: true,
     name: `member-${telegramId}`.slice(0, 32),
     expire_date: Math.floor(Date.now() / 1000) + ttlSeconds
@@ -110,8 +131,8 @@ async function createJoinRequestInvite(chatId, telegramId, ttlSeconds = 24 * 60 
  * @param {string|number} chatId
  * @param {string|number} userId
  */
-async function approveJoinRequest(chatId, userId) {
-  return bot().approveChatJoinRequest(chatId, userId);
+async function approveJoinRequest(envName, chatId, userId) {
+  return botFor(envName).approveChatJoinRequest(chatId, userId);
 }
 
 /**
@@ -120,8 +141,8 @@ async function approveJoinRequest(chatId, userId) {
  * @param {string|number} chatId
  * @param {string|number} userId
  */
-async function declineJoinRequest(chatId, userId) {
-  return bot().declineChatJoinRequest(chatId, userId);
+async function declineJoinRequest(envName, chatId, userId) {
+  return botFor(envName).declineChatJoinRequest(chatId, userId);
 }
 
 /**
@@ -135,8 +156,8 @@ async function declineJoinRequest(chatId, userId) {
  * @param {string} text HTML
  * @param {Object} [extra] Extra sendMessage options
  */
-async function sendDirectMessage(userId, text, extra) {
-  return bot().sendMessage(userId, text, Object.assign({
+async function sendDirectMessage(envName, userId, text, extra) {
+  return botFor(envName).sendMessage(userId, text, Object.assign({
     parse_mode: 'HTML',
     disable_web_page_preview: true
   }, extra || {}));
@@ -148,9 +169,9 @@ async function sendDirectMessage(userId, text, extra) {
  * @param {string|number} chatId
  * @param {string|number} userId
  */
-async function removeFromChat(chatId, userId) {
-  await bot().banChatMember(chatId, userId);
-  await bot().unbanChatMember(chatId, userId);
+async function removeFromChat(envName, chatId, userId) {
+  await botFor(envName).banChatMember(chatId, userId);
+  await botFor(envName).unbanChatMember(chatId, userId);
 }
 
 /**
@@ -160,9 +181,9 @@ async function removeFromChat(chatId, userId) {
  * @param {string|number} userId
  * @returns {Promise<string|null>} The status, or null if it cannot be read
  */
-async function getMemberStatus(chatId, userId) {
+async function getMemberStatus(envName, chatId, userId) {
   try {
-    const member = await bot().getChatMember(chatId, userId);
+    const member = await botFor(envName).getChatMember(chatId, userId);
     return (member && member.status) || null;
   } catch (err) {
     return null;
@@ -170,12 +191,14 @@ async function getMemberStatus(chatId, userId) {
 }
 
 /** getMe, for the health dashboard. */
-async function getMe() {
-  return bot().getMe();
+async function getMe(envName) {
+  return botFor(envName).getMe();
 }
 
 module.exports = {
-  bot,
+  botFor,
+  forGroup,
+  tokenFor,
   reset,
   hasDedicatedBot,
   getTokenSource,

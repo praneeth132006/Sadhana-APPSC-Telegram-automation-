@@ -31,6 +31,7 @@ const sheets = require('./src/sheets');
 const auth = require('./src/auth');
 const telegram = require('./src/telegram');
 const paybot = require('./src/paybot');
+const groupRegistry = require('./src/groups');
 const razorpay = require('./src/razorpay');
 const membership = require('./src/membership');
 const plans = require('./src/plans');
@@ -812,10 +813,10 @@ async function handlePublicRoute(pathname, method, req, res) {
     }
 
     try {
-      const summary = await membership.runDailyCheck({ dryRun: false });
+      const summary = await membership.runDailyCheckAllGroups({ dryRun: false });
       console.log(
-        `[cron] sweep: checked ${summary.checked || 0}, ` +
-        `reminded ${(summary.reminded || []).length}, removed ${(summary.removed || []).length}`
+        `[cron] sweep across ${summary.groups.length} group(s): ` +
+        `reminded ${summary.totals.reminded}, removed ${summary.totals.removed}`
       );
       sendJSON(res, 200, { success: true, data: summary });
     } catch (err) {
@@ -902,7 +903,16 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         webhookSecretSet: Boolean(String(process.env.RAZORPAY_WEBHOOK_SECRET || '').trim()),
         publicBaseUrl: String(process.env.PUBLIC_BASE_URL || '') || null,
         recurringPlanReady: Boolean(String(process.env.RAZORPAY_MONTHLY_PLAN_ID || '').trim()),
-        premiumGroupSet: Boolean(membership.getPremiumGroupId()),
+        // Per group, because "is the premium group set?" has five answers now.
+        groups: groupRegistry.listGroups().map((g) => ({
+          id: g.id,
+          label: g.displayName,
+          ready: g.ready,
+          missing: g.missing,
+          paymentBotEnv: g.paymentBotEnv,
+          dedicatedPaymentBot: paybot.hasDedicatedBot(g.paymentBotEnv)
+        })),
+        premiumGroupSet: groupRegistry.listGroups().some((g) => g.ready),
         dedicatedPaymentBot: paybot.hasDedicatedBot(),
         cronSecretSet: Boolean(String(process.env.CRON_SECRET || '').trim()),
         testPlanEnabled: plans.testPlanEnabled()
@@ -1133,7 +1143,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
   // will do (or fix a missed run) without waiting for cron.
   if (pathname === '/api/members/run-check' && method === 'POST') {
     const body = await readJsonBody(req);
-    const summary = await membership.runDailyCheck({ dryRun: body.dryRun !== false });
+    const summary = await membership.runDailyCheckAllGroups({ dryRun: body.dryRun !== false });
     sendJSON(res, 200, { success: true, data: summary });
     return true;
   }
