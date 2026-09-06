@@ -581,3 +581,88 @@ test('a sheets client is bound to one group and exposes the whole API', () => {
     assert.equal(typeof client[name], 'function', `${name} missing from the bound client`);
   });
 });
+
+// ===========================================================================
+// One payment bot per family
+// ===========================================================================
+// Each bot sells only its own groups. The UPSC bot cannot sell a newspaper
+// pass and the Sadhana bot cannot hand out a UPSC invite — not by choosing not
+// to, but because those groups are not in its list at all.
+
+/** The groups one payment bot serves. Mirrors familyGroups() in bot.js. */
+function familyOf(botEnv) {
+  return groups.listGroups().filter((g) => g.paymentBotEnv === botEnv);
+}
+
+test('every group belongs to exactly one payment bot', () => {
+  groups.listGroups().forEach((g) => {
+    assert.ok(g.paymentBotEnv, `${g.id} has no paymentBotEnv`);
+  });
+
+  // A group listed under two bots would be sellable twice, and a student could
+  // be admitted by one bot and removed by the other.
+  const families = {};
+  groups.listGroups().forEach((g) => {
+    families[g.paymentBotEnv] = (families[g.paymentBotEnv] || 0) + 1;
+  });
+  assert.ok(Object.keys(families).length >= 2, 'expected several payment bots');
+});
+
+test('a payment bot sees only its own groups', () => {
+  const upsc = familyOf('TELEGRAM_PAYBOT_UPSC').map((g) => g.id);
+  const sadhana = familyOf('TELEGRAM_PAYBOT_SADHANA').map((g) => g.id);
+  const news = familyOf('TELEGRAM_PAYBOT_NEWS').map((g) => g.id);
+
+  assert.deepEqual(upsc, ['upsc']);
+  assert.deepEqual(sadhana.sort(), ['appsc_q_en', 'appsc_q_te']);
+  assert.deepEqual(news.sort(), ['appsc_news_en', 'appsc_news_te']);
+
+  // No group appears under two bots.
+  const all = [...upsc, ...sadhana, ...news];
+  assert.equal(new Set(all).size, all.length);
+});
+
+test('the two languages in a family cost the same but are separate groups', () => {
+  // Same price, different chat: paying for English must not open Telugu.
+  const [en, te] = familyOf('TELEGRAM_PAYBOT_SADHANA');
+  const price = (g) => groups.plansFor(g.id).find((p) => p.id === 'sprint_30').amountPaise;
+
+  assert.equal(price(en), price(te), 'the two languages should cost the same');
+  assert.notEqual(en.telegramGroupId, te.telegramGroupId,
+    'the two languages must be different Telegram groups');
+});
+
+test('UPSC is priced on its own', () => {
+  const upsc = familyOf('TELEGRAM_PAYBOT_UPSC')[0];
+  const news = familyOf('TELEGRAM_PAYBOT_NEWS')[0];
+  const price = (g) => groups.plansFor(g.id).find((p) => p.id === 'sprint_30').amountPaise;
+  assert.notEqual(price(upsc), price(news));
+});
+
+test('a pass for one group does not admit its sibling', async () => {
+  // The exact case: an English buyer taps their link on the Telugu group. The
+  // check runs against the chat being joined, not against "any group they hold".
+  const [en, te] = familyOf('TELEGRAM_PAYBOT_SADHANA');
+
+  const original = sheets.forGroup;
+  sheets.forGroup = (groupId) => ({
+    groupId,
+    // Active in English only.
+    getSubscriber: async () => (groupId === en.id
+      ? { telegram_id: '321', status: 'active', expiry_date: '31-12-2030, 11:59:00 PM IST' }
+      : null),
+    upsertSubscriber: async (d) => d
+  });
+
+  const stub = stubPaybot();
+  try {
+    const intoEnglish = await membership.handleJoinRequest(en.id, '321');
+    assert.equal(intoEnglish.approved, true, 'the group they paid for should admit them');
+
+    const intoTelugu = await membership.handleJoinRequest(te.id, '321');
+    assert.equal(intoTelugu.approved, false, 'the other language must not admit them');
+  } finally {
+    stub.restore();
+    sheets.forGroup = original;
+  }
+});
