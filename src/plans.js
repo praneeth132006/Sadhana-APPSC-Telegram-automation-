@@ -46,6 +46,24 @@ const PLANS = {
     totalBillingCycles: 12
   },
 
+  // A deliberately tiny, deliberately short pass, so the expiry sweep and the
+  // removal path can be exercised in minutes instead of waiting out 30 days.
+  // TEST_PLAN_ENABLED must be "true" in .env for it to appear anywhere, so it
+  // cannot be bought by a student who stumbles onto the bot.
+  test_5min: {
+    id: 'test_5min',
+    label: 'Test Pass (5 minutes)',
+    emoji: '🧪',
+    amountPaise: 100,                // Rs 1
+    type: 'one_time',
+    durationDays: null,
+    durationMinutes: 5,              // Expires five minutes after purchase.
+    tagline: 'Internal testing only — expires in 5 minutes',
+    description: 'Internal test pass. Access ends five minutes after payment.',
+    reminderDaysBefore: 0,
+    testOnly: true
+  },
+
   exam_pass: {
     id: 'exam_pass',
     label: 'Target APPSC 2026 Pass',
@@ -61,7 +79,12 @@ const PLANS = {
 };
 
 /** Plan ids in the order they are shown to a student. */
-const PLAN_ORDER = ['sprint_30', 'autopay_monthly', 'exam_pass'];
+const PLAN_ORDER = ['sprint_30', 'autopay_monthly', 'exam_pass', 'test_5min'];
+
+/** Whether the Rs 1 test pass may be shown and sold. Off unless asked for. */
+function testPlanEnabled() {
+  return String(process.env.TEST_PLAN_ENABLED || '').trim().toLowerCase() === 'true';
+}
 
 /**
  * getPlan — looks up a plan by id.
@@ -75,7 +98,9 @@ function getPlan(planId) {
 
 /** Every plan, in display order. */
 function listPlans() {
-  return PLAN_ORDER.map((id) => PLANS[id]);
+  return PLAN_ORDER
+    .map((id) => PLANS[id])
+    .filter((plan) => !plan.testOnly || testPlanEnabled());
 }
 
 /** Formats an amount in paise as a rupee string, e.g. 29900 -> "₹299". */
@@ -123,6 +148,12 @@ function computeExpiry(plan, from = new Date(), currentExpiry = null) {
   }
 
   const base = (currentExpiry && currentExpiry.getTime() > from.getTime()) ? currentExpiry : from;
+
+  // Minutes exist for the test pass, so the expiry sweep can be watched
+  // working rather than taken on trust after a month.
+  if (plan.durationMinutes) {
+    return new Date(base.getTime() + plan.durationMinutes * 60 * 1000);
+  }
   return new Date(base.getTime() + plan.durationDays * DAY_MS);
 }
 
@@ -144,6 +175,7 @@ module.exports = {
   DAY_MS,
   getPlan,
   listPlans,
+  testPlanEnabled,
   formatAmount,
   parseExamDate,
   computeExpiry,

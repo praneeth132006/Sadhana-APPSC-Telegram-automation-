@@ -22,10 +22,18 @@ const sheets = require('./src/sheets');
 const membership = require('./src/membership');
 const razorpay = require('./src/razorpay');
 
+// This process is the PAYMENT bot: it sells passes and guards the group. The
+// questions bot is a different token entirely and is driven by send.js and
+// schedule.js. Falling back to TELEGRAM_BOT_TOKEN keeps a single-bot setup
+// working until a dedicated payment bot exists.
+const PAYMENT_TOKEN = String(
+  process.env.TELEGRAM_PAYMENT_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || ''
+).trim();
+
 /** Refuse to start without the pieces the bot cannot work without. */
 function checkConfig() {
   const missing = [];
-  if (!process.env.TELEGRAM_BOT_TOKEN) missing.push('TELEGRAM_BOT_TOKEN');
+  if (!PAYMENT_TOKEN) missing.push('TELEGRAM_PAYMENT_BOT_TOKEN (or TELEGRAM_BOT_TOKEN)');
   if (!razorpay.isConfigured()) missing.push('RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET');
   if (!membership.getPremiumGroupId()) missing.push('TELEGRAM_PREMIUM_GROUP_ID or TELEGRAM_GROUP_ID');
 
@@ -36,10 +44,27 @@ function checkConfig() {
 }
 checkConfig();
 
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+// allowed_updates must be stated explicitly on every getUpdates call.
+// Telegram remembers the last list it was given for a bot and silently drops
+// every other update type — this bot's stored list was
+// ["message","channel_post","my_chat_member","chat_member"], with no
+// callback_query, so every tap on a plan button was discarded by Telegram
+// before it reached us: no request, no error, nothing to log. Passing the list
+// here means the set the bot needs is re-asserted on each poll rather than
+// inherited from whatever last touched the token.
+// chat_join_request is what makes a forwarded invite worthless: the link asks
+// to join rather than joining, and this bot decides who is let in. Leave it out
+// and every request sits unanswered forever, with paying students locked out.
+const ALLOWED_UPDATES = [
+  'message', 'callback_query', 'my_chat_member', 'chat_member', 'chat_join_request'
+];
 
-// The membership module keeps its own client for invites and removals.
-require('./src/telegram').init(process.env.TELEGRAM_BOT_TOKEN, membership.getPremiumGroupId());
+const bot = new TelegramBot(PAYMENT_TOKEN, {
+  polling: { params: { allowed_updates: JSON.stringify(ALLOWED_UPDATES) } }
+});
+
+// src/paybot.js builds its own non-polling client from the same token for
+// invites, approvals and removals, so nothing here has to be handed around.
 
 /** Escapes text before putting it in an HTML-formatted message. */
 function esc(text) {
@@ -197,7 +222,15 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  await bot.answerCallbackQuery(query.id, { text: 'Creating your payment link…' });
+  // Acknowledging must not be able to kill the handler. A callback from a
+  // message sent by an earlier bot process is "too old" by the time it
+  // arrives, and answerCallbackQuery throws — outside a try that left the
+  // student tapping a dead button with nothing logged and nothing sent.
+  try {
+    await bot.answerCallbackQuery(query.id, { text: 'Creating your payment link…' });
+  } catch (err) {
+    console.error('[bot] could not acknowledge the tap (stale button?):', err.message);
+  }
 
   try {
     // If they already hold access, say so rather than quietly selling again.
@@ -270,6 +303,66 @@ async function createCheckout(plan, user) {
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Guarding the group
+// ---------------------------------------------------------------------------
+
+// A join request is Telegram telling us exactly who is asking, which is the
+// one thing an invite link cannot. Approve a live subscription, decline
+// everything else. This is what stops a forwarded link admitting a stranger.
+bot.on('chat_join_request', async (req) => {
+  const user = req.from || {};
+  const chatId = (req.chat && req.chat.id) || membership.getPremiumGroupId();
+
+  // Requests for some other chat this bot administers are none of our business.
+  if (String(chatId) !== String(membership.getPremiumGroupId())) return;
+
+  try {
+    const result = await membership.handleJoinRequest(user.id);
+    console.log(
+      `[join] ${result.approved ? 'APPROVED' : 'DECLINED'} ${user.id} (@${user.username}) — ${result.reason}`
+    );
+
+    if (!result.approved) {
+      // Telling them why turns a silent rejection into something they can act
+      // on: the buyer forwarded their link, and this is the friend who tapped it.
+      try {
+        await bot.sendMessage(user.id,
+          '❌ <b>That invite is not for this account.</b>\n\n' +
+          'Group access is tied to the Telegram account that paid, so a forwarded ' +
+          'link will not let you in.\n\nSend /plans to buy your own pass.',
+          { parse_mode: 'HTML' });
+      } catch (err) {
+        // Expected when they have never messaged this bot; nothing is lost.
+      }
+    }
+  } catch (err) {
+    console.error('[join] could not handle request from', user.id, '-', err.message);
+  }
+});
+
+// Behind the join request, a net for the ways into a group that skip it
+// entirely — an admin adding a friend by hand, or a link made in the Telegram
+// client rather than by this code.
+bot.on('chat_member', async (update) => {
+  const chatId = (update.chat && update.chat.id) || '';
+  if (String(chatId) !== String(membership.getPremiumGroupId())) return;
+
+  const next = update.new_chat_member || {};
+  const user = next.user || {};
+  if (!['member', 'restricted'].includes(next.status)) return;
+  if (user.is_bot) return;
+
+  try {
+    const result = await membership.enforceMembership(user.id);
+    if (result.removed) {
+      console.log(`[guard] removed ${user.id} (@${user.username}) — ${result.reason}`);
+    }
+  } catch (err) {
+    console.error('[guard] check failed for', user.id, '-', err.message);
+  }
+});
 
 bot.on('polling_error', (err) => {
   console.error('[bot] polling error:', err.message);

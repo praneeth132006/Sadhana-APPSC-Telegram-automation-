@@ -16,7 +16,6 @@ require('dotenv').config();
 
 const cron = require('node-cron');
 const membership = require('./src/membership');
-const telegram = require('./src/telegram');
 
 /** When --watch is used, sweep at this time daily (1:00 AM IST). */
 const SCHEDULE = process.env.MEMBERSHIP_CRON || '0 1 * * *';
@@ -46,9 +45,9 @@ function report(summary) {
 /** Runs one sweep, catching errors so --watch survives a bad night. */
 async function sweep() {
   try {
-    if (process.env.TELEGRAM_BOT_TOKEN) {
-      telegram.init(process.env.TELEGRAM_BOT_TOKEN, membership.getPremiumGroupId());
-    }
+    // membership builds its own payment-bot client on demand (src/paybot.js),
+    // so nothing needs initialising here — and the sweep must never message a
+    // student from the questions bot.
     report(await membership.runDailyCheck({ dryRun: isDryRun }));
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Sweep failed: ${err.message}`);

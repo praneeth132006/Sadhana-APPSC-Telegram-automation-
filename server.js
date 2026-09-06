@@ -29,6 +29,7 @@ const path = require('path');
 const sheets = require('./src/sheets');
 const auth = require('./src/auth');
 const telegram = require('./src/telegram');
+const paybot = require('./src/paybot');
 const razorpay = require('./src/razorpay');
 const membership = require('./src/membership');
 const plans = require('./src/plans');
@@ -498,6 +499,47 @@ async function createCheckoutForStudent({ plan, telegramId, username, name }) {
  * @param {Object} event Parsed, signature-verified webhook body
  * @returns {Promise<{handled: boolean, reason?: string}>}
  */
+/**
+ * deliverAccess — tells the student they are in, and gives them the link.
+ *
+ * grantAccess records the sale and mints the invite, but this webhook used to
+ * discard the link it returned, so a paying student was recorded as active and
+ * never told. The money moved, the row appeared, and nothing reached the buyer.
+ *
+ * A failure here must not fail the webhook: the payment is real and the row is
+ * written, so a Telegram outage should leave the student able to fetch the same
+ * link with /status rather than making Razorpay retry a delivery that already
+ * succeeded everywhere that matters.
+ *
+ * @param {Object} result What grantAccess returned
+ * @param {Object} plan   The plan bought
+ * @param {string|number} telegramId
+ */
+async function deliverAccess(result, plan, telegramId) {
+  if (!result || !result.inviteLink) {
+    console.error('[payments] no invite link to deliver for', telegramId);
+    return;
+  }
+
+  const expiry = (result.subscriber && result.subscriber.expiry_date) || '';
+  const text =
+    '\u2705 <b>Payment received \u2014 you are in.</b>\n\n' +
+    (plan ? plan.emoji + ' <b>' + plan.label + '</b>\n' : '') +
+    (expiry ? 'Access until <b>' + expiry + '</b>\n\n' : '\n') +
+    'Tap to request access:\n' + result.inviteLink + '\n\n' +
+    '<i>You are approved automatically. The link is tied to this Telegram account \u2014 ' +
+    'forwarding it will not let anyone else in.</i>\n\n' +
+    'Send /status any time to see how long you have left.';
+
+  try {
+    await paybot.sendDirectMessage(telegramId, text);
+  } catch (err) {
+    // Telegram forbids a bot from opening a conversation, so this also fires
+    // for someone who paid without ever messaging the bot.
+    console.error('[payments] could not DM the invite to', telegramId, '-', err.message);
+  }
+}
+
 async function handlePaymentEvent(event) {
   const type = String(event.event || '');
   const payload = event.payload || {};
@@ -515,7 +557,7 @@ async function handlePaymentEvent(event) {
       return { handled: false, reason: 'payment link had no telegram_id/plan_id in notes' };
     }
 
-    await membership.grantAccess({
+    const granted = await membership.grantAccess({
       telegramId: notes.telegram_id,
       planId: notes.plan_id,
       username: notes.telegram_username,
@@ -524,6 +566,11 @@ async function handlePaymentEvent(event) {
       linkId: link.id,
       event: type
     });
+
+    // A repeat delivery of the same payment must not send a second message.
+    if (!granted.alreadyProcessed) {
+      await deliverAccess(granted, plans.getPlan(notes.plan_id), notes.telegram_id);
+    }
     return { handled: true };
   }
 
@@ -537,7 +584,7 @@ async function handlePaymentEvent(event) {
       return { handled: false, reason: 'subscription had no telegram_id/plan_id in notes' };
     }
 
-    await membership.grantAccess({
+    const charged = await membership.grantAccess({
       telegramId: notes.telegram_id,
       planId: notes.plan_id,
       username: notes.telegram_username,
@@ -546,6 +593,15 @@ async function handlePaymentEvent(event) {
       subscriptionId: subscription.id,
       event: type
     });
+
+    // The first charge of a subscription IS the buyer's initial payment, so an
+    // auto-pay customer arrives here rather than through payment_link.paid.
+    // Without this they would pay and never be sent a link. Renewals by someone
+    // already in the group are skipped: they need no invite, and a monthly link
+    // is something members would learn to forward.
+    if (!charged.alreadyProcessed && charged.isRejoining) {
+      await deliverAccess(charged, plans.getPlan(notes.plan_id), notes.telegram_id);
+    }
     return { handled: true };
   }
 
@@ -799,7 +855,9 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         webhookSecretSet: Boolean(String(process.env.RAZORPAY_WEBHOOK_SECRET || '').trim()),
         publicBaseUrl: String(process.env.PUBLIC_BASE_URL || '') || null,
         recurringPlanReady: Boolean(String(process.env.RAZORPAY_MONTHLY_PLAN_ID || '').trim()),
-        premiumGroupSet: Boolean(membership.getPremiumGroupId())
+        premiumGroupSet: Boolean(membership.getPremiumGroupId()),
+        dedicatedPaymentBot: paybot.hasDedicatedBot(),
+        testPlanEnabled: plans.testPlanEnabled()
       },
       you: { email: user.email, uid: user.uid, provider: user.signInProvider, emailVerified: user.emailVerified }
     };

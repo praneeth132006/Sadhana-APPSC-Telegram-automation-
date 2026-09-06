@@ -26,9 +26,9 @@ const plans = require('../src/plans');
 // Plans and expiry arithmetic
 // ===========================================================================
 
-test('all three passes are defined with sane prices', () => {
+test('the three sellable passes are defined with sane prices', () => {
   const all = plans.listPlans();
-  assert.equal(all.length, 3);
+  assert.equal(all.length, 3, 'the test pass must not be sellable by default');
 
   const byId = Object.fromEntries(all.map((p) => [p.id, p]));
   assert.equal(byId.sprint_30.amountPaise, 29900);
@@ -40,6 +40,30 @@ test('all three passes are defined with sane prices', () => {
     assert.equal(p.amountPaise % 100, 0, `${p.id} is not a whole rupee amount`);
     assert.ok(p.amountPaise >= 10000, `${p.id} looks like rupees, not paise`);
   });
+});
+
+test('the Rs 1 test pass is hidden unless TEST_PLAN_ENABLED is set', () => {
+  // A student who finds the bot must never be able to buy 30 days for a rupee,
+  // so the guard is the absence of the plan rather than a price check.
+  const before = process.env.TEST_PLAN_ENABLED;
+  try {
+    delete process.env.TEST_PLAN_ENABLED;
+    assert.ok(!plans.listPlans().some((p) => p.id === 'test_5min'));
+
+    process.env.TEST_PLAN_ENABLED = 'true';
+    const shown = plans.listPlans();
+    assert.ok(shown.some((p) => p.id === 'test_5min'));
+    assert.equal(shown.length, 4);
+  } finally {
+    if (before === undefined) delete process.env.TEST_PLAN_ENABLED;
+    else process.env.TEST_PLAN_ENABLED = before;
+  }
+});
+
+test('a minute-based plan expires in minutes, not days', () => {
+  const from = new Date('2026-09-06T00:00:00Z');
+  const expiry = plans.computeExpiry(plans.getPlan('test_5min'), from, null);
+  assert.equal(expiry.getTime() - from.getTime(), 5 * 60 * 1000);
 });
 
 test('formatAmount renders paise as rupees', () => {
@@ -277,3 +301,125 @@ function loadServerWithStubs() {
   const server = require('../server');
   return { handler: server.handlePaymentEvent, calls };
 }
+
+// ===========================================================================
+// Who is allowed into the group
+// ===========================================================================
+// A Telegram invite link cannot be bound to an account: whoever opens it first
+// gets in. That let a buyer forward their link to someone else, who joined in
+// their place — and because the expiry sweep bans the id recorded on the sheet,
+// the person actually sitting in the group was never removed. A free seat,
+// permanently, invisible on the dashboard.
+//
+// Admission is now decided per-account at the moment of joining, so these
+// tests are about identity rather than about links.
+
+const membership = require('../src/membership');
+const sheets = require('../src/sheets');
+const paybot = require('../src/paybot');
+
+/** Runs `fn` with getSubscriber stubbed to return `row`, then restores it. */
+async function withSubscriber(row, fn) {
+  const original = sheets.getSubscriber;
+  sheets.getSubscriber = async () => row;
+  try {
+    return await fn();
+  } finally {
+    sheets.getSubscriber = original;
+  }
+}
+
+/** Captures approve/decline/remove calls instead of hitting Telegram. */
+function stubPaybot() {
+  const calls = [];
+  const originals = {
+    approveJoinRequest: paybot.approveJoinRequest,
+    declineJoinRequest: paybot.declineJoinRequest,
+    removeFromChat: paybot.removeFromChat
+  };
+  paybot.approveJoinRequest = async (c, u) => { calls.push(['approve', String(u)]); };
+  paybot.declineJoinRequest = async (c, u) => { calls.push(['decline', String(u)]); };
+  paybot.removeFromChat = async (c, u) => { calls.push(['remove', String(u)]); };
+  return {
+    calls,
+    restore() { Object.assign(paybot, originals); }
+  };
+}
+
+const activeRow = {
+  telegram_id: '111', status: 'active',
+  expiry_date: '31-12-2030, 11:59:00 PM IST', plan: 'sprint_30'
+};
+
+test('the paying account is approved when it asks to join', async () => {
+  const stub = stubPaybot();
+  try {
+    const result = await withSubscriber(activeRow, () => membership.handleJoinRequest('111'));
+    assert.equal(result.approved, true);
+    assert.deepEqual(stub.calls, [['approve', '111']]);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('a forwarded invite does not admit someone who never paid', async () => {
+  // The exact hole: the buyer hands their link to a friend, the friend taps it.
+  const stub = stubPaybot();
+  try {
+    const result = await withSubscriber(null, () => membership.handleJoinRequest('999'));
+    assert.equal(result.approved, false);
+    assert.deepEqual(stub.calls, [['decline', '999']]);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('an expired subscription is turned away at the door', async () => {
+  const stub = stubPaybot();
+  const expired = Object.assign({}, activeRow, {
+    expiry_date: '01-01-2020, 12:00:00 AM IST'
+  });
+  try {
+    const result = await withSubscriber(expired, () => membership.handleJoinRequest('111'));
+    assert.equal(result.approved, false);
+    assert.match(result.reason, /expired/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('a cancelled subscription that has not yet run out still gets in', async () => {
+  // Cancelling stops renewal; it does not forfeit days already paid for.
+  const stub = stubPaybot();
+  const cancelled = Object.assign({}, activeRow, { status: 'cancelled' });
+  try {
+    const result = await withSubscriber(cancelled, () => membership.handleJoinRequest('111'));
+    // status is the record of intent, so a cancelled row is not active access.
+    assert.equal(result.approved, false);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('someone added to the group by hand without paying is removed', async () => {
+  // The net behind join requests: an admin adding a friend never triggers one.
+  const stub = stubPaybot();
+  try {
+    const result = await withSubscriber(null, () => membership.enforceMembership('777'));
+    assert.equal(result.removed, true);
+    assert.deepEqual(stub.calls, [['remove', '777']]);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('a paying member is never removed by the guard', async () => {
+  const stub = stubPaybot();
+  try {
+    const result = await withSubscriber(activeRow, () => membership.enforceMembership('111'));
+    assert.equal(result.removed, false);
+    assert.deepEqual(stub.calls, []);
+  } finally {
+    stub.restore();
+  }
+});
