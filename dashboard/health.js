@@ -156,7 +156,33 @@ function connectivityChecks(data) {
   if (data.payments) {
     const p = data.payments;
 
-    checks.push(p.configured
+    // Nothing removes a lapsed member unless something calls the sweep. Said
+  // plainly, because the failure is silent: passes simply never end.
+  checks.push(p.cronSecretSet
+    ? check('pass', 'Automatic expiry sweep',
+        'Scheduled sweep is armed. Lapsed members are removed without anyone running a command.')
+    : check('fail', 'Automatic expiry sweep',
+        'No <code>CRON_SECRET</code>, so <code>/api/cron/sweep</code> refuses to run and nothing ' +
+        'removes expired members. Passes will never actually end.'));
+
+  // Two bots is the safer arrangement: the payment bot holds admin rights over
+  // the paid group, so sharing that token with the public posting bot means one
+  // leak exposes both.
+  checks.push(p.dedicatedPaymentBot
+    ? check('pass', 'Separate payment bot',
+        'Payments and group access run on their own bot token, apart from the questions bot.')
+    : check('warn', 'Separate payment bot',
+        'One bot is doing both jobs. Set <code>TELEGRAM_PAYMENT_BOT_TOKEN</code> so a leak of the ' +
+        'posting token cannot also open the paid group.'));
+
+  // The Rs 1 test pass must never be reachable by a real student.
+  if (p.testPlanEnabled) {
+    checks.push(check('warn', 'Rs 1 test pass is live',
+      '<code>TEST_PLAN_ENABLED=true</code>, so the 5-minute Rs 1 pass is on sale in the bot. ' +
+      'Unset it before sharing the bot with students.'));
+  }
+
+  checks.push(p.configured
       ? check(p.testMode ? 'warn' : 'pass', 'Razorpay keys',
           p.testMode
             ? 'Running in <strong>TEST mode</strong>. Real money is not charged — switch to live keys when you are ready to sell.'

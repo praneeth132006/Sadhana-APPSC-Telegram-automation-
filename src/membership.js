@@ -11,7 +11,7 @@
 // ============================================================================
 
 const sheets = require('./sheets');
-const telegram = require('./telegram');
+const paybot = require('./paybot');
 const plans = require('./plans');
 
 /**
@@ -68,14 +68,79 @@ function parseIst(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** Ensures the Telegram client is initialised before use. */
-let telegramReady = false;
+/** Ensures a premium group is configured before any group operation. */
 function ensureTelegram() {
-  if (telegramReady) return;
-  const token = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
-  if (!token) throw new Error('TELEGRAM_BOT_TOKEN is not set.');
-  telegram.init(token, getPremiumGroupId());
-  telegramReady = true;
+  if (!getPremiumGroupId()) throw new Error('No premium group configured.');
+}
+
+/**
+ * isEligible — may this Telegram id be in the premium group right now?
+ *
+ * The single source of truth for admission. A join request, a manual add and
+ * a rejoin after payment all ask this same question, so there is one place
+ * that decides and one place to change if the rule changes.
+ *
+ * @param {string|number} telegramId
+ * @returns {Promise<{ok: boolean, reason: string, subscriber: Object|null}>}
+ */
+async function isEligible(telegramId) {
+  const subscriber = await sheets.getSubscriber(telegramId);
+  if (!subscriber) return { ok: false, reason: 'no subscription on record', subscriber: null };
+  if (subscriber.status !== 'active') {
+    return { ok: false, reason: `subscription is ${subscriber.status}`, subscriber };
+  }
+
+  const expiry = parseIst(subscriber.expiry_date);
+  if (expiry && expiry.getTime() <= Date.now()) {
+    return { ok: false, reason: 'subscription has expired', subscriber };
+  }
+  return { ok: true, reason: 'active subscription', subscriber };
+}
+
+/**
+ * handleJoinRequest — approve the buyer, turn away everyone else.
+ *
+ * This is what makes a forwarded invite worthless. The link no longer admits
+ * whoever holds it; Telegram tells us who is asking, and only an id with a
+ * live subscription gets in.
+ *
+ * @param {string|number} telegramId The account asking to join
+ * @returns {Promise<{approved: boolean, reason: string}>}
+ */
+async function handleJoinRequest(telegramId) {
+  const groupId = getPremiumGroupId();
+  const verdict = await isEligible(telegramId);
+
+  try {
+    if (verdict.ok) {
+      await paybot.approveJoinRequest(groupId, telegramId);
+      return { approved: true, reason: verdict.reason };
+    }
+    await paybot.declineJoinRequest(groupId, telegramId);
+    return { approved: false, reason: verdict.reason };
+  } catch (err) {
+    // A request already handled, or withdrawn, is not worth failing over.
+    console.error(`[membership] join request for ${telegramId} failed: ${err.message}`);
+    return { approved: false, reason: err.message };
+  }
+}
+
+/**
+ * enforceMembership — removes someone who is in the group without paying.
+ *
+ * A safety net behind handleJoinRequest, for the ways into a group that do not
+ * go through a join request at all: an admin adding a friend by hand, or a
+ * link minted in the Telegram client rather than by this code.
+ *
+ * @param {string|number} telegramId Whoever just appeared in the group
+ * @returns {Promise<{removed: boolean, reason: string}>}
+ */
+async function enforceMembership(telegramId) {
+  const verdict = await isEligible(telegramId);
+  if (verdict.ok) return { removed: false, reason: verdict.reason };
+
+  const removed = await removeMember(telegramId);
+  return { removed, reason: verdict.reason };
 }
 
 /**
@@ -93,12 +158,7 @@ async function createSingleUseInvite(telegramId) {
   const groupId = getPremiumGroupId();
   if (!groupId) throw new Error('No premium group configured.');
 
-  const result = await telegram.createSingleUseInviteLink(
-    groupId,
-    `member-${telegramId}`,
-    Math.floor(Date.now() / 1000) + 24 * 60 * 60
-  );
-  return result.invite_link;
+  return paybot.createJoinRequestInvite(groupId, telegramId);
 }
 
 /**
@@ -174,7 +234,10 @@ async function grantAccess(options) {
     is_payment: true
   }, event || 'payment.captured');
 
-  return { subscriber, inviteLink, alreadyProcessed: false, expiry };
+  // isRejoining tells the caller whether this person needs an invite at all.
+  // A renewal by someone already sitting in the group does not, and sending a
+  // fresh link every month would train members to expect one and to share it.
+  return { subscriber, inviteLink, alreadyProcessed: false, expiry, isRejoining };
 }
 
 /**
@@ -192,8 +255,7 @@ async function removeMember(telegramId) {
   if (!groupId) throw new Error('No premium group configured.');
 
   try {
-    await telegram.banChatMember(groupId, telegramId);
-    await telegram.unbanChatMember(groupId, telegramId);
+    await paybot.removeFromChat(groupId, telegramId);
     return true;
   } catch (err) {
     // Already gone, or never joined — not a failure worth stopping the run for.
@@ -239,7 +301,7 @@ async function sendRenewalReminder(subscriber, daysLeft) {
     `Renew to keep your access to the APPSC premium group and daily quizzes.\n\n` +
     `Send /plans to this bot to renew in a couple of taps.`;
 
-  await telegram.sendDirectMessage(subscriber.telegram_id, message);
+  await paybot.sendDirectMessage(subscriber.telegram_id, message);
 
   // Record which expiry this reminder was for, so a renewal (new expiry) makes
   // the member eligible for a reminder again, but today's is not repeated.
@@ -283,7 +345,7 @@ async function runDailyCheck({ dryRun = false } = {}) {
           const removed = await removeMember(subscriber.telegram_id);
           await markExpired(subscriber, removed);
           try {
-            await telegram.sendDirectMessage(
+            await paybot.sendDirectMessage(
               subscriber.telegram_id,
               `Your <b>${subscriber.plan_label || 'pass'}</b> has expired and your group access has ended.\n\n` +
               `Send /plans to rejoin whenever you are ready — your progress and history are kept.`
@@ -351,6 +413,9 @@ function describeStatus(subscriber) {
 
 module.exports = {
   getPremiumGroupId,
+  isEligible,
+  handleJoinRequest,
+  enforceMembership,
   formatIst,
   parseIst,
   createSingleUseInvite,
