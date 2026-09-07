@@ -775,6 +775,105 @@ test('every configured family has a webhook endpoint that accepts updates', asyn
   }
 });
 
+// ===========================================================================
+// The thank-you page's confirmation
+// ===========================================================================
+// Public, because the payer is a student in a browser. It grants nothing — it
+// only says what was bought — but it must still refuse to answer about a
+// payment link whose redirect signature does not check out.
+
+/** Signs a payment-link redirect the way Razorpay does. */
+function signRedirect({ linkId, paymentId, referenceId, status }) {
+  return require('node:crypto')
+    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    .update(`${linkId}|${referenceId}|${status}|${paymentId}`)
+    .digest('hex');
+}
+
+function confirmQuery(parts, signature) {
+  return new URLSearchParams({
+    razorpay_payment_link_id: parts.linkId,
+    razorpay_payment_id: parts.paymentId,
+    razorpay_payment_link_reference_id: parts.referenceId,
+    razorpay_payment_link_status: parts.status,
+    razorpay_signature: signature
+  }).toString();
+}
+
+test('the payment confirmation refuses an unsigned or forged redirect', async () => {
+  const parts = { linkId: 'plink_x', paymentId: 'pay_x', referenceId: 'ref_x', status: 'paid' };
+  const good = signRedirect(parts);
+
+  const bad = [
+    confirmQuery(parts, ''),
+    confirmQuery(parts, 'not-a-signature'),
+    confirmQuery(parts, good.slice(0, -1) + (good.endsWith('0') ? '1' : '0')),
+    // Right signature, different link: the HMAC covers the id, so this fails.
+    confirmQuery(Object.assign({}, parts, { linkId: 'plink_someone_else' }), good)
+  ];
+
+  for (const query of bad) {
+    const res = await call('/api/payments/confirm?' + query);
+    assert.ok(res.status === 400 || res.status === 401,
+      `answered ${res.status} for a redirect it should not trust`);
+  }
+});
+
+test('the payment confirmation describes the pass, and leaks no secrets', async () => {
+  const parts = { linkId: 'plink_ok', paymentId: 'pay_ok', referenceId: 'ref_ok', status: 'paid' };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('api.razorpay.com')) return originalFetch(url, opts);
+    const payload = JSON.stringify({
+      id: 'plink_ok', status: 'paid', amount: 100,
+      notes: { group_id: 'appsc_news_en', plan_id: 'sprint_30', telegram_id: '4242' }
+    });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    const res = await call('/api/payments/confirm?' + confirmQuery(parts, signRedirect(parts)));
+    assert.equal(res.status, 200);
+
+    const d = res.json.data;
+    assert.equal(d.paid, true);
+    assert.equal(d.planLabel, '30-Day Sprint Pass');
+    assert.equal(d.amountPaise, 100);
+    assert.equal(d.recurring, false);
+    assert.match(d.groupName, /APPSC Newspaper/);
+
+    // It is a public endpoint reached with no login.
+    assert.ok(!res.text.includes(process.env.RAZORPAY_KEY_SECRET), 'the Razorpay secret leaked');
+    assert.ok(!res.text.includes(process.env.SHEET_API_TOKEN), 'the sheet token leaked');
+    assert.ok(!res.text.includes('4242'), 'the buyer telegram id leaked to the browser');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('the payment confirmation reports an unpaid link as unpaid', async () => {
+  const parts = { linkId: 'plink_no', paymentId: '', referenceId: 'ref_no', status: 'expired' };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('api.razorpay.com')) return originalFetch(url, opts);
+    const payload = JSON.stringify({
+      id: 'plink_no', status: 'expired', amount: 100,
+      notes: { group_id: 'appsc_news_en', plan_id: 'sprint_30' }
+    });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    const res = await call('/api/payments/confirm?' + confirmQuery(parts, signRedirect(parts)));
+    assert.equal(res.status, 200);
+    assert.equal(res.json.data.paid, false, 'an unpaid link was reported as paid');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('a webhook with a valid signature is processed', async () => {
   paymentCalls.length = 0;
   const body = JSON.stringify({

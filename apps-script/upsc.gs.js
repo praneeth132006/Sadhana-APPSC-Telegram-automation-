@@ -10,7 +10,7 @@
 // Group id : upsc
 // Subjects : 12
 //            Ancient India, Medieval India, Modern India, Physical Geography, Indian Geography, Economy, Environment, Polity, International Relations, Science and Technology, Current Affairs, Art and Culture
-// Built    : 2026-09-07T10:32:12.740Z
+// Built    : 2026-09-07T12:12:06.771Z
 // ==========================================================================
 
 // ============================================================================
@@ -1541,10 +1541,45 @@ function getSubscriber(telegramId) {
  * @param {Object} data Fields to write
  * @returns {Object} The stored subscriber
  */
+/**
+ * withScriptLock — runs fn with no other execution of this script inside it.
+ *
+ * The idempotency check in upsertSubscriber reads the row and then writes it.
+ * Two webhook deliveries arriving at the same moment both read "this payment
+ * is new" before either writes, so both count it — which is how one Rs 1
+ * payment became total_paid 2 and renewals 2, with two rows in the log a
+ * second apart. A per-payment check cannot fix that on its own; the two
+ * executions have to be serialised, and the script lock is the only thing here
+ * that can do it.
+ *
+ * Failing to get the lock throws rather than proceeding: the caller returns a
+ * non-2xx, and Razorpay retries a webhook it did not get a 200 for. A late
+ * retry is recoverable, a double-counted payment is not.
+ *
+ * @param {Function} fn Work to run while holding the lock
+ * @returns {*} Whatever fn returns
+ */
+function withScriptLock(fn) {
+  var lock = LockService.getScriptLock();
+  // 30s: comfortably longer than a sheet read plus write, short enough that a
+  // stuck execution surfaces as an error rather than a hung request.
+  if (!lock.tryLock(30000)) {
+    throw new Error('The sheet is busy with another payment. Please retry.');
+  }
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function upsertSubscriber(data) {
-  var sheet = subscriberSheet();
   var telegramId = String(data.telegram_id || '').trim();
   if (!telegramId) throw new Error('upsertSubscriber requires telegram_id');
+
+  // The read and the write must be one indivisible step — see withScriptLock.
+  return withScriptLock(function () {
+  var sheet = subscriberSheet();
 
   var rowNumber = findSubscriberRow(sheet, telegramId);
   var now = istNow();
@@ -1554,6 +1589,24 @@ function upsertSubscriber(data) {
 
   var isPayment = Boolean(data.is_payment);
   var amount = Number(data.amount) || 0;
+
+  // Razorpay delivers a webhook more than once — a retry, or simply two
+  // deliveries of the same event a second apart. The caller checks for a
+  // repeat before writing, but that check reads the row and this writes it,
+  // so two overlapping deliveries both read "not seen yet" and both counted.
+  // One Rs 1 payment came out as total_paid 2 and renewals 2 that way.
+  //
+  // The sheet is the only place both deliveries meet, so the decision belongs
+  // here: if this exact payment id is already on the row, the money has been
+  // counted and the totals are left alone.
+  var incomingPaymentId = String(data.payment_id || '').trim();
+  // Boolean(): the chain short-circuits to null on a brand new subscriber, and
+  // callers compare this against false.
+  var alreadyCounted = Boolean(isPayment &&
+    incomingPaymentId &&
+    existing &&
+    String(existing.payment_id || '').trim() === incomingPaymentId);
+  if (alreadyCounted) isPayment = false;
 
   // Prefer the incoming value, then what is already stored, then a default.
   function pick(key, fallback) {
@@ -1571,6 +1624,7 @@ function upsertSubscriber(data) {
     String(data.status || (existing ? existing.status : 'pending')).toLowerCase(),
     pick('start_date', now),
     pick('expiry_date', ''),
+    // alreadyCounted keeps the stored amount rather than re-applying it.
     isPayment ? amount : (existing ? existing.amount : 0),
     pick('payment_id', ''),
     pick('link_id', ''),
@@ -1593,7 +1647,11 @@ function upsertSubscriber(data) {
     sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
   }
 
-  return rowToSubscriber(row, rowNumber);
+  var saved = rowToSubscriber(row, rowNumber);
+  // So the caller can tell a real payment from a replayed one.
+  saved.already_counted = alreadyCounted;
+  return saved;
+  });
 }
 
 /**
@@ -1602,7 +1660,27 @@ function upsertSubscriber(data) {
  * member row is overwritten in place.
  */
 function logPayment(entry) {
-  paymentSheet().appendRow([
+  return withScriptLock(function () {
+  var sheet = paymentSheet();
+
+  // Same reason as upsertSubscriber: a repeated delivery must not append a
+  // second row for one payment. The log is what the revenue figures are built
+  // from, so a duplicate row overstates takings as well as confusing anyone
+  // reading it. Only rows with a payment id are checked — a manual entry
+  // without one is always appended.
+  var paymentId = String(entry.payment_id || '').trim();
+  if (paymentId) {
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      var idCol = PAYMENT_HEADERS.indexOf('Payment ID') + 1;
+      var ids = sheet.getRange(2, idCol, lastRow - 1, 1).getValues();
+      for (var i = 0; i < ids.length; i++) {
+        if (String(ids[i][0] || '').trim() === paymentId) return false;
+      }
+    }
+  }
+
+  sheet.appendRow([
     istNow(),
     String(entry.telegram_id || ''),
     String(entry.username || ''),
@@ -1614,6 +1692,7 @@ function logPayment(entry) {
     String(entry.expiry_date || '')
   ]);
   return true;
+  });
 }
 
 /**

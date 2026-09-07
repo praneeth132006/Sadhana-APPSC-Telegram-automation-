@@ -258,8 +258,16 @@ function createPaymentBot({ payBotEnv, polling = false }) {
           inline_keyboard: [[{ text: `🔗 Open ${group.shortName}`, url: subscriber.invite_link }]]
         };
       }
+      // A recurring pass is the one status where the member has an ongoing
+      // obligation, so the way out belongs in the same message as the status.
+      const recurring = subscriber.subscription_id && subscriber.status === 'active'
+        ? '\n\n🔁 This renews automatically. Send /cancel to stop future charges — ' +
+          'you keep access until the date above.'
+        : '';
+
       await bot.sendMessage(msg.chat.id,
-        `<b>${esc(group.shortName)}</b>\n` + membership.describeStatus(subscriber), options);
+        `<b>${esc(group.shortName)}</b>\n` + membership.describeStatus(subscriber) + recurring,
+        options);
     }
   } catch (err) {
     console.error('[bot] /status failed:', err.message);
@@ -281,6 +289,8 @@ function createPaymentBot({ payBotEnv, polling = false }) {
           : '<i>The invite is tied to your account — forwarding it will not let ' +
             'anyone else in.</i>\n\n') +
     'You will get a reminder before your pass runs out. Check /status any time.\n\n' +
+    '<b>On Monthly Auto-Pay?</b> Send /cancel to stop future charges. You keep the ' +
+    'access you have already paid for, right up to its expiry date.\n\n' +
     'Trouble? Reply here and an admin will help.',
     { parse_mode: 'HTML' }
   );
@@ -400,6 +410,15 @@ function createPaymentBot({ payBotEnv, polling = false }) {
       (plan.type === 'recurring' ? ' per month' : '') + '\n' +
       `for <b>${esc(group.shortName)}</b>\n\n` +
       `${esc(plan.description)}\n\n` +
+      // Anyone signing up for a recurring mandate has to be told, at the moment
+      // they sign up, that it keeps charging and exactly how to stop it. This
+      // said nothing: /cancel existed and was mentioned nowhere a buyer looks.
+      (plan.type === 'recurring'
+        ? `🔁 This renews automatically every month at ${plans.formatAmount(plan.amountPaise)} ` +
+          'until you stop it.\n' +
+          '<b>Send /cancel to this bot any time to stop future charges</b> — you keep ' +
+          'the access you have already paid for.\n\n'
+        : '') +
       'Tap below to pay. Your private invite arrives here the moment payment clears.' +
       (razorpay.isTestMode() ? '\n\n⚠️ <i>Test mode — use a Razorpay test card.</i>' : ''),
       {

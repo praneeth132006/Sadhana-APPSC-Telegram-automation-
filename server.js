@@ -772,6 +772,27 @@ function telegramWebhookSecret() {
   return crypto.createHash('sha256').update('telegram-webhook:' + base).digest('hex').slice(0, 48);
 }
 
+/** Payment-bot usernames, resolved once per instance. */
+const botUsernameCache = new Map();
+
+/**
+ * paymentBotUsername — the @handle of the bot that sells a group.
+ *
+ * The thank-you page uses it to offer a real "back to Telegram" button rather
+ * than the words "go back to Telegram", which on a phone means the student has
+ * to find the chat themselves.
+ *
+ * @param {string} payBotEnv Env var naming the bot's token
+ * @returns {Promise<string|null>} Username without the @, or null
+ */
+async function paymentBotUsername(payBotEnv) {
+  if (botUsernameCache.has(payBotEnv)) return botUsernameCache.get(payBotEnv);
+  const me = await paybot.getMe(payBotEnv);
+  const username = (me && me.username) || null;
+  botUsernameCache.set(payBotEnv, username);
+  return username;
+}
+
 /** Small promise delay used to stay under Telegram's rate limits. */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -863,6 +884,92 @@ async function handlePublicRoute(pathname, method, req, res) {
             .plansFor(g.id)
             .map(describe)
         }))
+      }
+    });
+    return true;
+  }
+
+  // ---- Payment confirmation for the thank-you page ------------------------
+  // Public because the payer is a student in a browser, not a signed-in
+  // curator. It grants nothing: it only says what was bought, so the page can
+  // name the pass and point at the right bot instead of showing one generic
+  // message for five groups. The redirect's HMAC is checked all the same —
+  // otherwise anyone could ask this endpoint about any payment link id.
+  if (pathname === '/api/payments/confirm' && method === 'GET') {
+    let query;
+    try {
+      query = new URL(req.url, 'http://localhost').searchParams;
+    } catch (err) {
+      sendJSON(res, 400, { success: false, error: 'Bad request' });
+      return true;
+    }
+
+    const paymentLinkId = str(query.get('razorpay_payment_link_id'), 60);
+    const paymentId = str(query.get('razorpay_payment_id'), 60);
+    const referenceId = str(query.get('razorpay_payment_link_reference_id'), 120);
+    const status = str(query.get('razorpay_payment_link_status'), 30);
+    const signature = str(query.get('razorpay_signature'), 200);
+
+    if (!paymentLinkId || !signature) {
+      sendJSON(res, 400, { success: false, error: 'Incomplete payment reference' });
+      return true;
+    }
+
+    let valid = false;
+    try {
+      valid = razorpay.verifyPaymentLinkSignature({
+        paymentLinkId, paymentId, referenceId, status, signature
+      });
+    } catch (err) {
+      valid = false;
+    }
+    if (!valid) {
+      console.warn('[payments] confirm called with a bad signature');
+      sendJSON(res, 401, { success: false, error: 'Could not verify this payment' });
+      return true;
+    }
+
+    // Read the link back from Razorpay rather than trusting the query string
+    // for anything but identity: notes are what we set when creating it.
+    let link;
+    try {
+      link = await razorpay.getPaymentLink(paymentLinkId);
+    } catch (err) {
+      sendJSON(res, 502, { success: false, error: 'Could not reach Razorpay just now' });
+      return true;
+    }
+
+    const notes = link.notes || {};
+    let group = null;
+    try {
+      group = groupRegistry.requireGroup(notes.group_id);
+    } catch (err) {
+      group = null;
+    }
+    const plan = group ? groupRegistry.getPlanFor(group.id, notes.plan_id) : null;
+
+    // The bot to send them back to. Looked up once and cached: this page is
+    // hit right after every payment and the username never changes.
+    let botUsername = null;
+    if (group) {
+      try {
+        botUsername = await paymentBotUsername(group.paymentBotEnv);
+      } catch (err) {
+        botUsername = null;
+      }
+    }
+
+    sendJSON(res, 200, {
+      success: true,
+      data: {
+        status: String(link.status || status || ''),
+        paid: String(link.status || '').toLowerCase() === 'paid',
+        amountPaise: Number(link.amount) || (plan ? plan.amountPaise : null),
+        planLabel: plan ? plan.label : null,
+        planEmoji: plan ? plan.emoji : null,
+        recurring: plan ? plan.type === 'recurring' : false,
+        groupName: group ? group.displayName : null,
+        botUsername
       }
     });
     return true;

@@ -4,21 +4,22 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Payment Received — Sadhana APPSC</title>
-  <meta name="description" content="Your APPSC premium group pass is confirmed. Your private invite link has been sent to you on Telegram.">
+  <meta name="description" content="Your pass is confirmed. Your private invite link has been sent to you on Telegram.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="shared.css">
   <style>
-    /* This page is shown to paying students, not curators, so it deliberately
-       carries none of the dashboard chrome — no nav, no sign-in gate. */
+    /* Shown to paying students on a phone, not to curators at a desk, so it
+       carries none of the dashboard chrome — no nav, no sign-in gate — and is
+       laid out for a narrow screen first. */
     .thanks-wrap {
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 24px;
+      padding: 20px 16px 40px;
     }
 
     .thanks-card {
@@ -26,62 +27,216 @@
       border: 1px solid var(--border-card);
       border-radius: var(--radius-lg);
       box-shadow: var(--shadow-lg);
-      padding: 40px 34px;
-      max-width: 520px;
+      padding: 30px 24px 26px;
+      max-width: 460px;
       width: 100%;
-      text-align: center;
     }
 
-    .thanks-icon { font-size: 3.4rem; line-height: 1; margin-bottom: 14px; }
+    .thanks-head { text-align: center; margin-bottom: 22px; }
+
+    /* A drawn tick rather than the ✅ emoji: the emoji renders as a different
+       size and colour on every platform and looked like clip-art on iOS. */
+    .thanks-tick {
+      width: 60px; height: 60px;
+      margin: 0 auto 16px;
+      border-radius: 50%;
+      display: grid; place-items: center;
+      background: rgba(16, 185, 129, 0.14);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .thanks-tick svg { width: 30px; height: 30px; stroke: #34d399; }
 
     .thanks-title {
-      font-size: 1.5rem;
-      font-weight: 800;
-      letter-spacing: -0.02em;
-      margin-bottom: 10px;
+      font-size: 1.4rem; font-weight: 800;
+      letter-spacing: -0.02em; margin-bottom: 6px;
     }
+    .thanks-sub { color: var(--text-secondary); font-size: 0.92rem; line-height: 1.6; }
 
-    .thanks-body {
-      color: var(--text-secondary);
-      line-height: 1.7;
-      font-size: 0.95rem;
-    }
-
-    .thanks-steps {
-      text-align: left;
+    /* What they actually bought. Filled in from the signature-verified
+       confirmation, and hidden entirely rather than showing a guess. */
+    .receipt {
       background: var(--bg-input);
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius-md);
-      padding: 18px 20px;
-      margin: 22px 0;
+      padding: 14px 16px;
+      margin-bottom: 20px;
+    }
+    .receipt-row {
+      display: flex; justify-content: space-between; align-items: baseline;
+      gap: 14px; padding: 5px 0;
+    }
+    .receipt-row + .receipt-row { border-top: 1px solid var(--border-subtle); }
+    .receipt-key { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; }
+    .receipt-val { font-weight: 600; font-size: 0.9rem; text-align: right; }
+
+    .cta {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; padding: 14px 18px;
+      border-radius: var(--radius-md);
+      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+      color: #fff; font-weight: 700; font-size: 0.98rem;
+      text-decoration: none;
+      box-shadow: 0 4px 16px var(--accent-glow);
+      margin-bottom: 18px;
+    }
+    .cta:hover { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); }
+
+    .steps { margin: 0 0 18px; padding-left: 20px; }
+    .steps li { margin-bottom: 9px; line-height: 1.55; font-size: 0.9rem; color: var(--text-secondary); }
+    .steps li:last-child { margin-bottom: 0; }
+    .steps strong { color: var(--text-primary); }
+
+    .note {
+      font-size: 0.82rem; line-height: 1.6; color: var(--text-muted);
+      border-top: 1px solid var(--border-subtle); padding-top: 16px;
     }
 
-    .thanks-steps li { margin-bottom: 10px; line-height: 1.6; }
-    .thanks-steps li:last-child { margin-bottom: 0; }
+    /* Recurring buyers are told how to stop the charges on the same screen
+       that confirms them. Anything less is a subscription with no visible exit. */
+    .renew-note {
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      border-radius: var(--radius-md);
+      padding: 12px 14px; margin-bottom: 18px;
+      font-size: 0.85rem; line-height: 1.6; color: var(--text-secondary);
+    }
+    .renew-note strong { color: #fbbf24; }
+
+    .failed .thanks-tick { background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68, 68, 0.4); }
+    .failed .thanks-tick svg { stroke: #f87171; }
+
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
   <div class="thanks-wrap">
-    <div class="thanks-card">
-      <div class="thanks-icon">✅</div>
-      <h1 class="thanks-title">Payment received</h1>
+    <div class="thanks-card" id="card">
+      <div class="thanks-head">
+        <div class="thanks-tick">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <polyline id="tickPath" points="20 6 9 17 4 12"></polyline>
+            <!-- The second stroke of the cross. A cross needs two lines, so it
+                 lives here and is revealed rather than being drawn by reusing
+                 the tick's single polyline, which produced one bare slash. -->
+            <line id="crossPath" x1="6" y1="6" x2="18" y2="18" hidden></line>
+          </svg>
+        </div>
+        <h1 class="thanks-title" id="title">Payment received</h1>
+        <p class="thanks-sub" id="subtitle">Your pass is being activated.</p>
+      </div>
 
-      <p class="thanks-body">
-        Thank you — your APPSC Premium pass is being activated.
-      </p>
+      <div class="receipt" id="receipt" hidden>
+        <div class="receipt-row" id="rowPlan" hidden>
+          <span class="receipt-key">Pass</span><span class="receipt-val" id="valPlan"></span>
+        </div>
+        <div class="receipt-row" id="rowGroup" hidden>
+          <span class="receipt-key">Group</span><span class="receipt-val" id="valGroup"></span>
+        </div>
+        <div class="receipt-row" id="rowAmount" hidden>
+          <span class="receipt-key">Amount</span><span class="receipt-val" id="valAmount"></span>
+        </div>
+      </div>
 
-      <ol class="thanks-steps">
+      <div class="renew-note" id="renewNote" hidden>
+        <strong>This pass renews automatically every month.</strong><br>
+        Send <strong>/cancel</strong> to the bot whenever you want to stop future
+        charges. You keep the access you have already paid for.
+      </div>
+
+      <a class="cta" id="cta" href="https://t.me/" hidden>
+        Open Telegram to get your invite
+      </a>
+
+      <ol class="steps">
         <li><strong>Go back to Telegram.</strong> The bot is sending your private invite link right now.</li>
-        <li><strong>Tap the link</strong> to join the premium group. It only works once, so do not forward it.</li>
+        <li><strong>Tap the link</strong> to join. It only works once, so do not forward it.</li>
         <li>Send <strong>/status</strong> to the bot any time to see your expiry date.</li>
       </ol>
 
-      <p class="thanks-body">
+      <p class="note" id="note">
         Nothing after a minute or two? Send <strong>/status</strong> to the bot — if the payment
-        went through, it will show your pass and link. Otherwise reply to the bot and an
+        went through it will show your pass and link. Otherwise reply to the bot and an
         admin will sort it out.
       </p>
     </div>
   </div>
+
+  <script type="module">
+    // Everything below is presentation. Nothing here grants access: the pass is
+    // created by the Razorpay webhook in server.js after its signature is
+    // checked, so a student who edits this URL changes only what they read.
+    const params = new URLSearchParams(location.search);
+    const $ = (id) => document.getElementById(id);
+
+    const setText = (rowId, valId, value) => {
+      if (!value) return;
+      $(valId).textContent = value;
+      $(rowId).hidden = false;
+      $('receipt').hidden = false;
+    };
+
+    // Razorpay redirects here with the link id, status and an HMAC. Without
+    // them (someone opening the page directly) the generic message stands.
+    if (!params.get('razorpay_payment_link_id')) {
+      // Nothing to confirm; leave the page as-is.
+    } else {
+      try {
+        const res = await fetch('/api/payments/confirm' + location.search);
+        const payload = await res.json();
+
+        if (!res.ok || !payload.success) {
+          // A failed lookup must not claim the payment failed — it may well
+          // have succeeded and only the confirmation call broke.
+          $('subtitle').textContent =
+            'Your pass is being activated. Check Telegram for your invite link.';
+        } else {
+          const d = payload.data;
+
+          if (!d.paid) {
+            $('card').classList.add('failed');
+            $('tickPath').setAttribute('points', '18 6 6 18');
+            // removeAttribute, not .hidden = false: the `hidden` IDL property
+            // lives on HTMLElement, so assigning it on an SVG <line> sets a
+            // stray JS property and leaves the attribute — and the CSS rule
+            // that hides it — exactly where they were.
+            $('crossPath').removeAttribute('hidden');
+            $('title').textContent = 'Payment not completed';
+            $('subtitle').textContent =
+              'This payment link has not been paid. Send /plans to the bot to try again.';
+            document.querySelector('.steps').hidden = true;
+            // Nothing was bought, so there is no invite to promise.
+            $('cta').textContent = 'Open Telegram to try again';
+            $('renewNote').hidden = true;
+            $('note').innerHTML =
+              'Charged but seeing this? Send <strong>/status</strong> to the bot — it reads ' +
+              'the payment, not this page. If it shows nothing, reply to the bot and an ' +
+              'admin will sort it out.';
+          } else {
+            setText('rowPlan', 'valPlan',
+              (d.planEmoji ? d.planEmoji + ' ' : '') + (d.planLabel || ''));
+            setText('rowGroup', 'valGroup', d.groupName);
+            if (typeof d.amountPaise === 'number') {
+              const rupees = d.amountPaise / 100;
+              setText('rowAmount', 'valAmount',
+                '₹' + (Number.isInteger(rupees) ? rupees : rupees.toFixed(2)));
+            }
+            if (d.groupName) {
+              $('subtitle').textContent = `Your pass for ${d.groupName} is being activated.`;
+            }
+            if (d.recurring) $('renewNote').hidden = false;
+          }
+
+          // A real button beats the words "go back to Telegram" on a phone.
+          if (d.botUsername) {
+            $('cta').href = 'https://t.me/' + d.botUsername;
+            $('cta').hidden = false;
+          }
+        }
+      } catch (err) {
+        $('subtitle').textContent =
+          'Your pass is being activated. Check Telegram for your invite link.';
+      }
+    }
+  </script>
 </body>
 </html>

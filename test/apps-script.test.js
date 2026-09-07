@@ -24,6 +24,11 @@ const crypto = require('node:crypto');
 // Minimal Google Apps Script runtime
 // ---------------------------------------------------------------------------
 
+/** What the stubbed LockService was asked to do, newest last. */
+let lockLog = [];
+/** Queue of tryLock outcomes; anything not queued grants the lock. */
+let lockGrants = [];
+
 /** Script properties the stubbed PropertiesService serves. */
 const scriptProperties = {};
 
@@ -79,6 +84,9 @@ class FakeSheet {
   }
 
   clear() { this.values = []; return this; }
+  // Missing until now, which is why nothing exercised upsertSubscriber or
+  // logPayment — and why a payment could be counted twice unnoticed.
+  appendRow(row) { this.values.push(row.slice()); return this; }
   deleteRow(row) { this.values.splice(row - 1, 1); return this; }
   setFrozenRows() { return this; }
   setFrozenColumns() { return this; }
@@ -141,6 +149,15 @@ function loadScript(spreadsheet) {
       getScriptProperties: () => ({ getProperty: (k) => scriptProperties[k] ?? null })
     },
 
+    // Apps Script serialises concurrent executions with this; the stub records
+    // the calls so a test can prove the payment path takes and releases it.
+    LockService: {
+      getScriptLock: () => ({
+        tryLock: (ms) => { lockLog.push('lock:' + ms); return lockGrants.shift() !== false; },
+        releaseLock: () => { lockLog.push('release'); }
+      })
+    },
+
     Utilities: {
       DigestAlgorithm: { SHA_256: 'SHA_256' },
       computeDigest: (_alg, input) => Array.from(crypto.createHash('sha256').update(input).digest()),
@@ -165,6 +182,8 @@ function loadScript(spreadsheet) {
 
 /** Builds a fresh script sandbox over an empty spreadsheet. */
 function freshScript(sheets = []) {
+  lockLog = [];
+  lockGrants = [];
   return loadScript(new FakeSpreadsheet(sheets));
 }
 
@@ -790,6 +809,112 @@ test('markRowsAsPostedInSheet ignores a row repeated within one batch', () => {
 
   assert.equal(updated, 1);
   assert.equal(sheet.values[1][map['Times Posted']], 1);
+});
+
+// ===========================================================================
+// One payment must count once
+// ===========================================================================
+// Razorpay delivers a webhook more than once. A real Rs 1 payment was recorded
+// as total_paid 2 and renewals 2, with two rows in the payment log a second
+// apart, because the caller's "have I seen this payment id?" check reads the
+// row and the write happens later — two overlapping deliveries both read
+// "new". These are the regression tests for that.
+
+/** A payment webhook payload, as membership.grantAccess would send it. */
+function paymentUpsert(overrides) {
+  return Object.assign({
+    telegram_id: '7234356929',
+    username: 'praneeth132006',
+    plan: 'sprint_30',
+    plan_label: '30-Day Sprint Pass',
+    status: 'active',
+    expiry_date: '07-10-2026, 05:26:54 PM IST',
+    amount: 1,
+    payment_id: 'pay_TZ8ciB8Yng8WE3',
+    is_payment: true
+  }, overrides || {});
+}
+
+test('the same payment delivered twice is counted once', () => {
+  const script = freshScript();
+
+  const first = script.upsertSubscriber(paymentUpsert());
+  assert.equal(first.total_paid, 1);
+  assert.equal(first.renewals, 1);
+  assert.equal(first.already_counted, false);
+
+  // Byte-identical redelivery, which is what Razorpay actually sends.
+  const second = script.upsertSubscriber(paymentUpsert());
+  assert.equal(second.total_paid, 1, 'a redelivered payment was added to the takings again');
+  assert.equal(second.renewals, 1, 'a redelivered payment counted as a second renewal');
+  assert.equal(second.already_counted, true);
+});
+
+test('a genuine second payment still counts', () => {
+  // The guard keys on the payment id, so it must not swallow a real renewal.
+  const script = freshScript();
+
+  script.upsertSubscriber(paymentUpsert());
+  const renewed = script.upsertSubscriber(paymentUpsert({
+    payment_id: 'pay_A_DIFFERENT_ONE', amount: 3, plan: 'exam_pass'
+  }));
+
+  assert.equal(renewed.total_paid, 4, 'Rs 1 then Rs 3 should total Rs 4');
+  assert.equal(renewed.renewals, 2);
+  assert.equal(renewed.already_counted, false);
+});
+
+test('a non-payment update never touches the takings', () => {
+  const script = freshScript();
+  script.upsertSubscriber(paymentUpsert());
+
+  const cancelled = script.upsertSubscriber({
+    telegram_id: '7234356929', status: 'cancelled', is_payment: false
+  });
+
+  assert.equal(cancelled.total_paid, 1);
+  assert.equal(cancelled.renewals, 1);
+});
+
+test('the payment log refuses a second row for one payment id', () => {
+  const script = freshScript();
+
+  assert.equal(script.logPayment({
+    telegram_id: '7234356929', plan: 'sprint_30', amount: 1,
+    payment_id: 'pay_TZ8ciB8Yng8WE3', event: 'payment_link.paid'
+  }), true);
+
+  assert.equal(script.logPayment({
+    telegram_id: '7234356929', plan: 'sprint_30', amount: 1,
+    payment_id: 'pay_TZ8ciB8Yng8WE3', event: 'payment_link.paid'
+  }), false, 'the log took a duplicate row for one payment');
+
+  const sheet = script.book().getSheetByName('Payments');
+  assert.equal(sheet.getLastRow(), 2, 'header plus exactly one payment row');
+});
+
+test('the payment write path takes and releases the script lock', () => {
+  // The per-payment check reads then writes. Without serialisation two
+  // deliveries arriving together both read "new" and both count.
+  const script = freshScript();
+  script.upsertSubscriber(paymentUpsert());
+
+  assert.ok(lockLog.some((e) => e.startsWith('lock:')), 'no lock was taken');
+  assert.equal(lockLog[lockLog.length - 1], 'release', 'the lock was not released');
+  assert.equal(
+    lockLog.filter((e) => e.startsWith('lock:')).length,
+    lockLog.filter((e) => e === 'release').length,
+    'a lock was taken without being released'
+  );
+});
+
+test('a payment is refused rather than counted when the lock cannot be taken', () => {
+  // Razorpay retries anything that is not a 200, so a refusal is recoverable.
+  // Writing without the lock is not.
+  const script = freshScript();
+  lockGrants.push(false);
+
+  assert.throws(() => script.upsertSubscriber(paymentUpsert()), /busy with another payment/);
 });
 
 test('listQuestions filters and paginates', () => {
