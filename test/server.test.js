@@ -677,11 +677,39 @@ function signWebhook(body) {
 test('the plan catalogue is public and exposes no secrets', async () => {
   const res = await call('/api/plans');
   assert.equal(res.status, 200);
-  assert.equal(res.json.data.plans.length, 3);
+  // Every group's real catalogue, not one global price list. Serving a single
+  // list here is what let the page advertise prices no group charged.
+  assert.ok(res.json.data.groups.length >= 2);
+  res.json.data.groups.forEach((g) => assert.ok(g.plans.length >= 1, `${g.id} has no plans`));
 
   // A price list is fine to publish; keys are not.
   assert.ok(!res.text.includes(process.env.RAZORPAY_KEY_SECRET), 'the Razorpay key secret leaked');
   assert.ok(!res.text.includes(process.env.RAZORPAY_WEBHOOK_SECRET), 'the webhook secret leaked');
+});
+
+test('the plan catalogue prices each group from its own config entry', async () => {
+  const config = JSON.parse(
+    require('node:fs').readFileSync(path.join(__dirname, '..', 'groups.config.json'), 'utf8')
+  );
+
+  for (const configured of config.groups) {
+    const res = await call(`/api/plans?group=${configured.id}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.json.data.group, configured.id);
+    assert.ok(res.json.data.plans.length >= 1);
+    for (const plan of res.json.data.plans) {
+      assert.equal(
+        plan.amountPaise, configured.plans[plan.id],
+        `${configured.id}/${plan.id} is advertised at a price the group does not charge`
+      );
+    }
+  }
+});
+
+test('the plan catalogue refuses an unknown group rather than inventing one', async () => {
+  const res = await call('/api/plans?group=not_a_group');
+  assert.equal(res.status, 400);
+  assert.match(res.json.error, /Unknown group/);
 });
 
 test('a webhook with a valid signature is processed', async () => {

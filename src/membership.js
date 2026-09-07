@@ -308,6 +308,23 @@ async function markExpired(groupId, subscriber, removed) {
 }
 
 /**
+ * planForSubscriber — the pass a member holds, as THEIR group defines it.
+ *
+ * plans.getPlan() is the legacy global table: same wording for everyone, so a
+ * UPSC member was reminded about their "Target APPSC 2026 Pass". Falls back to
+ * the global entry only for a plan id the group no longer sells, so a member on
+ * a retired pass still gets a sensible label rather than none.
+ *
+ * @param {string} groupId
+ * @param {string} planId
+ * @returns {Object|null}
+ */
+function planForSubscriber(groupId, planId) {
+  if (!planId) return null;
+  return groups.getPlanFor(groupId, planId, { includeTest: true }) || plans.getPlan(planId);
+}
+
+/**
  * sendRenewalReminder — nudges a member whose access is about to end.
  *
  * @param {Object} subscriber The stored member
@@ -316,7 +333,7 @@ async function markExpired(groupId, subscriber, removed) {
 async function sendRenewalReminder(groupId, subscriber, daysLeft) {
   const ctx = contextFor(groupId);
 
-  const plan = plans.getPlan(subscriber.plan);
+  const plan = planForSubscriber(groupId, subscriber.plan);
   const label = plan ? plan.label : subscriber.plan_label || 'your pass';
   const when = daysLeft <= 0
     ? 'today'
@@ -350,8 +367,11 @@ async function runDailyCheck({ groupId, dryRun = false } = {}) {
   const ctx = contextFor(groupId);
   const summary = { checked: 0, reminded: [], removed: [], failed: [], dryRun };
 
-  // Widest reminder window of any plan, so one query covers every case.
-  const lookAhead = Math.max(...plans.listPlans().map((p) => p.reminderDaysBefore || 0), 0);
+  // Widest reminder window of any pass THIS group sells, so one query covers
+  // every case without reaching for the legacy global table.
+  const lookAhead = Math.max(
+    ...groups.plansFor(groupId, { includeTest: true }).map((p) => p.reminderDaysBefore || 0), 0
+  );
   const candidates = await ctx.sheet.getExpiring(lookAhead);
   summary.checked = candidates.length;
 
@@ -363,7 +383,7 @@ async function runDailyCheck({ groupId, dryRun = false } = {}) {
     }
 
     const daysLeft = plans.daysUntil(expiry);
-    const plan = plans.getPlan(subscriber.plan);
+    const plan = planForSubscriber(groupId, subscriber.plan);
 
     try {
       if (daysLeft <= 0) {

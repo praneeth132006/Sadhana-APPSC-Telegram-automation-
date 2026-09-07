@@ -675,6 +675,136 @@ test('every group that sells auto-pay is checked for its own Razorpay plan', () 
 });
 
 // ===========================================================================
+// End to end: a rupee leaves a student's account and access arrives
+// ===========================================================================
+// Everything between the checkout call and the invite DM runs for real here —
+// the plan lookup, the Razorpay request body, the HMAC signature check, the
+// webhook handler, grantAccess, the expiry maths and the round trip through
+// the IST timestamp format. Only the two things outside this codebase are
+// stubbed: Razorpay's HTTP API and Telegram's.
+//
+// This is the test that would have caught all three payment bugs at once: the
+// missing group_id, the auto-pay plan id read from a field that does not
+// exist, and an expiry that drifted 5h30m on a UTC server.
+
+test('a student pays and ends up with access, start to finish', async () => {
+  const GROUP = 'appsc_q_te';
+
+  // Other tests in this file reload server.js with its collaborators stubbed,
+  // which leaves the cache holding a server bound to modules this test never
+  // sees. Clear them and require the set together, so the server under test and
+  // the sheet being stubbed are the same objects.
+  for (const key of Object.keys(require.cache)) {
+    if (/server\.js|membership\.js|sheets\.js|paybot\.js/.test(key)) delete require.cache[key];
+  }
+  const sheetsModule = require('../src/sheets');
+  const paybotModule = require('../src/paybot');
+  const membershipModule = require('../src/membership');
+  const serverModule = require('../server');
+
+  const plan = groups.getPlanFor(GROUP, 'sprint_30');
+  assert.ok(plan, 'the group does not sell the pass being bought');
+
+  // ---- The sheet and Telegram, in memory --------------------------------
+  const sheetRows = {};
+  const dms = [];
+  const originalForGroup = sheetsModule.forGroup;
+  const originalInvite = paybotModule.createJoinRequestInvite;
+  const originalDm = paybotModule.sendDirectMessage;
+  const originalFetch = globalThis.fetch;
+
+  sheetsModule.forGroup = (groupId) => ({
+    groupId,
+    getSubscriber: async (id) => sheetRows[`${groupId}:${id}`] || null,
+    upsertSubscriber: async (row) => {
+      const saved = Object.assign({}, sheetRows[`${groupId}:${row.telegram_id}`], row);
+      sheetRows[`${groupId}:${row.telegram_id}`] = saved;
+      return saved;
+    }
+  });
+  paybotModule.createJoinRequestInvite = async () => 'https://t.me/+invite-for-one';
+  paybotModule.sendDirectMessage = async (botEnv, userId, text) => { dms.push({ userId, text }); };
+
+  // Razorpay's API, answering the way the real one does.
+  let checkoutBody = null;
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('api.razorpay.com')) return originalFetch(url, opts);
+    checkoutBody = JSON.parse(opts.body);
+    const payload = JSON.stringify({
+      id: 'plink_e2e', short_url: 'https://rzp.io/i/e2e', amount: checkoutBody.amount
+    });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    // ---- 1. The bot hands the student a checkout link -------------------
+    const checkout = await serverModule.createCheckoutForStudent({
+      plan, telegramId: '90901', username: 'student', name: 'A Student'
+    });
+    assert.equal(checkout.url, 'https://rzp.io/i/e2e');
+    assert.equal(checkoutBody.amount, plan.amountPaise, 'the student is charged the advertised price');
+    assert.equal(checkoutBody.notes.group_id, GROUP, 'the sale could not be credited to any group');
+    assert.equal(checkoutBody.notes.telegram_id, '90901');
+
+    // ---- 2. They pay. Razorpay signs the webhook it sends us ------------
+    const body = JSON.stringify({
+      event: 'payment_link.paid',
+      payload: {
+        payment_link: { entity: { id: 'plink_e2e', notes: checkoutBody.notes } },
+        payment: { entity: { id: 'pay_e2e', amount: plan.amountPaise } }
+      }
+    });
+    const signature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+      .update(body).digest('hex');
+
+    // The signature check is the whole security model, so it runs for real.
+    assert.equal(razorpay.verifyWebhookSignature(body, signature), true);
+    assert.equal(razorpay.verifyWebhookSignature(body, signature.replace(/.$/, '0')), false,
+      'a tampered signature was accepted');
+
+    const before = Date.now();
+    const handled = await serverModule.handlePaymentEvent(JSON.parse(body));
+    assert.equal(handled.handled, true, handled.reason || 'the webhook did nothing');
+
+    // ---- 3. The sale is on the books, in the right group -----------------
+    const row = sheetRows[`${GROUP}:90901`];
+    assert.ok(row, 'nothing was written to the sheet');
+    assert.equal(row.status, 'active');
+    assert.equal(row.plan, 'sprint_30');
+    assert.equal(row.amount, plan.amountPaise / 100);
+    assert.equal(row.payment_id, 'pay_e2e');
+    assert.ok(!sheetRows[`appsc_q_en:90901`], 'the sale leaked into the sibling group');
+
+    // ---- 4. The expiry is right, read back the way the sweep reads it ----
+    const expiry = membershipModule.parseIst(row.expiry_date);
+    assert.ok(expiry, `expiry_date "${row.expiry_date}" could not be parsed back`);
+    const days = (expiry.getTime() - before) / 86400000;
+    assert.ok(Math.abs(days - 30) < 0.01,
+      `a 30-day pass expires in ${days.toFixed(3)} days — timestamps are drifting`);
+
+    // ---- 5. They are told, and they can get in --------------------------
+    assert.equal(dms.length, 1, 'the student was never told they were in');
+    assert.match(dms[0].text, /t\.me\/\+invite-for-one/);
+    assert.equal(dms[0].userId, '90901');
+
+    // ---- 6. Razorpay retries the same webhook ---------------------------
+    const replayed = await serverModule.handlePaymentEvent(JSON.parse(body));
+    assert.equal(replayed.handled, true);
+    assert.equal(dms.length, 1, 'a retried webhook sent a second invite');
+    assert.equal(
+      sheetRows[`${GROUP}:90901`].expiry_date, row.expiry_date,
+      'a retried webhook extended the pass a second time'
+    );
+  } finally {
+    sheetsModule.forGroup = originalForGroup;
+    paybotModule.createJoinRequestInvite = originalInvite;
+    paybotModule.sendDirectMessage = originalDm;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ===========================================================================
 // Group isolation
 // ===========================================================================
 // Five groups, five sheets, and the promise that nothing is mixed. That

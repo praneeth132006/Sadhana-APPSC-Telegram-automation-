@@ -755,21 +755,58 @@ async function handlePublicRoute(pathname, method, req, res) {
 
   // Plan catalogue. Public: it is a price list, and the bot reads it too.
   if (pathname === '/api/plans' && method === 'GET') {
+    // Group-scoped. This used to serve plans.listPlans() — the legacy global
+    // table — so the Members page advertised "what students can buy right now"
+    // at prices no group actually charges. The bot and the checkout have been
+    // group-aware for a while; this was the last screen that was not.
+    let group = '';
+    try {
+      group = String(new URL(req.url, 'http://localhost').searchParams.get('group') || '').trim();
+    } catch (err) {
+      group = '';
+    }
+
+    let catalogue;
+    if (group) {
+      try {
+        catalogue = groupRegistry.plansFor(group, { includeTest: plans.testPlanEnabled() });
+      } catch (err) {
+        sendJSON(res, 400, { success: false, error: err.message.split('\n')[0] });
+        return true;
+      }
+    } else {
+      // No group named: report every group's catalogue rather than inventing a
+      // default. A single price list here is what made the old bug invisible.
+      catalogue = null;
+    }
+
+    const describe = (plan) => ({
+      id: plan.id,
+      label: plan.label,
+      emoji: plan.emoji,
+      price: plans.formatAmount(plan.amountPaise),
+      amountPaise: plan.amountPaise,
+      type: plan.type,
+      durationDays: plan.durationDays,
+      tagline: plan.tagline,
+      description: plan.description
+    });
+
     sendJSON(res, 200, {
       success: true,
       data: {
         configured: razorpay.isConfigured(),
         testMode: razorpay.isTestMode(),
-        plans: plans.listPlans().map((plan) => ({
-          id: plan.id,
-          label: plan.label,
-          emoji: plan.emoji,
-          price: plans.formatAmount(plan.amountPaise),
-          amountPaise: plan.amountPaise,
-          type: plan.type,
-          durationDays: plan.durationDays,
-          tagline: plan.tagline,
-          description: plan.description
+        group: group || null,
+        plans: catalogue ? catalogue.map(describe) : [],
+        // Always present, so a caller that names no group still sees real
+        // prices instead of a plausible-looking wrong one.
+        groups: groupRegistry.listGroups().map((g) => ({
+          id: g.id,
+          label: g.displayName,
+          plans: groupRegistry
+            .plansFor(g.id, { includeTest: plans.testPlanEnabled() })
+            .map(describe)
         }))
       }
     });

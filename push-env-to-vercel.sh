@@ -81,16 +81,61 @@ echo "Checking what the deployed server can actually see…"
 sleep 4
 
 BASE=$(node -e "require('dotenv').config(); process.stdout.write(String(process.env.PUBLIC_BASE_URL||''))")
+
+# Every node snippet below is fed on stdin via a quoted heredoc rather than
+# passed with -e inside "$(...)". A -e script containing braces and a comma —
+# `catch(e){console.log(d.slice(0,120))}` — was being brace-expanded by the
+# shell into two broken fragments, so the check that was meant to confirm the
+# deploy instead printed two SyntaxErrors after a perfectly good deployment.
 if [ -n "$BASE" ]; then
   PING=$(curl -s --max-time 25 "$BASE/api/ping" || true)
   case "$PING" in
     *spreadsheetName*)
       echo "  ✅ The deployment is reading your sheets."
-      echo "     $(printf '%s' "$PING" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);console.log(j.spreadsheetName+' — '+j.version)}catch(e){console.log(d.slice(0,120))}})")"
+      printf '     '
+      printf '%s' "$PING" | node --input-type=commonjs <<'NODE'
+let d = '';
+process.stdin.on('data', (c) => { d += c; });
+process.stdin.on('end', () => {
+  try {
+    const j = JSON.parse(d);
+    console.log(j.spreadsheetName + ' — ' + j.version);
+  } catch (err) {
+    console.log(d.slice(0, 120));
+  }
+});
+NODE
       ;;
     *)
       echo "  ❌ The deployment still cannot reach a sheet:"
       echo "     $(printf '%s' "$PING" | head -c 200)"
       ;;
   esac
+
+  # The prices the deployment actually serves. A price that disagrees with
+  # groups.config.json means the deploy is stale, which is otherwise invisible.
+  echo
+  echo "Prices the deployment is advertising:"
+  curl -s --max-time 25 "$BASE/api/plans" | node --input-type=commonjs <<'NODE'
+let d = '';
+process.stdin.on('data', (c) => { d += c; });
+process.stdin.on('end', () => {
+  let payload;
+  try {
+    payload = JSON.parse(d);
+  } catch (err) {
+    console.log('  could not read /api/plans: ' + d.slice(0, 120));
+    return;
+  }
+  const groups = (payload.data && payload.data.groups) || [];
+  if (!groups.length) {
+    console.log('  /api/plans returned no groups — the deployment is older than this checkout.');
+    return;
+  }
+  for (const group of groups) {
+    const prices = group.plans.map((p) => p.label + ' ' + p.price).join(', ');
+    console.log('  ' + group.label + ': ' + prices);
+  }
+});
+NODE
 fi

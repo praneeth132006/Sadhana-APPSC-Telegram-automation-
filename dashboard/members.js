@@ -191,7 +191,10 @@ async function load() {
     replaceChildren(panels,
       el('div', { class: 'two-col' }, [
         panel('Revenue by Plan', 'Lifetime rupees and member count per pass', planBreakdown(stats)),
-        panel('Pass Catalogue', 'What students can buy right now',
+        // api() puts the selected group on the query string, so this is now
+        // the catalogue for THIS group rather than a global price list that
+        // matched no group.
+        panel('Pass Catalogue', 'What students can buy in this group right now',
           el('div', {}, planInfo.plans.map((p) => el('div', { class: 'check-item' }, [
             el('span', { class: 'check-icon', text: p.emoji }),
             el('div', {}, [
