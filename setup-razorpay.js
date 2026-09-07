@@ -68,6 +68,14 @@ async function main() {
 
   const toAdd = [];
 
+  // Read the account once so a re-run can recognise its own earlier work.
+  let existingPlans = [];
+  try {
+    existingPlans = await razorpay.listPlans();
+  } catch (err) {
+    console.log(`⚠️  Could not list existing plans (${err.message}); duplicates are possible.\n`);
+  }
+
   for (const group of groups.listGroups()) {
     const recurring = groups.plansFor(group.id, { includeTest: true })
       .filter((plan) => plan.type === 'recurring');
@@ -85,6 +93,26 @@ async function main() {
         continue;
       }
 
+      // Reuse a plan this script already made for this group at this price.
+      // Without this, running the script again before the printed id reaches
+      // .env mints another identical plan every time — and Razorpay has no way
+      // to delete one, so the account fills up with duplicates.
+      const reusable = existingPlans.find((live) =>
+        live.notes &&
+        String(live.notes.group_id) === group.id &&
+        String(live.notes.plan_id) === plan.id &&
+        Number(live.item && live.item.amount) === Number(plan.amountPaise)
+      );
+
+      if (reusable) {
+        console.log(
+          `   ♻️  Reusing ${reusable.id} — already on this account at ` +
+          `${plans.formatAmount(plan.amountPaise)}/month.`
+        );
+        toAdd.push(`${envName}=${reusable.id}`);
+        continue;
+      }
+
       console.log(`   Creating "${plan.label}" at ${plans.formatAmount(plan.amountPaise)}/month…`);
       const created = await razorpay.createPlan(Object.assign({}, plan, {
         // Name it after the group, so five plans are distinguishable in the
@@ -92,6 +120,7 @@ async function main() {
         label: `${plan.label} — ${group.displayName}`
       }));
       console.log(`   ✅ Created ${created.id}`);
+      existingPlans.unshift(created);
       toAdd.push(`${envName}=${created.id}`);
     }
     console.log('');

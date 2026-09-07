@@ -261,6 +261,17 @@ async function createPlan(plan) {
 }
 
 /**
+ * listPlans — every recurring plan on the account, newest first.
+ *
+ * @param {number} [count] How many to fetch (Razorpay's own cap is 100)
+ * @returns {Promise<Array<Object>>}
+ */
+async function listPlans(count = 100) {
+  const result = await request('GET', `/plans?count=${Math.min(Math.max(count, 1), 100)}`);
+  return result.items || [];
+}
+
+/**
  * getPlan — reads a recurring plan back, to check what it actually charges.
  *
  * Razorpay bakes the amount into the plan and cannot re-price one, so a plan
@@ -409,6 +420,7 @@ module.exports = {
   getPaymentLink,
   createPlan,
   getPlan,
+  listPlans,
   createSubscription,
   getSubscription,
   cancelSubscription,
