@@ -180,14 +180,14 @@ function decorate(group) {
  * per group without five copies of the same wording drifting apart.
  *
  * @param {string} groupId
- * @param {Object} [options]
- * @param {boolean} [options.includeTest] Include passes marked testOnly
+ * @param {Object} [options] Reserved; no pass is hidden any more. The 5-minute
+ *   Rs 1 test pass it used to gate was removed once test-stage pricing made
+ *   every pass cheap enough to exercise for real.
  * @returns {Array<Object>} Plan objects, in configuration order
  */
 function plansFor(groupId, options = {}) {
   const group = requireGroup(groupId);
   const shapes = loadConfig().planShapes || {};
-  const includeTest = options.includeTest === true;
 
   return Object.entries(group.plans || {})
     .map(([planId, amountPaise]) => {
@@ -202,8 +202,7 @@ function plansFor(groupId, options = {}) {
         razorpayPlanId: shape.type === 'recurring' ? group.razorpayPlanId : ''
       });
     })
-    .filter(Boolean)
-    .filter((plan) => !plan.testOnly || includeTest);
+    .filter(Boolean);
 }
 
 /**

@@ -20,7 +20,6 @@ process.env.RAZORPAY_WEBHOOK_SECRET = 'webhook_secret_for_tests';
 process.env.EXAM_PASS_END_DATE = '30-11-2026';
 process.env.TELEGRAM_BOT_TOKEN = '123:TEST';
 process.env.TELEGRAM_GROUP_ID = '-1001234567890';
-process.env.TEST_PLAN_ENABLED = '';   // never inherit it from a local .env
 
 // Tests configure their own groups. Without this the suite would pass or fail
 // depending on which groups happen to be set up in the developer's .env.
@@ -55,29 +54,7 @@ test('the three sellable passes are defined with sane prices', () => {
   });
 });
 
-test('the Rs 1 test pass is hidden unless TEST_PLAN_ENABLED is set', () => {
-  // A student who finds the bot must never be able to buy 30 days for a rupee,
-  // so the guard is the absence of the plan rather than a price check.
-  const before = process.env.TEST_PLAN_ENABLED;
-  try {
-    delete process.env.TEST_PLAN_ENABLED;
-    assert.ok(!plans.listPlans().some((p) => p.id === 'test_5min'));
 
-    process.env.TEST_PLAN_ENABLED = 'true';
-    const shown = plans.listPlans();
-    assert.ok(shown.some((p) => p.id === 'test_5min'));
-    assert.equal(shown.length, 4);
-  } finally {
-    if (before === undefined) delete process.env.TEST_PLAN_ENABLED;
-    else process.env.TEST_PLAN_ENABLED = before;
-  }
-});
-
-test('a minute-based plan expires in minutes, not days', () => {
-  const from = new Date('2026-09-06T00:00:00Z');
-  const expiry = plans.computeExpiry(plans.getPlan('test_5min'), from, null);
-  assert.equal(expiry.getTime() - from.getTime(), 5 * 60 * 1000);
-});
 
 test('formatAmount renders paise as rupees', () => {
   assert.equal(plans.formatAmount(29900), '₹299');
@@ -90,6 +67,27 @@ test('a 30-day pass expires 30 days out', () => {
   const now = new Date('2026-09-05T12:00:00Z');
   const expiry = plans.computeExpiry(plans.getPlan('sprint_30'), now);
   assert.equal(Math.round((expiry - now) / 86400000), 30);
+});
+
+test('exactly three passes are sold, and the 5-minute test pass is gone', () => {
+  // It could be bought by any student who found the bot, and it existed only to
+  // make the expiry sweep watchable. Test-stage pricing does that job now
+  // without a pass that hands out five minutes of access for a rupee.
+  assert.deepEqual(plans.listPlans().map((p) => p.id), ['sprint_30', 'autopay_monthly', 'exam_pass']);
+  assert.equal(plans.getPlan('test_5min'), null);
+
+  for (const group of groups.listGroups()) {
+    const sold = groups.plansFor(group.id).map((p) => p.id);
+    assert.deepEqual(sold, ['sprint_30', 'autopay_monthly', 'exam_pass'], `${group.id} sells the wrong set`);
+  }
+});
+
+test('every group is on test-stage pricing: Rs 1, Rs 2, Rs 3', () => {
+  for (const group of groups.listGroups()) {
+    const priced = Object.fromEntries(groups.plansFor(group.id).map((p) => [p.id, p.amountPaise]));
+    assert.deepEqual(priced, { sprint_30: 100, autopay_monthly: 200, exam_pass: 300 },
+      `${group.id} is not on test-stage pricing`);
+  }
 });
 
 test('a timestamp survives a round trip whatever timezone the server is in', () => {
@@ -118,16 +116,6 @@ test('a timestamp survives a round trip whatever timezone the server is in', () 
   }
 });
 
-test('a 5-minute test pass really expires in 5 minutes, not 5 hours 35', () => {
-  // The concrete consequence of the parse bug, and the exact thing the test
-  // pass exists to let someone watch happen.
-  const membershipModule = require('../src/membership');
-  const bought = new Date('2026-09-07T12:00:00Z');
-  const expiry = plans.computeExpiry(plans.getPlan('test_5min'), bought);
-
-  const readBack = membershipModule.parseIst(membershipModule.formatIst(expiry));
-  assert.equal(Math.round((readBack - bought) / 60000), 5);
-});
 
 test('the exam pass expires at the end of the exam day in IST', () => {
   // Asserted in IST rather than in the process's local calendar: the students
@@ -891,7 +879,7 @@ test('prices are per group, not shared', () => {
   );
 
   for (const configured of config.groups) {
-    for (const plan of groups.plansFor(configured.id, { includeTest: true })) {
+    for (const plan of groups.plansFor(configured.id)) {
       assert.equal(plan.groupId, configured.id, `${plan.id} is not tagged with its group`);
       assert.equal(
         plan.amountPaise, configured.plans[plan.id],
@@ -907,13 +895,6 @@ test('prices are per group, not shared', () => {
   assert.equal(a.label, b.label);
 });
 
-test('the test pass is hidden per group unless explicitly included', () => {
-  const hidden = groups.plansFor('upsc');
-  assert.ok(!hidden.some((p) => p.id === 'test_5min'));
-
-  const shown = groups.plansFor('upsc', { includeTest: true });
-  assert.ok(shown.some((p) => p.id === 'test_5min'));
-});
 
 test('a sheets client is bound to one group and exposes the whole API', () => {
   const client = sheetsModule.forGroup('appsc_q_en');

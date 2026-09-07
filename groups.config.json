@@ -60,17 +60,6 @@
       "description": "One payment, access right through to the exam. No renewals to remember.",
       "reminderDaysBefore": 7,
       "fixedEndDateEnv": "EXAM_PASS_END_DATE"
-    },
-    "test_5min": {
-      "label": "Test Pass (5 minutes)",
-      "emoji": "🧪",
-      "type": "one_time",
-      "durationDays": null,
-      "durationMinutes": 5,
-      "tagline": "Internal testing only — expires in 5 minutes",
-      "description": "Internal test pass. Access ends five minutes after payment.",
-      "reminderDaysBefore": 0,
-      "testOnly": true
     }
   },
   "groups": [
@@ -82,8 +71,7 @@
       "plans": {
         "sprint_30": 100,
         "autopay_monthly": 200,
-        "exam_pass": 300,
-        "test_5min": 100
+        "exam_pass": 300
       },
       "paymentBotEnv": "TELEGRAM_PAYBOT_NEWS",
       "subjects": [
@@ -114,8 +102,7 @@
       "plans": {
         "sprint_30": 100,
         "autopay_monthly": 200,
-        "exam_pass": 300,
-        "test_5min": 100
+        "exam_pass": 300
       },
       "paymentBotEnv": "TELEGRAM_PAYBOT_NEWS",
       "subjects": [
@@ -146,8 +133,7 @@
       "plans": {
         "sprint_30": 100,
         "autopay_monthly": 200,
-        "exam_pass": 300,
-        "test_5min": 100
+        "exam_pass": 300
       },
       "paymentBotEnv": "TELEGRAM_PAYBOT_SADHANA",
       "subjects": [
@@ -178,8 +164,7 @@
       "plans": {
         "sprint_30": 100,
         "autopay_monthly": 200,
-        "exam_pass": 300,
-        "test_5min": 100
+        "exam_pass": 300
       },
       "paymentBotEnv": "TELEGRAM_PAYBOT_SADHANA",
       "subjects": [
@@ -210,8 +195,7 @@
       "plans": {
         "sprint_30": 100,
         "autopay_monthly": 200,
-        "exam_pass": 300,
-        "test_5min": 100
+        "exam_pass": 300
       },
       "paymentBotEnv": "TELEGRAM_PAYBOT_UPSC",
       "subjects": [

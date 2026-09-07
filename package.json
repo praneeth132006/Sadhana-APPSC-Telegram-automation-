@@ -19,9 +19,9 @@
     "verify-groups": "node verify-groups.js",
     "setup-topics": "node setup-topics.js",
     "reset-topics": "node reset-topics.js",
-    "bot:news": "PAYBOT_ENV=TELEGRAM_PAYBOT_NEWS node bot.js",
-    "bot:sadhana": "PAYBOT_ENV=TELEGRAM_PAYBOT_SADHANA node bot.js",
-    "bot:upsc": "PAYBOT_ENV=TELEGRAM_PAYBOT_UPSC node bot.js"
+    "set-webhooks": "node set-webhooks.js",
+    "webhooks:status": "node set-webhooks.js --status",
+    "webhooks:delete": "node set-webhooks.js --delete"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

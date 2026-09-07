@@ -10,7 +10,7 @@
 // Group id : upsc
 // Subjects : 12
 //            Ancient India, Medieval India, Modern India, Physical Geography, Indian Geography, Economy, Environment, Polity, International Relations, Science and Technology, Current Affairs, Art and Culture
-// Built    : 2026-09-07T09:05:14.733Z
+// Built    : 2026-09-07T10:32:12.740Z
 // ==========================================================================
 
 // ============================================================================
