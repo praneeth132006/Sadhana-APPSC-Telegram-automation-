@@ -175,13 +175,6 @@ function connectivityChecks(data) {
         'One bot is doing both jobs. Set <code>TELEGRAM_PAYMENT_BOT_TOKEN</code> so a leak of the ' +
         'posting token cannot also open the paid group.'));
 
-  // The Rs 1 test pass must never be reachable by a real student.
-  if (p.testPlanEnabled) {
-    checks.push(check('warn', 'Rs 1 test pass is live',
-      '<code>TEST_PLAN_ENABLED=true</code>, so the 5-minute Rs 1 pass is on sale in the bot. ' +
-      'Unset it before sharing the bot with students.'));
-  }
-
   checks.push(p.configured
       ? check(p.testMode ? 'warn' : 'pass', 'Razorpay keys',
           p.testMode

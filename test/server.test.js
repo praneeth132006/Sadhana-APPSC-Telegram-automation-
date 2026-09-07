@@ -28,13 +28,6 @@ process.env.SHEET_API_TOKEN = 'test-sheet-token';
 process.env.TELEGRAM_BOT_TOKEN = '123:TEST';
 process.env.TELEGRAM_GROUP_ID = '-1001234567890';
 
-// The Rs 1 test pass must never be part of what these tests consider normal.
-// Left to the developer's .env, a machine with TEST_PLAN_ENABLED=true would see
-// a four-plan catalogue and a machine without it three, so the suite would pass
-// or fail depending on whose laptop ran it.
-// Empty rather than deleted: dotenv skips keys already present, but happily
-// fills in a deleted one from the developer's .env when server.js loads it.
-process.env.TEST_PLAN_ENABLED = '';
 
 // Posting paces itself against Telegram's per-group rate limit. Real spacing
 // would make a five-question test take fifteen seconds for no extra coverage.
@@ -96,6 +89,10 @@ stub(sheets, 'getUnpostedQuestions', [
   { question_id: 'POL-1', question_text: 'Q1', row_index: 0, excel_row: 2 }
 ]);
 stub(sheets, 'markAsPosted', 1);
+stub(sheets, 'claimQuestions', { claimed: [2], skipped: [] });
+stub(sheets, 'releaseQuestions', 1);
+stub(sheets, 'listPosted', []);
+stub(sheets, 'unpostQuestions', 0);
 
 // Telegram: pretend the bot is healthy and every send succeeds.
 telegram.init = () => {};
@@ -594,6 +591,220 @@ test('the data layer only publishes reviewed questions unless told otherwise', a
   }
 });
 
+// ===========================================================================
+// A question is reserved before it is sent
+// ===========================================================================
+// Telegram can accept a poll and still leave this process with a timeout. A row
+// marked only after a confirmed send is then delivered and still looks
+// unposted, and goes out again on every run after — which is what put two real
+// questions into an endless re-post loop.
+
+test('rows are claimed before anything is sent', async () => {
+  calls.length = 0;
+  await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
+
+  const order = calls.map((c) => c.name);
+  const claimAt = order.indexOf('claimQuestions');
+  const markAt = order.indexOf('markAsPosted');
+
+  assert.ok(claimAt !== -1, 'nothing was claimed before sending');
+  assert.ok(claimAt < markAt, 'the row was marked before it was claimed');
+
+  const [subject, rows] = calls.find((c) => c.name === 'claimQuestions').args;
+  assert.equal(subject, 'Polity');
+  assert.deepEqual(rows, [2]);
+});
+
+test('a question another run already claimed is skipped, not sent', async () => {
+  const original = clientStubs.claimQuestions;
+  clientStubs.claimQuestions = async () => ({
+    claimed: [], skipped: [{ row: 2, reason: 'already sending' }]
+  });
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.json.postedCount, 0);
+    assert.match(res.json.results[0].error, /already sending/);
+    assert.equal(calls.filter((c) => c.name === 'markAsPosted').length, 0);
+  } finally {
+    clientStubs.claimQuestions = original;
+  }
+});
+
+test('a send with no answer keeps the claim rather than risking a duplicate', async () => {
+  // A timeout is not proof of non-delivery. The poll may be in the channel.
+  const originalSend = telegram.sendQuizPoll;
+  telegram.sendQuizPoll = async () => { throw new Error('ETIMEDOUT'); };
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
+
+    assert.equal(res.json.postedCount, 0);
+    assert.equal(calls.filter((c) => c.name === 'releaseQuestions').length, 0,
+      'a row that may have been delivered was handed back for re-sending');
+    assert.deepEqual(res.json.strandedRows, [2]);
+    assert.match(res.json.results[0].error, /held as "Sending"/);
+  } finally {
+    telegram.sendQuizPoll = originalSend;
+  }
+});
+
+test('a send Telegram refused outright hands the row back', async () => {
+  // A 400 means nothing was delivered, so the question must not be stranded.
+  const originalSend = telegram.sendQuizPoll;
+  telegram.sendQuizPoll = async () => {
+    const err = new Error('Bad Request: poll question is too long');
+    err.response = { body: { error_code: 400, description: 'poll question is too long' } };
+    throw err;
+  };
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
+
+    const released = calls.find((c) => c.name === 'releaseQuestions');
+    assert.ok(released, 'a refused question was left stranded');
+    assert.deepEqual(released.args[1], [2]);
+    assert.deepEqual(res.json.strandedRows, []);
+    assert.match(res.json.results[0].error, /Telegram refused it/);
+  } finally {
+    telegram.sendQuizPoll = originalSend;
+  }
+});
+
+test('a flood wait is never treated as proof the poll was not delivered', async () => {
+  // 429 can arrive after Telegram accepted the message.
+  const originalSend = telegram.sendQuizPoll;
+  telegram.sendQuizPoll = async () => {
+    const err = new Error('Too Many Requests');
+    err.response = { body: { error_code: 429, parameters: { retry_after: 5 } } };
+    throw err;
+  };
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
+    assert.equal(calls.filter((c) => c.name === 'releaseQuestions').length, 0);
+    assert.deepEqual(res.json.strandedRows, [2]);
+  } finally {
+    telegram.sendQuizPoll = originalSend;
+  }
+});
+
+test('asking for more than are ready explains why, instead of looking broken', async () => {
+  // "2 of 2 posted" after asking for 5 reads like a failure. It is usually a
+  // full queue, and the answer belongs in the message.
+  const originalList = clientStubs.listQuestions;
+  clientStubs.listQuestions = async () => ({
+    total: 4, page: 1, totalPages: 1,
+    questions: [
+      { question_id: 'A', posted: 'YES', status: 'Posted', claimed: false },
+      { question_id: 'B', posted: 'YES', status: 'Posted', claimed: false },
+      { question_id: 'C', posted: 'NO', status: 'Draft', claimed: false },
+      { question_id: 'D', posted: 'NO', status: 'Approved', claimed: false }
+    ]
+  });
+
+  try {
+    const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 5 } });
+
+    assert.equal(res.json.requestedCount, 5);
+    assert.equal(res.json.eligibleCount, 1);
+    assert.match(res.json.message, /you asked for 5/);
+    assert.match(res.json.message, /2 already posted/);
+    assert.match(res.json.message, /1 not approved yet/);
+  } finally {
+    clientStubs.listQuestions = originalList;
+  }
+});
+
+// ===========================================================================
+// Reconciling the sheet against the channel
+// ===========================================================================
+
+test('reconcile reports deleted polls and changes nothing until asked', async () => {
+  const originalPosted = clientStubs.listPosted;
+  const originalExists = telegram.pollStillExists;
+  clientStubs.listPosted = async () => ([
+    { row: 2, question_id: 'POL-1', message_id: '900', status: 'Posted' },
+    { row: 3, question_id: 'POL-2', message_id: '901', status: 'Posted' }
+  ]);
+  telegram.pollStillExists = async (id) => String(id) !== '901';
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/reconcile', {
+      method: 'POST', body: { subject: 'Polity' }
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.json.applied, false);
+    assert.equal(res.json.missing.length, 1);
+    assert.equal(res.json.missing[0].questionId, 'POL-2');
+    assert.equal(calls.filter((c) => c.name === 'unpostQuestions').length, 0,
+      'a read-only check wrote to the sheet');
+  } finally {
+    clientStubs.listPosted = originalPosted;
+    telegram.pollStillExists = originalExists;
+  }
+});
+
+test('reconcile puts deleted polls back in the queue when applied', async () => {
+  const originalPosted = clientStubs.listPosted;
+  const originalExists = telegram.pollStillExists;
+  const originalUnpost = clientStubs.unpostQuestions;
+  clientStubs.listPosted = async () => ([
+    { row: 7, question_id: 'POL-9', message_id: '909', status: 'Posted' }
+  ]);
+  telegram.pollStillExists = async () => false;
+  // Captured here rather than through the shared recorder: replacing a stub
+  // directly bypasses it.
+  const unpostArgs = [];
+  clientStubs.unpostQuestions = async (...args) => { unpostArgs.push(args); return 1; };
+
+  try {
+    const res = await authed('/api/telegram/reconcile', {
+      method: 'POST', body: { subject: 'Polity', apply: true }
+    });
+
+    assert.equal(res.json.restored, 1);
+    assert.equal(unpostArgs.length, 1);
+    assert.equal(unpostArgs[0][0], 'Polity');
+    assert.deepEqual(unpostArgs[0][1], [7]);
+  } finally {
+    clientStubs.listPosted = originalPosted;
+    telegram.pollStillExists = originalExists;
+    clientStubs.unpostQuestions = originalUnpost;
+  }
+});
+
+test('reconcile leaves a poll alone when it cannot tell', async () => {
+  // Guessing "deleted" would put a live question back in the queue and post it
+  // a second time, which is the opposite of the point.
+  const originalPosted = clientStubs.listPosted;
+  const originalExists = telegram.pollStillExists;
+  clientStubs.listPosted = async () => ([
+    { row: 2, question_id: 'POL-1', message_id: '900', status: 'Posted' }
+  ]);
+  telegram.pollStillExists = async () => null;
+
+  try {
+    const res = await authed('/api/telegram/reconcile', {
+      method: 'POST', body: { subject: 'Polity', apply: true }
+    });
+    assert.equal(res.json.missing.length, 0);
+    assert.deepEqual(res.json.unknown, ['POL-1']);
+    assert.equal(res.json.restored, 0);
+  } finally {
+    clientStubs.listPosted = originalPosted;
+    telegram.pollStillExists = originalExists;
+  }
+});
+
 test('the posting batch size is capped at 20', async () => {
   calls.length = 0;
   await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 5000 } });
@@ -608,9 +819,12 @@ test('every question in a batch is marked against its own sheet row', async () =
   // rows 2, 3 and 4. Five questions were posted, three rows were marked, and
   // the two survivors went out a second time on the next run.
   const original = clientStubs.getUnpostedQuestions;
+  const originalClaim = clientStubs.claimQuestions;
   clientStubs.getUnpostedQuestions = async () => [0, 1, 2, 3, 4].map((i) => ({
     question_id: `POL-${i + 1}`, question_text: `Q${i + 1}`, row_index: i, excel_row: i + 2
   }));
+  // The rows must be claimed before they can be sent.
+  clientStubs.claimQuestions = async (subject, rows) => ({ claimed: rows, skipped: [] });
 
   try {
     calls.length = 0;
@@ -626,14 +840,18 @@ test('every question in a batch is marked against its own sheet row', async () =
     assert.deepEqual(marked, [2, 3, 4, 5, 6]);
   } finally {
     clientStubs.getUnpostedQuestions = original;
+    clientStubs.claimQuestions = originalClaim;
   }
 });
 
-test('a question posted but not marked is reported, not silently counted', async () => {
-  // Reporting it as a plain success would leave a live poll looking unposted,
-  // and the next run would send it again.
+test('a question posted but not marked stays claimed, and says so', async () => {
+  // The poll is public and the sheet does not know. The row keeps its claim so
+  // it cannot go out again, and the message says which row needs a person.
   const original = clientStubs.markAsPosted;
+  const originalRelease = clientStubs.releaseQuestions;
+  let released = 0;
   clientStubs.markAsPosted = async () => { throw new Error('sheet unreachable'); };
+  clientStubs.releaseQuestions = async () => { released++; return 1; };
 
   try {
     const res = await authed('/api/telegram/post', {
@@ -644,10 +862,13 @@ test('a question posted but not marked is reported, not silently counted', async
     assert.equal(res.status, 200);
     assert.equal(res.json.postedCount, 0);
     assert.equal(res.json.results[0].ok, false);
-    assert.match(res.json.results[0].error, /Posted to Telegram but the sheet was not updated/);
-    assert.match(res.json.results[0].error, /row 2/);
+    assert.match(res.json.results[0].error, /Posted to Telegram, but the sheet did not record it/);
+    assert.match(res.json.results[0].error, /Row 2 is held as "Sending"/);
+    assert.deepEqual(res.json.strandedRows, [2]);
+    assert.equal(released, 0, 'a live poll was handed back for re-sending');
   } finally {
     clientStubs.markAsPosted = original;
+    clientStubs.releaseQuestions = originalRelease;
   }
 });
 
@@ -773,6 +994,175 @@ test('the plan catalogue refuses an unknown group rather than inventing one', as
   const res = await call('/api/plans?group=not_a_group');
   assert.equal(res.status, 400);
   assert.match(res.json.error, /Unknown group/);
+});
+
+// ===========================================================================
+// The payment bots, served over Telegram webhooks
+// ===========================================================================
+// They used to be three long-running laptop processes started by hand. In
+// practice one ran and two did not, so two of the three bots answered nobody,
+// and the one that ran had been started before the prices changed and kept
+// quoting the old ones from memory. These cover the route that replaced them.
+
+/** The secret Telegram must echo back, derived the way server.js derives it. */
+function botWebhookSecret() {
+  return require('node:crypto')
+    .createHash('sha256')
+    .update('telegram-webhook:' + process.env.CRON_SECRET)
+    .digest('hex').slice(0, 48);
+}
+
+async function botWebhook(payBotEnv, update, secret) {
+  const res = await fetch(`${baseUrl}/api/telegram/bot/${encodeURIComponent(payBotEnv)}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Bot-Api-Secret-Token': secret === undefined ? botWebhookSecret() : secret
+    },
+    body: JSON.stringify(update)
+  });
+  return { status: res.status, json: await res.json() };
+}
+
+test('a bot webhook without the secret token is refused', async () => {
+  // The only thing between this endpoint and anyone who guesses the URL. It
+  // drives a bot that hands out paid-group invite links.
+  for (const offered of ['', 'wrong', botWebhookSecret().slice(0, -1) + 'x']) {
+    const res = await botWebhook('TELEGRAM_PAYBOT_NEWS', { update_id: 1 }, offered);
+    assert.equal(res.status, 401, `accepted the secret "${offered}"`);
+  }
+});
+
+test('a bot webhook for an unconfigured family is refused', async () => {
+  const res = await botWebhook('TELEGRAM_PAYBOT_NOT_A_THING', { update_id: 1 });
+  assert.equal(res.status, 404);
+  assert.match(res.json.error, /No payment bot is configured/);
+});
+
+test('a signed bot webhook is accepted and answered immediately', async () => {
+  // Telegram retries anything it does not get a prompt 200 for, and a retry
+  // here means a second payment link for one tap, so the 200 goes out before
+  // the update is dispatched.
+  const res = await botWebhook('TELEGRAM_PAYBOT_NEWS', {
+    update_id: 7,
+    message: { message_id: 1, date: 0, chat: { id: 4242, type: 'private' }, from: { id: 4242 }, text: '/nothing' }
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.success, true);
+});
+
+test('every configured family has a webhook endpoint that accepts updates', async () => {
+  // The regression this exists for: two of the three bots answering nobody.
+  const groupsModule = require('../src/groups');
+  const families = [...new Set(
+    groupsModule.listGroups().filter((g) => g.ready && g.paymentBotEnv).map((g) => g.paymentBotEnv)
+  )].filter((env) => String(process.env[env] || '').trim());
+
+  assert.ok(families.length >= 2, 'expected several payment bot families');
+
+  for (const payBotEnv of families) {
+    const res = await botWebhook(payBotEnv, { update_id: 1 });
+    assert.equal(res.status, 200, `${payBotEnv} does not answer its webhook`);
+  }
+});
+
+// ===========================================================================
+// The thank-you page's confirmation
+// ===========================================================================
+// Public, because the payer is a student in a browser. It grants nothing — it
+// only says what was bought — but it must still refuse to answer about a
+// payment link whose redirect signature does not check out.
+
+/** Signs a payment-link redirect the way Razorpay does. */
+function signRedirect({ linkId, paymentId, referenceId, status }) {
+  return require('node:crypto')
+    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    .update(`${linkId}|${referenceId}|${status}|${paymentId}`)
+    .digest('hex');
+}
+
+function confirmQuery(parts, signature) {
+  return new URLSearchParams({
+    razorpay_payment_link_id: parts.linkId,
+    razorpay_payment_id: parts.paymentId,
+    razorpay_payment_link_reference_id: parts.referenceId,
+    razorpay_payment_link_status: parts.status,
+    razorpay_signature: signature
+  }).toString();
+}
+
+test('the payment confirmation refuses an unsigned or forged redirect', async () => {
+  const parts = { linkId: 'plink_x', paymentId: 'pay_x', referenceId: 'ref_x', status: 'paid' };
+  const good = signRedirect(parts);
+
+  const bad = [
+    confirmQuery(parts, ''),
+    confirmQuery(parts, 'not-a-signature'),
+    confirmQuery(parts, good.slice(0, -1) + (good.endsWith('0') ? '1' : '0')),
+    // Right signature, different link: the HMAC covers the id, so this fails.
+    confirmQuery(Object.assign({}, parts, { linkId: 'plink_someone_else' }), good)
+  ];
+
+  for (const query of bad) {
+    const res = await call('/api/payments/confirm?' + query);
+    assert.ok(res.status === 400 || res.status === 401,
+      `answered ${res.status} for a redirect it should not trust`);
+  }
+});
+
+test('the payment confirmation describes the pass, and leaks no secrets', async () => {
+  const parts = { linkId: 'plink_ok', paymentId: 'pay_ok', referenceId: 'ref_ok', status: 'paid' };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('api.razorpay.com')) return originalFetch(url, opts);
+    const payload = JSON.stringify({
+      id: 'plink_ok', status: 'paid', amount: 100,
+      notes: { group_id: 'appsc_news_en', plan_id: 'sprint_30', telegram_id: '4242' }
+    });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    const res = await call('/api/payments/confirm?' + confirmQuery(parts, signRedirect(parts)));
+    assert.equal(res.status, 200);
+
+    const d = res.json.data;
+    assert.equal(d.paid, true);
+    assert.equal(d.planLabel, '30-Day Sprint Pass');
+    assert.equal(d.amountPaise, 100);
+    assert.equal(d.recurring, false);
+    assert.match(d.groupName, /APPSC Newspaper/);
+
+    // It is a public endpoint reached with no login.
+    assert.ok(!res.text.includes(process.env.RAZORPAY_KEY_SECRET), 'the Razorpay secret leaked');
+    assert.ok(!res.text.includes(process.env.SHEET_API_TOKEN), 'the sheet token leaked');
+    assert.ok(!res.text.includes('4242'), 'the buyer telegram id leaked to the browser');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('the payment confirmation reports an unpaid link as unpaid', async () => {
+  const parts = { linkId: 'plink_no', paymentId: '', referenceId: 'ref_no', status: 'expired' };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('api.razorpay.com')) return originalFetch(url, opts);
+    const payload = JSON.stringify({
+      id: 'plink_no', status: 'expired', amount: 100,
+      notes: { group_id: 'appsc_news_en', plan_id: 'sprint_30' }
+    });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    const res = await call('/api/payments/confirm?' + confirmQuery(parts, signRedirect(parts)));
+    assert.equal(res.status, 200);
+    assert.equal(res.json.data.paid, false, 'an unpaid link was reported as paid');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('a webhook with a valid signature is processed', async () => {

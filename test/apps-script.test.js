@@ -24,6 +24,11 @@ const crypto = require('node:crypto');
 // Minimal Google Apps Script runtime
 // ---------------------------------------------------------------------------
 
+/** What the stubbed LockService was asked to do, newest last. */
+let lockLog = [];
+/** Queue of tryLock outcomes; anything not queued grants the lock. */
+let lockGrants = [];
+
 /** Script properties the stubbed PropertiesService serves. */
 const scriptProperties = {};
 
@@ -79,6 +84,9 @@ class FakeSheet {
   }
 
   clear() { this.values = []; return this; }
+  // Missing until now, which is why nothing exercised upsertSubscriber or
+  // logPayment — and why a payment could be counted twice unnoticed.
+  appendRow(row) { this.values.push(row.slice()); return this; }
   deleteRow(row) { this.values.splice(row - 1, 1); return this; }
   setFrozenRows() { return this; }
   setFrozenColumns() { return this; }
@@ -141,6 +149,15 @@ function loadScript(spreadsheet) {
       getScriptProperties: () => ({ getProperty: (k) => scriptProperties[k] ?? null })
     },
 
+    // Apps Script serialises concurrent executions with this; the stub records
+    // the calls so a test can prove the payment path takes and releases it.
+    LockService: {
+      getScriptLock: () => ({
+        tryLock: (ms) => { lockLog.push('lock:' + ms); return lockGrants.shift() !== false; },
+        releaseLock: () => { lockLog.push('release'); }
+      })
+    },
+
     Utilities: {
       DigestAlgorithm: { SHA_256: 'SHA_256' },
       computeDigest: (_alg, input) => Array.from(crypto.createHash('sha256').update(input).digest()),
@@ -165,6 +182,8 @@ function loadScript(spreadsheet) {
 
 /** Builds a fresh script sandbox over an empty spreadsheet. */
 function freshScript(sheets = []) {
+  lockLog = [];
+  lockGrants = [];
   return loadScript(new FakeSpreadsheet(sheets));
 }
 
@@ -791,6 +810,535 @@ test('markRowsAsPostedInSheet ignores a row repeated within one batch', () => {
   assert.equal(updated, 1);
   assert.equal(sheet.values[1][map['Times Posted']], 1);
 });
+
+// ===========================================================================
+// One payment must count once
+// ===========================================================================
+// Razorpay delivers a webhook more than once. A real Rs 1 payment was recorded
+// as total_paid 2 and renewals 2, with two rows in the payment log a second
+// apart, because the caller's "have I seen this payment id?" check reads the
+// row and the write happens later — two overlapping deliveries both read
+// "new". These are the regression tests for that.
+
+/** A payment webhook payload, as membership.grantAccess would send it. */
+function paymentUpsert(overrides) {
+  return Object.assign({
+    telegram_id: '7234356929',
+    username: 'praneeth132006',
+    plan: 'sprint_30',
+    plan_label: '30-Day Sprint Pass',
+    status: 'active',
+    expiry_date: '07-10-2026, 05:26:54 PM IST',
+    amount: 1,
+    payment_id: 'pay_TZ8ciB8Yng8WE3',
+    is_payment: true
+  }, overrides || {});
+}
+
+test('the same payment delivered twice is counted once', () => {
+  const script = freshScript();
+
+  const first = script.upsertSubscriber(paymentUpsert());
+  assert.equal(first.total_paid, 1);
+  assert.equal(first.renewals, 1);
+  assert.equal(first.already_counted, false);
+
+  // Byte-identical redelivery, which is what Razorpay actually sends.
+  const second = script.upsertSubscriber(paymentUpsert());
+  assert.equal(second.total_paid, 1, 'a redelivered payment was added to the takings again');
+  assert.equal(second.renewals, 1, 'a redelivered payment counted as a second renewal');
+  assert.equal(second.already_counted, true);
+});
+
+test('a genuine second payment still counts', () => {
+  // The guard keys on the payment id, so it must not swallow a real renewal.
+  const script = freshScript();
+
+  script.upsertSubscriber(paymentUpsert());
+  const renewed = script.upsertSubscriber(paymentUpsert({
+    payment_id: 'pay_A_DIFFERENT_ONE', amount: 3, plan: 'exam_pass'
+  }));
+
+  assert.equal(renewed.total_paid, 4, 'Rs 1 then Rs 3 should total Rs 4');
+  assert.equal(renewed.renewals, 2);
+  assert.equal(renewed.already_counted, false);
+});
+
+test('a non-payment update never touches the takings', () => {
+  const script = freshScript();
+  script.upsertSubscriber(paymentUpsert());
+
+  const cancelled = script.upsertSubscriber({
+    telegram_id: '7234356929', status: 'cancelled', is_payment: false
+  });
+
+  assert.equal(cancelled.total_paid, 1);
+  assert.equal(cancelled.renewals, 1);
+});
+
+test('the payment log refuses a second row for one payment id', () => {
+  const script = freshScript();
+
+  assert.equal(script.logPayment({
+    telegram_id: '7234356929', plan: 'sprint_30', amount: 1,
+    payment_id: 'pay_TZ8ciB8Yng8WE3', event: 'payment_link.paid'
+  }), true);
+
+  assert.equal(script.logPayment({
+    telegram_id: '7234356929', plan: 'sprint_30', amount: 1,
+    payment_id: 'pay_TZ8ciB8Yng8WE3', event: 'payment_link.paid'
+  }), false, 'the log took a duplicate row for one payment');
+
+  const sheet = script.book().getSheetByName('Payments');
+  assert.equal(sheet.getLastRow(), 2, 'header plus exactly one payment row');
+});
+
+test('the payment write path takes and releases the script lock', () => {
+  // The per-payment check reads then writes. Without serialisation two
+  // deliveries arriving together both read "new" and both count.
+  const script = freshScript();
+  script.upsertSubscriber(paymentUpsert());
+
+  assert.ok(lockLog.some((e) => e.startsWith('lock:')), 'no lock was taken');
+  assert.equal(lockLog[lockLog.length - 1], 'release', 'the lock was not released');
+  assert.equal(
+    lockLog.filter((e) => e.startsWith('lock:')).length,
+    lockLog.filter((e) => e === 'release').length,
+    'a lock was taken without being released'
+  );
+});
+
+test('a payment is refused rather than counted when the lock cannot be taken', () => {
+  // Razorpay retries anything that is not a 200, so a refusal is recoverable.
+  // Writing without the lock is not.
+  const script = freshScript();
+  lockGrants.push(false);
+
+  assert.throws(() => script.upsertSubscriber(paymentUpsert()), /busy with another payment/);
+});
+
+// ===========================================================================
+// Posted and Sending are the poster's to write, not a curator's
+// ===========================================================================
+// They are written together with the Posted column, the message id and the
+// poll id. Setting Status alone leaves Status saying "Posted" while the Posted
+// column still says NO — so the question stays eligible and goes out again,
+// with the dashboard insisting it was already sent.
+
+test('bulk status refuses Posted and Sending', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [{
+    question: 'Q1?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }], 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const id = String(sheet.values[1][map['Question ID']]);
+
+  for (const status of ['Posted', 'Sending']) {
+    assert.throws(() => script.bulkSetStatus('Polity', [id], status, 'Curator'),
+      /set by the poster, not by hand/, `bulk status accepted "${status}"`);
+  }
+
+  // The row is untouched, and still eligible.
+  assert.equal(sheet.values[1][map['Posted']], 'NO');
+  assert.notEqual(sheet.values[1][map['Status']], 'Posted');
+});
+
+test('bulk status still applies every status a curator owns', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [{
+    question: 'Q1?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }], 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const id = String(sheet.values[1][map['Question ID']]);
+
+  for (const status of ['Draft', 'Review', 'Approved', 'Scheduled', 'Rejected', 'Archived']) {
+    assert.equal(script.bulkSetStatus('Polity', [id], status, 'Curator'), 1);
+    assert.equal(sheet.values[1][map['Status']], status);
+  }
+});
+
+test('editing one question cannot set Posted either', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [{
+    question: 'Q1?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }], 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const id = String(sheet.values[1][map['Question ID']]);
+
+  assert.throws(
+    () => script.updateQuestionRow('Polity', id, { status: 'Posted' }, 'Curator'),
+    /set by the poster, not by hand/
+  );
+  assert.equal(sheet.values[1][map['Posted']], 'NO');
+
+  // An ordinary edit still works.
+  assert.equal(script.updateQuestionRow('Polity', id, { status: 'Approved', topic: 'Rights' }, 'Curator'), true);
+  assert.equal(sheet.values[1][map['Status']], 'Approved');
+  assert.equal(sheet.values[1][map['Topic']], 'Rights');
+});
+
+// ===========================================================================
+// Revenue per plan comes from what was charged, not from who holds what
+// ===========================================================================
+
+test('a member who changed plan does not credit their whole spend to the new one', () => {
+  // total_paid is a lifetime figure. Adding it to whichever plan the member
+  // holds today put every rupee they ever paid under that plan and nothing
+  // under the one they actually bought first.
+  const s = freshScript();
+  const subs = new FakeSheet('Subscribers', [s.SUBSCRIBER_HEADERS.slice()]);
+  const pays = new FakeSheet('Payments', [s.PAYMENT_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([subs, pays]));
+
+  // One member: Rs 1 sprint pass first, then a Rs 3 exam pass.
+  script.upsertSubscriber({
+    telegram_id: '1', plan: 'sprint_30', plan_label: '30-Day Sprint Pass',
+    status: 'active', expiry_date: '31-12-2030, 11:59:00 PM IST',
+    amount: 1, payment_id: 'pay_1', is_payment: true
+  });
+  script.logPayment({ telegram_id: '1', plan: 'sprint_30', amount: 1, payment_id: 'pay_1', event: 'payment_link.paid' });
+
+  script.upsertSubscriber({
+    telegram_id: '1', plan: 'exam_pass', plan_label: 'Target 2026 Pass',
+    status: 'active', expiry_date: '31-12-2030, 11:59:00 PM IST',
+    amount: 3, payment_id: 'pay_2', is_payment: true
+  });
+  script.logPayment({ telegram_id: '1', plan: 'exam_pass', amount: 3, payment_id: 'pay_2', event: 'payment_link.paid' });
+
+  const stats = script.buildRevenueStats();
+
+  assert.equal(stats.totalMembers, 1);
+  assert.equal(stats.totalRevenue, 4, 'lifetime revenue should be Rs 1 + Rs 3');
+  assert.equal(stats.byPlan.sprint_30.revenue, 1, 'the sprint pass earned Rs 1 and must show it');
+  assert.equal(stats.byPlan.exam_pass.revenue, 3);
+  // Head count still follows the plan they hold NOW, so the retired plan shows
+  // the money it earned with nobody currently on it.
+  assert.equal(stats.byPlan.exam_pass.count, 1);
+  assert.equal(stats.byPlan.sprint_30.count, 0);
+});
+
+test('per-plan revenue adds up to total revenue', () => {
+  const s = freshScript();
+  const subs = new FakeSheet('Subscribers', [s.SUBSCRIBER_HEADERS.slice()]);
+  const pays = new FakeSheet('Payments', [s.PAYMENT_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([subs, pays]));
+
+  [['1', 'sprint_30', 1, 'pay_a'], ['2', 'exam_pass', 3, 'pay_b'], ['3', 'sprint_30', 1, 'pay_c']]
+    .forEach(([id, plan, amount, paymentId]) => {
+      script.upsertSubscriber({
+        telegram_id: id, plan, plan_label: plan, status: 'active',
+        expiry_date: '31-12-2030, 11:59:00 PM IST', amount, payment_id: paymentId, is_payment: true
+      });
+      script.logPayment({ telegram_id: id, plan, amount, payment_id: paymentId, event: 'payment_link.paid' });
+    });
+
+  const stats = script.buildRevenueStats();
+  const summed = Object.keys(stats.byPlan).reduce((t, k) => t + stats.byPlan[k].revenue, 0);
+  assert.equal(summed, stats.totalRevenue, 'the plan breakdown does not add up to the total');
+  assert.equal(stats.totalRevenue, 5);
+});
+
+// ===========================================================================
+// A Question ID identifies exactly one row
+// ===========================================================================
+// Every edit, delete and bulk status change resolves a Question ID to the FIRST
+// row that matches. A repeated id therefore means one question silently stands
+// in for another — the wrong row edited, the wrong row deleted.
+
+test('an upload never reissues a Question ID that already exists', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  const q = (n) => ({
+    question: `Q${n}?`, option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  });
+
+  script.appendQuestionsToSheet('Polity', [q(1), q(2)], 'Curator', true);
+
+  // Someone edits S.No back to 1, the way a hand-tidied sheet ends up. The next
+  // upload would otherwise mint the ids the first two rows already hold.
+  const map = script.headerMap(sheet);
+  sheet.getRange(3, script.colNum(map, 'S.No')).setValue(1);
+
+  script.appendQuestionsToSheet('Polity', [q(3), q(4)], 'Curator', true);
+
+  const ids = sheet.values.slice(1).map((r) => String(r[map['Question ID']]));
+  assert.equal(new Set(ids).size, ids.length, `two rows share a Question ID: ${ids.join(', ')}`);
+});
+
+test('every id an upload reports back resolves to its own row', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  const result = script.appendQuestionsToSheet('Polity',
+    [1, 2, 3, 4, 5].map((n) => ({
+      question: `Q${n}?`, option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+    })), 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const rows = Array.from(result.ids).map((id) => script.findRowByQuestionId(sheet, map, id));
+
+  assert.deepEqual(rows, [2, 3, 4, 5, 6]);
+  assert.equal(new Set(rows).size, rows.length, 'two ids resolved to the same row');
+});
+
+test('uploading is serialised, so two uploads cannot mint the same ids', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [{
+    question: 'Q1?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }], 'Curator', true);
+
+  assert.ok(lockLog.some((e) => e.startsWith('lock:')), 'the upload did not take the lock');
+  assert.equal(
+    lockLog.filter((e) => e.startsWith('lock:')).length,
+    lockLog.filter((e) => e === 'release').length,
+    'a lock was taken without being released'
+  );
+});
+
+// ===========================================================================
+// Expiry dates are IST, wherever the script thinks it lives
+// ===========================================================================
+// istNow() writes every stamp with an explicit 'Asia/Kolkata'. parseIstDate
+// read them back from LOCAL parts, which is the Apps Script project's own
+// timezone — whatever the account was created in. Every expiry then landed
+// hours off, and getExpiringSubscribers is what decides who is removed from a
+// paid group. The same fault was fixed in src/membership.js; this copy was
+// missed, which is why these tests exist.
+
+test('an IST stamp parses to the same instant whatever the local timezone is', () => {
+  const script = freshScript();
+
+  // 11:59:59 PM IST on 30-11-2026 is 18:29:59 UTC that day.
+  const parsed = script.parseIstDate('30-11-2026, 11:59:59 PM IST');
+  assert.equal(parsed.toISOString(), '2026-11-30T18:29:59.000Z');
+
+  // Midday IST is 06:30 UTC.
+  assert.equal(
+    script.parseIstDate('05-09-2026, 12:00:00 PM IST').toISOString(),
+    '2026-09-05T06:30:00.000Z'
+  );
+
+  // Midnight IST is 18:30 UTC the day BEFORE — the case a local-time parse
+  // gets wrong by a whole calendar day.
+  assert.equal(
+    script.parseIstDate('01-01-2026, 12:00:00 AM IST').toISOString(),
+    '2025-12-31T18:30:00.000Z'
+  );
+});
+
+test('a bare date is read as the end of that day in IST', () => {
+  const script = freshScript();
+  assert.equal(script.parseIstDate('30-11-2026').toISOString(), '2026-11-30T18:29:59.000Z');
+});
+
+test('parseIstDate refuses what it cannot read rather than guessing', () => {
+  const script = freshScript();
+  ['', '   ', '-', 'never', '2026-11-30', null, undefined].forEach((value) => {
+    assert.equal(script.parseIstDate(value), null, `accepted ${JSON.stringify(value)}`);
+  });
+});
+
+test('a member is only expiring once their IST expiry is inside the window', () => {
+  // The consequence of the parse: 5h30m of drift either strands a lapsed
+  // member in the group or removes one who still has hours left.
+  const s = freshScript();
+  const subs = new FakeSheet('Subscribers', [s.SUBSCRIBER_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([subs]));
+
+  const soon = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+  const later = new Date(Date.now() + 20 * 24 * 60 * 60 * 1000);
+
+  // Build the stamps the way the sheet stores them, in IST.
+  const istStamp = (d) => {
+    const p = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+    }).formatToParts(d);
+    const g = (t) => (p.find((x) => x.type === t) || {}).value;
+    return `${g('day')}-${g('month')}-${g('year')}, ${g('hour')}:${g('minute')}:${g('second')} ${g('dayPeriod').toUpperCase()} IST`;
+  };
+
+  script.upsertSubscriber({
+    telegram_id: '111', status: 'active', expiry_date: istStamp(soon), is_payment: false
+  });
+  script.upsertSubscriber({
+    telegram_id: '222', status: 'active', expiry_date: istStamp(later), is_payment: false
+  });
+
+  const within7 = Array.from(script.getExpiringSubscribers(7)).map((x) => x.telegram_id);
+  assert.deepEqual(within7, ['111'], 'the wrong members were flagged as expiring');
+
+  const within30 = Array.from(script.getExpiringSubscribers(30)).map((x) => x.telegram_id);
+  assert.deepEqual(within30.sort(), ['111', '222']);
+});
+
+test('a cancelled or expired member is never in the expiring list', () => {
+  // Only someone who currently holds access can lapse; re-removing an expired
+  // member would send them a second "your pass ended" message every night.
+  const s = freshScript();
+  const subs = new FakeSheet('Subscribers', [s.SUBSCRIBER_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([subs]));
+
+  script.upsertSubscriber({
+    telegram_id: '333', status: 'expired', expiry_date: '01-01-2020, 12:00:00 AM IST', is_payment: false
+  });
+  script.upsertSubscriber({
+    telegram_id: '444', status: 'cancelled', expiry_date: '01-01-2020, 12:00:00 AM IST', is_payment: false
+  });
+
+  assert.equal(script.getExpiringSubscribers(365).length, 0);
+});
+
+// ===========================================================================
+// A question can never be posted twice
+// ===========================================================================
+// Telegram can accept a poll and still leave the sender with a timeout, so a
+// row marked only after a confirmed send is delivered and still looks unposted
+// — and goes out again on every run after. Two questions were stuck in exactly
+// that loop. Claiming the row BEFORE the send is what stops it.
+
+/** Builds a sheet with `n` approved, unposted questions in rows 2..n+1. */
+function sheetWithQuestions(n) {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+  script.appendQuestionsToSheet('Polity',
+    Array.from({ length: n }, (_, i) => ({
+      question: `Q${i + 1}?`, option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd',
+      correct_answer: 'A', status: 'Approved'
+    })), 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  for (let row = 2; row <= n + 1; row++) {
+    sheet.getRange(row, script.colNum(map, 'Status')).setValue('Approved');
+  }
+  return { script, sheet, map };
+}
+
+test('a claimed question stops being eligible immediately', () => {
+  const { script } = sheetWithQuestions(3);
+
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 3);
+
+  script.claimQuestionRows('Polity', [2, 3]);
+
+  const left = script.fetchUnpostedQuestions('Polity', 10, true);
+  assert.equal(left.length, 1, 'a claimed question was offered up for sending again');
+  assert.equal(left[0].excel_row, 4);
+});
+
+test('a second run cannot claim what the first one already took', () => {
+  // The duplicate this exists to prevent: two overlapping posting runs.
+  const { script } = sheetWithQuestions(2);
+
+  const first = script.claimQuestionRows('Polity', [2, 3]);
+  assert.deepEqual(Array.from(first.claimed), [2, 3]);
+
+  const second = script.claimQuestionRows('Polity', [2, 3]);
+  assert.equal(second.claimed.length, 0, 'the same rows were handed out twice');
+  assert.deepEqual(Array.from(second.skipped).map((x) => x.reason), ['already sending', 'already sending']);
+});
+
+test('an already-posted question is never claimed again', () => {
+  const { script } = sheetWithQuestions(2);
+  script.markRowsAsPostedInSheet('Polity', [2], '900', '6', {});
+
+  const claim = script.claimQuestionRows('Polity', [2, 3]);
+  assert.deepEqual(Array.from(claim.claimed), [3]);
+  assert.equal(claim.skipped[0].reason, 'already posted');
+});
+
+test('marking a claimed row posted resolves the claim', () => {
+  const { script, sheet, map } = sheetWithQuestions(1);
+
+  script.claimQuestionRows('Polity', [2]);
+  assert.match(String(sheet.values[1][map['Posted']]), /^SENDING/);
+
+  script.markRowsAsPostedInSheet('Polity', [2], '901', '6', {});
+  assert.equal(sheet.values[1][map['Posted']], 'YES');
+  assert.equal(sheet.values[1][map['Status']], 'Posted');
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 0);
+});
+
+test('releasing a claim makes the question available again', () => {
+  // Only for a send Telegram refused outright, where nothing was delivered.
+  const { script } = sheetWithQuestions(1);
+
+  script.claimQuestionRows('Polity', [2]);
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 0);
+
+  assert.equal(script.releaseQuestionRows('Polity', [2], 'Approved'), 1);
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 1);
+});
+
+test('releasing never clears a row that reached Posted in the meantime', () => {
+  // The race: a slow release arriving after the send actually succeeded would
+  // otherwise un-post a live poll and send it a second time.
+  const { script, sheet, map } = sheetWithQuestions(1);
+
+  script.claimQuestionRows('Polity', [2]);
+  script.markRowsAsPostedInSheet('Polity', [2], '902', '6', {});
+
+  assert.equal(script.releaseQuestionRows('Polity', [2], 'Approved'), 0);
+  assert.equal(sheet.values[1][map['Posted']], 'YES');
+});
+
+// ===========================================================================
+// A poll deleted in Telegram comes back to the queue
+// ===========================================================================
+
+test('listPosted returns only posted rows that carry a message id', () => {
+  const { script } = sheetWithQuestions(3);
+
+  script.markRowsAsPostedInSheet('Polity', [2], '900', '6', {});
+  script.markRowsAsPostedInSheet('Polity', [3], '', '6', {});   // no message id
+
+  const posted = Array.from(script.listPostedQuestions('Polity'));
+  assert.equal(posted.length, 1, 'a row with no message id has nothing to check against');
+  assert.equal(posted[0].row, 2);
+  assert.equal(posted[0].message_id, '900');
+});
+
+test('un-posting clears the trail and makes the question eligible again', () => {
+  const { script, sheet, map } = sheetWithQuestions(1);
+  script.markRowsAsPostedInSheet('Polity', [2], '900', '6', { 2: 'poll-1' });
+
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 0);
+  assert.equal(script.unpostQuestionRows('Polity', [2], 'Approved'), 1);
+
+  assert.equal(sheet.values[1][map['Posted']], 'NO');
+  assert.equal(sheet.values[1][map['Status']], 'Approved');
+  assert.equal(sheet.values[1][map['Telegram Msg ID']], '', 'a dead message id was left behind');
+  assert.equal(sheet.values[1][map['Poll ID']], '');
+  // History: it did go out once, and that is not erased.
+  assert.equal(sheet.values[1][map['Times Posted']], 1);
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 1);
+});
+
+// ===========================================================================
+// Bulk delete
+// ===========================================================================
+// Deleting a row shifts every row below it up by one, so resolving row numbers
+// and then deleting in the order the ids arrived destroys the wrong rows from
+// the second deletion onwards.
 
 test('bulk delete removes exactly the selected rows, not their neighbours', () => {
   // The hazard: deleting a row shifts every row below it up by one. Resolving

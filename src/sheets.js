@@ -42,7 +42,7 @@ function sheetRowOf(q) {
   }
   return Number(q && q.row_index) + 2;
 }
-const API_NAMES = ['ping', 'readConfig', 'getSubjects', 'writeConfig', 'getUnpostedQuestions', 'markAsPosted', 'getStats', 'getAnalytics', 'listQuestions', 'checkDuplicates', 'addQuestions', 'updateQuestion', 'deleteQuestion', 'bulkDelete', 'bulkStatus', 'scheduleQuestions', 'getSubscriber', 'listSubscribers', 'getExpiring', 'getRevenue', 'upsertSubscriber'];
+const API_NAMES = ['ping', 'readConfig', 'getSubjects', 'writeConfig', 'getUnpostedQuestions', 'markAsPosted', 'getStats', 'getAnalytics', 'listQuestions', 'checkDuplicates', 'addQuestions', 'updateQuestion', 'deleteQuestion', 'bulkDelete', 'claimQuestions', 'releaseQuestions', 'unpostQuestions', 'listPosted', 'bulkStatus', 'scheduleQuestions', 'getSubscriber', 'listSubscribers', 'getExpiring', 'getRevenue', 'upsertSubscriber'];
 
 /**
  * getWebAppUrl — resolves and validates the deployed Apps Script URL.
@@ -299,6 +299,62 @@ async function writeConfig(ctx, configData) {
 }
 
 /**
+ * listPosted — posted rows carrying a Telegram message id.
+ *
+ * @param {string} subject Subject tab
+ * @returns {Promise<Array<Object>>} { row, question_id, message_id, status }
+ */
+async function listPosted(ctx, subject) {
+  const result = await request(ctx, 'GET', { action: 'listPosted', subject });
+  return result.data || [];
+}
+
+/**
+ * unpostQuestions — returns rows to the queue after their poll was deleted.
+ *
+ * @param {string} subject Subject tab
+ * @param {Array<number>} rowNumbers 1-based sheet rows
+ * @param {string} [status] Status to restore
+ * @returns {Promise<number>} Rows returned to the queue
+ */
+async function unpostQuestions(ctx, subject, rowNumbers, status) {
+  if (!rowNumbers || !rowNumbers.length) return 0;
+  const result = await request(ctx, 'POST', {
+    action: 'unpostQuestions', subject, rowNumbers, status: status || 'Approved'
+  });
+  return result.unpostedCount || 0;
+}
+
+/**
+ * claimQuestions — reserves rows for sending before anything is sent.
+ *
+ * @param {string} subject Subject tab
+ * @param {Array<number>} rowNumbers 1-based sheet rows
+ * @returns {Promise<{claimed: Array<number>, skipped: Array<Object>}>}
+ */
+async function claimQuestions(ctx, subject, rowNumbers) {
+  if (!rowNumbers || !rowNumbers.length) return { claimed: [], skipped: [] };
+  const result = await request(ctx, 'POST', { action: 'claimQuestions', subject, rowNumbers });
+  return { claimed: result.claimed || [], skipped: result.skipped || [] };
+}
+
+/**
+ * releaseQuestions — hands claimed rows back, for a send that never happened.
+ *
+ * @param {string} subject Subject tab
+ * @param {Array<number>} rowNumbers 1-based sheet rows
+ * @param {string} [status] Status to restore
+ * @returns {Promise<number>} Rows released
+ */
+async function releaseQuestions(ctx, subject, rowNumbers, status) {
+  if (!rowNumbers || !rowNumbers.length) return 0;
+  const result = await request(ctx, 'POST', {
+    action: 'releaseQuestions', subject, rowNumbers, status: status || 'Approved'
+  });
+  return result.releasedCount || 0;
+}
+
+/**
  * markAsPosted — records the full posting trail for a batch of rows.
  *
  * @param {string} subject Subject tab name
@@ -510,7 +566,8 @@ API_NAMES.forEach((name) => {
 const IMPLEMENTATIONS = {
   ping, readConfig, getSubjects, writeConfig, getUnpostedQuestions, markAsPosted,
   getStats, getAnalytics, listQuestions, checkDuplicates, addQuestions,
-  updateQuestion, deleteQuestion, bulkDelete, bulkStatus, scheduleQuestions, getSubscriber,
+  updateQuestion, deleteQuestion, bulkDelete, claimQuestions, releaseQuestions,
+  unpostQuestions, listPosted, bulkStatus, scheduleQuestions, getSubscriber,
   listSubscribers, getExpiring, getRevenue, upsertSubscriber
 };
 

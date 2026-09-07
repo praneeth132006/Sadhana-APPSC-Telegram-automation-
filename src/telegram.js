@@ -262,6 +262,33 @@ function retryAfterSeconds(err) {
 }
 
 /**
+ * wasRejectedBeforeDelivery — did Telegram refuse this, or did the answer vanish?
+ *
+ * The distinction decides whether a question can safely be sent again. A 4xx
+ * carrying a description is Telegram saying no before it did anything: a poll
+ * question over 300 characters, a thread that no longer exists, a bot removed
+ * from the group. Nothing was delivered, so the row can be handed back.
+ *
+ * A timeout, a socket error or a 5xx is NOT that. Telegram may well have
+ * accepted the poll and only the reply went missing, which is exactly how two
+ * questions ended up live in the channel while the sheet still called them
+ * unposted — and re-sent on every run after. Those keep their claim.
+ *
+ * 429 is excluded deliberately: a flood-wait can arrive after the message was
+ * accepted, so it is never proof of non-delivery.
+ *
+ * @param {Error} err Error thrown by a bot.* call
+ * @returns {boolean} True only when Telegram definitely did not deliver
+ */
+function wasRejectedBeforeDelivery(err) {
+  const body = (err && err.response && err.response.body) || {};
+  const code = Number(body.error_code);
+  if (!code) return false;
+  if (code === 429) return false;
+  return code >= 400 && code < 500;
+}
+
+/**
  * sendWithFloodWait — Runs a Telegram send, honouring 429 flood-wait replies.
  *
  * Groups are limited to roughly 20 messages a minute, and each question costs
@@ -402,6 +429,48 @@ async function sendQuizPoll(threadId, question) {
   }
 
   return sent; // Return the sent message object (contains message_id)
+}
+
+/**
+ * pollStillExists — is this message still in the channel, or was it deleted?
+ *
+ * Telegram never tells a bot that a message was deleted, and there is no "get
+ * message" call. Editing is the probe: asking to set the reply markup a poll
+ * already has changes nothing visible, and the error distinguishes the cases.
+ *
+ *   "message is not modified"   → still there
+ *   "message to edit not found" → deleted
+ *
+ * Anything else is treated as "still there", because guessing "deleted" would
+ * put a question back in the queue and post it a second time. The whole point
+ * of this is to avoid duplicates, not create them.
+ *
+ * @param {number|string} messageId The poll's message id
+ * @returns {Promise<boolean|null>} true/false, or null when it cannot be told
+ */
+async function pollStillExists(messageId) {
+  if (!bot) throw new Error('Bot not initialized');
+  if (!messageId) return null;
+
+  try {
+    await bot.editMessageReplyMarkup(
+      { inline_keyboard: [] },
+      { chat_id: groupId, message_id: Number(messageId) }
+    );
+    // An edit that succeeds means the message is certainly there.
+    return true;
+  } catch (err) {
+    const description = String(
+      (err && err.response && err.response.body && err.response.body.description) || err.message || ''
+    ).toLowerCase();
+
+    if (description.includes('message is not modified')) return true;
+    if (description.includes('message to edit not found')) return false;
+    if (description.includes("message can't be edited")) return true;
+    // Rate limits, network trouble, an unexpected refusal: not proof of
+    // anything, and treated as such.
+    return null;
+  }
 }
 
 /**
@@ -594,5 +663,7 @@ module.exports = {
   detectGroupId,
   formatDateHashtag,
   formatNewspaperHashtag,
+  wasRejectedBeforeDelivery,
+  pollStillExists,
   POST_SPACING_MS
 };

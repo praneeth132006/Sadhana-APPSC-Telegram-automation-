@@ -77,7 +77,7 @@ async function main() {
   }
 
   for (const group of groups.listGroups()) {
-    const recurring = groups.plansFor(group.id, { includeTest: true })
+    const recurring = groups.plansFor(group.id)
       .filter((plan) => plan.type === 'recurring');
     if (!recurring.length) continue;
 
