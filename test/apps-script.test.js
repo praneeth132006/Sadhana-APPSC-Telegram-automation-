@@ -918,6 +918,296 @@ test('a payment is refused rather than counted when the lock cannot be taken', (
 });
 
 // ===========================================================================
+// Posted and Sending are the poster's to write, not a curator's
+// ===========================================================================
+// They are written together with the Posted column, the message id and the
+// poll id. Setting Status alone leaves Status saying "Posted" while the Posted
+// column still says NO — so the question stays eligible and goes out again,
+// with the dashboard insisting it was already sent.
+
+test('bulk status refuses Posted and Sending', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [{
+    question: 'Q1?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }], 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const id = String(sheet.values[1][map['Question ID']]);
+
+  for (const status of ['Posted', 'Sending']) {
+    assert.throws(() => script.bulkSetStatus('Polity', [id], status, 'Curator'),
+      /set by the poster, not by hand/, `bulk status accepted "${status}"`);
+  }
+
+  // The row is untouched, and still eligible.
+  assert.equal(sheet.values[1][map['Posted']], 'NO');
+  assert.notEqual(sheet.values[1][map['Status']], 'Posted');
+});
+
+test('bulk status still applies every status a curator owns', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [{
+    question: 'Q1?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }], 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const id = String(sheet.values[1][map['Question ID']]);
+
+  for (const status of ['Draft', 'Review', 'Approved', 'Scheduled', 'Rejected', 'Archived']) {
+    assert.equal(script.bulkSetStatus('Polity', [id], status, 'Curator'), 1);
+    assert.equal(sheet.values[1][map['Status']], status);
+  }
+});
+
+test('editing one question cannot set Posted either', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [{
+    question: 'Q1?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }], 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const id = String(sheet.values[1][map['Question ID']]);
+
+  assert.throws(
+    () => script.updateQuestionRow('Polity', id, { status: 'Posted' }, 'Curator'),
+    /set by the poster, not by hand/
+  );
+  assert.equal(sheet.values[1][map['Posted']], 'NO');
+
+  // An ordinary edit still works.
+  assert.equal(script.updateQuestionRow('Polity', id, { status: 'Approved', topic: 'Rights' }, 'Curator'), true);
+  assert.equal(sheet.values[1][map['Status']], 'Approved');
+  assert.equal(sheet.values[1][map['Topic']], 'Rights');
+});
+
+// ===========================================================================
+// Revenue per plan comes from what was charged, not from who holds what
+// ===========================================================================
+
+test('a member who changed plan does not credit their whole spend to the new one', () => {
+  // total_paid is a lifetime figure. Adding it to whichever plan the member
+  // holds today put every rupee they ever paid under that plan and nothing
+  // under the one they actually bought first.
+  const s = freshScript();
+  const subs = new FakeSheet('Subscribers', [s.SUBSCRIBER_HEADERS.slice()]);
+  const pays = new FakeSheet('Payments', [s.PAYMENT_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([subs, pays]));
+
+  // One member: Rs 1 sprint pass first, then a Rs 3 exam pass.
+  script.upsertSubscriber({
+    telegram_id: '1', plan: 'sprint_30', plan_label: '30-Day Sprint Pass',
+    status: 'active', expiry_date: '31-12-2030, 11:59:00 PM IST',
+    amount: 1, payment_id: 'pay_1', is_payment: true
+  });
+  script.logPayment({ telegram_id: '1', plan: 'sprint_30', amount: 1, payment_id: 'pay_1', event: 'payment_link.paid' });
+
+  script.upsertSubscriber({
+    telegram_id: '1', plan: 'exam_pass', plan_label: 'Target 2026 Pass',
+    status: 'active', expiry_date: '31-12-2030, 11:59:00 PM IST',
+    amount: 3, payment_id: 'pay_2', is_payment: true
+  });
+  script.logPayment({ telegram_id: '1', plan: 'exam_pass', amount: 3, payment_id: 'pay_2', event: 'payment_link.paid' });
+
+  const stats = script.buildRevenueStats();
+
+  assert.equal(stats.totalMembers, 1);
+  assert.equal(stats.totalRevenue, 4, 'lifetime revenue should be Rs 1 + Rs 3');
+  assert.equal(stats.byPlan.sprint_30.revenue, 1, 'the sprint pass earned Rs 1 and must show it');
+  assert.equal(stats.byPlan.exam_pass.revenue, 3);
+  // Head count still follows the plan they hold NOW, so the retired plan shows
+  // the money it earned with nobody currently on it.
+  assert.equal(stats.byPlan.exam_pass.count, 1);
+  assert.equal(stats.byPlan.sprint_30.count, 0);
+});
+
+test('per-plan revenue adds up to total revenue', () => {
+  const s = freshScript();
+  const subs = new FakeSheet('Subscribers', [s.SUBSCRIBER_HEADERS.slice()]);
+  const pays = new FakeSheet('Payments', [s.PAYMENT_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([subs, pays]));
+
+  [['1', 'sprint_30', 1, 'pay_a'], ['2', 'exam_pass', 3, 'pay_b'], ['3', 'sprint_30', 1, 'pay_c']]
+    .forEach(([id, plan, amount, paymentId]) => {
+      script.upsertSubscriber({
+        telegram_id: id, plan, plan_label: plan, status: 'active',
+        expiry_date: '31-12-2030, 11:59:00 PM IST', amount, payment_id: paymentId, is_payment: true
+      });
+      script.logPayment({ telegram_id: id, plan, amount, payment_id: paymentId, event: 'payment_link.paid' });
+    });
+
+  const stats = script.buildRevenueStats();
+  const summed = Object.keys(stats.byPlan).reduce((t, k) => t + stats.byPlan[k].revenue, 0);
+  assert.equal(summed, stats.totalRevenue, 'the plan breakdown does not add up to the total');
+  assert.equal(stats.totalRevenue, 5);
+});
+
+// ===========================================================================
+// A Question ID identifies exactly one row
+// ===========================================================================
+// Every edit, delete and bulk status change resolves a Question ID to the FIRST
+// row that matches. A repeated id therefore means one question silently stands
+// in for another — the wrong row edited, the wrong row deleted.
+
+test('an upload never reissues a Question ID that already exists', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  const q = (n) => ({
+    question: `Q${n}?`, option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  });
+
+  script.appendQuestionsToSheet('Polity', [q(1), q(2)], 'Curator', true);
+
+  // Someone edits S.No back to 1, the way a hand-tidied sheet ends up. The next
+  // upload would otherwise mint the ids the first two rows already hold.
+  const map = script.headerMap(sheet);
+  sheet.getRange(3, script.colNum(map, 'S.No')).setValue(1);
+
+  script.appendQuestionsToSheet('Polity', [q(3), q(4)], 'Curator', true);
+
+  const ids = sheet.values.slice(1).map((r) => String(r[map['Question ID']]));
+  assert.equal(new Set(ids).size, ids.length, `two rows share a Question ID: ${ids.join(', ')}`);
+});
+
+test('every id an upload reports back resolves to its own row', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  const result = script.appendQuestionsToSheet('Polity',
+    [1, 2, 3, 4, 5].map((n) => ({
+      question: `Q${n}?`, option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+    })), 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const rows = Array.from(result.ids).map((id) => script.findRowByQuestionId(sheet, map, id));
+
+  assert.deepEqual(rows, [2, 3, 4, 5, 6]);
+  assert.equal(new Set(rows).size, rows.length, 'two ids resolved to the same row');
+});
+
+test('uploading is serialised, so two uploads cannot mint the same ids', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [{
+    question: 'Q1?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }], 'Curator', true);
+
+  assert.ok(lockLog.some((e) => e.startsWith('lock:')), 'the upload did not take the lock');
+  assert.equal(
+    lockLog.filter((e) => e.startsWith('lock:')).length,
+    lockLog.filter((e) => e === 'release').length,
+    'a lock was taken without being released'
+  );
+});
+
+// ===========================================================================
+// Expiry dates are IST, wherever the script thinks it lives
+// ===========================================================================
+// istNow() writes every stamp with an explicit 'Asia/Kolkata'. parseIstDate
+// read them back from LOCAL parts, which is the Apps Script project's own
+// timezone — whatever the account was created in. Every expiry then landed
+// hours off, and getExpiringSubscribers is what decides who is removed from a
+// paid group. The same fault was fixed in src/membership.js; this copy was
+// missed, which is why these tests exist.
+
+test('an IST stamp parses to the same instant whatever the local timezone is', () => {
+  const script = freshScript();
+
+  // 11:59:59 PM IST on 30-11-2026 is 18:29:59 UTC that day.
+  const parsed = script.parseIstDate('30-11-2026, 11:59:59 PM IST');
+  assert.equal(parsed.toISOString(), '2026-11-30T18:29:59.000Z');
+
+  // Midday IST is 06:30 UTC.
+  assert.equal(
+    script.parseIstDate('05-09-2026, 12:00:00 PM IST').toISOString(),
+    '2026-09-05T06:30:00.000Z'
+  );
+
+  // Midnight IST is 18:30 UTC the day BEFORE — the case a local-time parse
+  // gets wrong by a whole calendar day.
+  assert.equal(
+    script.parseIstDate('01-01-2026, 12:00:00 AM IST').toISOString(),
+    '2025-12-31T18:30:00.000Z'
+  );
+});
+
+test('a bare date is read as the end of that day in IST', () => {
+  const script = freshScript();
+  assert.equal(script.parseIstDate('30-11-2026').toISOString(), '2026-11-30T18:29:59.000Z');
+});
+
+test('parseIstDate refuses what it cannot read rather than guessing', () => {
+  const script = freshScript();
+  ['', '   ', '-', 'never', '2026-11-30', null, undefined].forEach((value) => {
+    assert.equal(script.parseIstDate(value), null, `accepted ${JSON.stringify(value)}`);
+  });
+});
+
+test('a member is only expiring once their IST expiry is inside the window', () => {
+  // The consequence of the parse: 5h30m of drift either strands a lapsed
+  // member in the group or removes one who still has hours left.
+  const s = freshScript();
+  const subs = new FakeSheet('Subscribers', [s.SUBSCRIBER_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([subs]));
+
+  const soon = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+  const later = new Date(Date.now() + 20 * 24 * 60 * 60 * 1000);
+
+  // Build the stamps the way the sheet stores them, in IST.
+  const istStamp = (d) => {
+    const p = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+    }).formatToParts(d);
+    const g = (t) => (p.find((x) => x.type === t) || {}).value;
+    return `${g('day')}-${g('month')}-${g('year')}, ${g('hour')}:${g('minute')}:${g('second')} ${g('dayPeriod').toUpperCase()} IST`;
+  };
+
+  script.upsertSubscriber({
+    telegram_id: '111', status: 'active', expiry_date: istStamp(soon), is_payment: false
+  });
+  script.upsertSubscriber({
+    telegram_id: '222', status: 'active', expiry_date: istStamp(later), is_payment: false
+  });
+
+  const within7 = Array.from(script.getExpiringSubscribers(7)).map((x) => x.telegram_id);
+  assert.deepEqual(within7, ['111'], 'the wrong members were flagged as expiring');
+
+  const within30 = Array.from(script.getExpiringSubscribers(30)).map((x) => x.telegram_id);
+  assert.deepEqual(within30.sort(), ['111', '222']);
+});
+
+test('a cancelled or expired member is never in the expiring list', () => {
+  // Only someone who currently holds access can lapse; re-removing an expired
+  // member would send them a second "your pass ended" message every night.
+  const s = freshScript();
+  const subs = new FakeSheet('Subscribers', [s.SUBSCRIBER_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([subs]));
+
+  script.upsertSubscriber({
+    telegram_id: '333', status: 'expired', expiry_date: '01-01-2020, 12:00:00 AM IST', is_payment: false
+  });
+  script.upsertSubscriber({
+    telegram_id: '444', status: 'cancelled', expiry_date: '01-01-2020, 12:00:00 AM IST', is_payment: false
+  });
+
+  assert.equal(script.getExpiringSubscribers(365).length, 0);
+});
+
+// ===========================================================================
 // A question can never be posted twice
 // ===========================================================================
 // Telegram can accept a poll and still leave the sender with a timeout, so a

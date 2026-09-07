@@ -9,7 +9,7 @@
 
 import {
   initDashboard, api, el, replaceChildren, statCard, emptyState, pill,
-  statusTone, difficultyTone, num, truncate, showToast, $,
+  ASSIGNABLE_STATUSES, statusTone, difficultyTone, num, truncate, showToast, $,
   SUBJECTS, STATUSES, DIFFICULTIES
 } from './shared.js';
 
@@ -55,7 +55,7 @@ function initFilters() {
 
   fillSelect($('filterStatus'), STATUSES, 'Any status');
   fillSelect($('filterDifficulty'), DIFFICULTIES, 'Any difficulty');
-  fillSelect($('bulkStatus'), STATUSES, null);
+  fillSelect($('bulkStatus'), ASSIGNABLE_STATUSES, null);
   $('bulkStatus').value = 'Approved';
 
   $('applyBtn').addEventListener('click', () => { readFilters(); filters.page = 1; load(); });
@@ -279,8 +279,19 @@ function openEditor(q) {
     topic: el('input', { class: 'field-input', value: q.topic, placeholder: 'e.g. Fundamental Rights' }),
     difficulty: el('select', { class: 'field-select' },
       DIFFICULTIES.map((d) => el('option', { value: d, text: d, selected: q.difficulty === d }))),
+    // Posted and Sending are the poster's to write — it sets them together with
+    // the Posted column and the message id. Offering them here let a curator
+    // set Status alone, leaving the row claiming to be posted while still
+    // eligible, so it went out again. The current one is shown when it IS one
+    // of those, disabled, so the editor still tells the truth about the row.
     status: el('select', { class: 'field-select' },
-      STATUSES.map((s) => el('option', { value: s, text: s, selected: q.status === s }))),
+      (ASSIGNABLE_STATUSES.includes(q.status) ? ASSIGNABLE_STATUSES : [q.status, ...ASSIGNABLE_STATUSES])
+        .map((s) => el('option', {
+          value: s,
+          text: ASSIGNABLE_STATUSES.includes(s) ? s : `${s} (set by the poster)`,
+          selected: q.status === s,
+          disabled: !ASSIGNABLE_STATUSES.includes(s)
+        }))),
     tags: el('input', { class: 'field-input', value: q.tags, placeholder: 'comma, separated, keywords' }),
     date: el('input', { class: 'field-input', value: q.date, placeholder: 'DD-MM-YYYY' }),
     newspaper: el('input', { class: 'field-input', value: q.newspaper, placeholder: 'The Hindu' }),

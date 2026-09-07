@@ -968,6 +968,69 @@ test('each family prices from its own group entry', () => {
   }
 });
 
+// ===========================================================================
+// Admission fails closed
+// ===========================================================================
+// isEligible is the single check between a stranger and a paid group. Every
+// case that is not provably "still valid" has to be a refusal.
+
+/** Runs isEligible against one stubbed subscriber row. */
+async function eligibilityFor(row) {
+  const sheetsModule = require('../src/sheets');
+  const membershipModule = require('../src/membership');
+  const original = sheetsModule.forGroup;
+  sheetsModule.forGroup = () => ({ getSubscriber: async () => row });
+  try {
+    return await membershipModule.isEligible(TEST_GROUP, '999');
+  } finally {
+    sheetsModule.forGroup = original;
+  }
+}
+
+test('an unreadable expiry date is refused, not waved through', () => {
+  // The regression: parseIst returning null fell through to "eligible", so one
+  // blank or hand-mangled expiry cell granted access that never ended — and
+  // the nightly sweep could not see it either, because it skips rows it
+  // cannot read.
+  const cases = ['', '   ', '-', 'soon', 'next monday', '2026-11-30', null, undefined];
+
+  return Promise.all(cases.map(async (expiry_date) => {
+    const verdict = await eligibilityFor({
+      telegram_id: '999', status: 'active', plan_label: 'Sprint', expiry_date
+    });
+    assert.equal(verdict.ok, false, `admitted on expiry_date ${JSON.stringify(expiry_date)}`);
+    assert.match(verdict.reason, /could not be read/);
+  }));
+});
+
+test('a live pass is admitted and a lapsed one is not', async () => {
+  const future = await eligibilityFor({
+    telegram_id: '999', status: 'active', expiry_date: '31-12-2030, 11:59:00 PM IST'
+  });
+  assert.equal(future.ok, true);
+
+  const past = await eligibilityFor({
+    telegram_id: '999', status: 'active', expiry_date: '01-01-2020, 11:59:00 PM IST'
+  });
+  assert.equal(past.ok, false);
+  assert.match(past.reason, /expired/);
+});
+
+test('any status other than active is refused whatever the date says', async () => {
+  for (const status of ['pending', 'cancelled', 'expired', 'removed', '']) {
+    const verdict = await eligibilityFor({
+      telegram_id: '999', status, expiry_date: '31-12-2030, 11:59:00 PM IST'
+    });
+    assert.equal(verdict.ok, false, `admitted someone whose status is "${status}"`);
+  }
+});
+
+test('someone with no row at all is refused', async () => {
+  const verdict = await eligibilityFor(null);
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /no subscription/);
+});
+
 test('a pass for one group does not admit its sibling', async () => {
   // The exact case: an English buyer taps their link on the Telugu group. The
   // check runs against the chat being joined, not against "any group they hold".

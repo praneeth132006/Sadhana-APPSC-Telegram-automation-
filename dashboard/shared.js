@@ -70,7 +70,13 @@ export const SUBJECTS = [
 ];
 
 /** Workflow states a question can be in. */
-export const STATUSES = ['Draft', 'Review', 'Approved', 'Scheduled', 'Posted', 'Rejected', 'Archived'];
+export const STATUSES = ['Draft', 'Review', 'Approved', 'Scheduled', 'Sending', 'Posted', 'Rejected', 'Archived'];
+
+/** Statuses a curator may set. Posted and Sending are written by the poster
+ *  together with the Posted column and the message id; setting one by hand
+ *  desynchronises the row, so the question claims to be posted and is sent
+ *  again. Offered for FILTERING, never for assignment. */
+export const ASSIGNABLE_STATUSES = STATUSES.filter((s) => s !== 'Posted' && s !== 'Sending');
 
 /** Difficulty levels. */
 export const DIFFICULTIES = ['Easy', 'Medium', 'Hard'];

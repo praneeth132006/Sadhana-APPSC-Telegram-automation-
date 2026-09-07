@@ -120,8 +120,22 @@ async function isEligible(groupId, telegramId) {
     return { ok: false, reason: `subscription is ${subscriber.status}`, subscriber };
   }
 
+  // No readable expiry means we cannot say the pass is still valid, and this is
+  // the single check standing between a stranger and a paid group. It used to
+  // fall through to "eligible" when parseIst returned null, so one blank or
+  // hand-mangled expiry cell granted access that never ended and that the
+  // nightly sweep also could not see, because it skips rows it cannot read.
+  // Refusing is recoverable — the member messages an admin — where admitting
+  // for ever is not.
   const expiry = parseIst(subscriber.expiry_date);
-  if (expiry && expiry.getTime() <= Date.now()) {
+  if (!expiry) {
+    return {
+      ok: false,
+      reason: `expiry date "${subscriber.expiry_date || '(blank)'}" could not be read`,
+      subscriber
+    };
+  }
+  if (expiry.getTime() <= Date.now()) {
     return { ok: false, reason: 'subscription has expired', subscriber };
   }
   return { ok: true, reason: 'active subscription', subscriber };

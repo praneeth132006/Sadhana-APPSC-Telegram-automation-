@@ -10,7 +10,7 @@
 // Group id : appsc_q_en
 // Subjects : 16
 //            Ancient India, Medieval India, Modern India, AP History, Physical Geography, Indian Geography, AP Geography, Indian Economy, AP Economy, Environment, Polity, International Relations, Science and Technology, Current Affairs, Indian Society, Disaster Management
-// Built    : 2026-09-07T13:07:53.040Z
+// Built    : 2026-09-07T13:57:41.657Z
 // ==========================================================================
 
 // ============================================================================
@@ -102,6 +102,16 @@ var QUESTION_HEADERS = [
 var COL_COUNT = QUESTION_HEADERS.length;
 
 /** Allowed values for the Status workflow column. */
+/** India is UTC+05:30 all year — no daylight saving — so one constant is exact.
+ *  Every timestamp in this book is written as IST by istNow(), so every read
+ *  has to interpret it as IST rather than as the project's own timezone. */
+var IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
+/** Statuses the posting machinery owns. A curator setting one by hand would
+ *  desynchronise Status from the Posted column, which is what decides
+ *  eligibility — so the row would claim to be posted and be sent again. */
+var MACHINE_OWNED_STATUSES = ['Posted', 'Sending'];
+
 var STATUS_VALUES = ['Draft', 'Review', 'Approved', 'Scheduled', 'Sending', 'Posted', 'Rejected', 'Archived'];
 
 /** Allowed values for the Difficulty column. */
@@ -1355,6 +1365,13 @@ function markRowsAsPostedInSheet(subject, rowIndices, messageId, threadId, pollI
  * exists in the target sheet when skipDuplicates is on.
  */
 function appendQuestionsToSheet(subject, questions, addedBy, skipDuplicates) {
+  // Read-then-append, and everything it reads decides what it writes: the
+  // existing hashes decide which rows are duplicates, and the last S.No decides
+  // the Question IDs. Two uploads running together both read the same last
+  // S.No and mint the SAME ids — and every lookup (edit, delete, bulk status)
+  // resolves a Question ID to the first row that matches, so a collision means
+  // one question silently stands in for another. Serialised for that reason.
+  return withScriptLock(function () {
   var ss = book();
   var sheet = ss.getSheetByName(subject);
   if (!sheet) {
@@ -1369,11 +1386,17 @@ function appendQuestionsToSheet(subject, questions, addedBy, skipDuplicates) {
 
   // Collect existing hashes once so duplicate checking is O(1) per new row.
   var existingHashes = {};
+  var existingIds = {};
   if (lastRow > 1) {
     var hashCol = sheet.getRange(2, colNum(map, 'Dup Hash'), lastRow - 1, 1).getValues();
     for (var h = 0; h < hashCol.length; h++) {
       var val = String(hashCol[h][0] || '').trim();
       if (val) existingHashes[val] = true;
+    }
+    var idCol = sheet.getRange(2, colNum(map, 'Question ID'), lastRow - 1, 1).getValues();
+    for (var d = 0; d < idCol.length; d++) {
+      var idVal = String(idCol[d][0] || '').trim();
+      if (idVal) existingIds[idVal] = true;
     }
   }
 
@@ -1407,6 +1430,14 @@ function appendQuestionsToSheet(subject, questions, addedBy, skipDuplicates) {
 
     var sNo = startSNo + rows.length;
     var questionId = code + '-' + stamp + '-' + padNumber(sNo, 4);
+    // A gap or a hand-edited S.No can land on an id that already exists, and a
+    // repeated Question ID makes every later edit or delete act on the wrong
+    // row. Step past anything taken rather than issuing it twice.
+    while (existingIds[questionId]) {
+      sNo++;
+      questionId = code + '-' + stamp + '-' + padNumber(sNo, 4);
+    }
+    existingIds[questionId] = true;
     ids.push(questionId);
 
     var row = new Array(COL_COUNT).fill('');
@@ -1455,6 +1486,7 @@ function appendQuestionsToSheet(subject, questions, addedBy, skipDuplicates) {
   }
 
   return { added: rows.length, skipped: skippedQuestions.length, skippedQuestions: skippedQuestions, ids: ids };
+  });
 }
 
 /** Finds the sheet row number holding a given Question ID, or -1. */
@@ -1518,6 +1550,15 @@ var EDITABLE_FIELDS = {
 
 /** Applies an allowlisted field patch to one question row. */
 function updateQuestionRow(subject, questionId, fields, updatedBy, rowHint, verifyText) {
+  // Same reason as bulkSetStatus: these two are written with the Posted column
+  // and the message id, and setting one alone desynchronises the row.
+  if (fields && fields.status &&
+      MACHINE_OWNED_STATUSES.indexOf(normaliseChoice(fields.status, STATUS_VALUES, 'Draft')) !== -1) {
+    throw new Error(
+      '"' + fields.status + '" is set by the poster, not by hand. Use the Automation page ' +
+      'to post, or "Check the channel for deleted polls" to undo one.'
+    );
+  }
   var sheet = book().getSheetByName(subject);
   if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
 
@@ -1575,6 +1616,19 @@ function bulkSetStatus(subject, questionIds, status, updatedBy) {
 
   var map = headerMap(sheet);
   var clean = normaliseChoice(status, STATUS_VALUES, 'Draft');
+
+  // Posted and Sending belong to the posting machinery, which writes them
+  // alongside the Posted column, the message id and the poll id. Setting one by
+  // hand leaves Status saying "Posted" while the Posted column still says NO —
+  // so the question stays eligible and goes out again, with the dashboard
+  // insisting it was already sent.
+  if (MACHINE_OWNED_STATUSES.indexOf(clean) !== -1) {
+    throw new Error(
+      '"' + clean + '" is set by the poster, not by hand. Use the Automation page ' +
+      'to post, or "Check the channel for deleted polls" to undo one.'
+    );
+  }
+
   var now = istNow();
   var count = 0;
 
@@ -2023,9 +2077,17 @@ function parseIstDate(value) {
     if (meridiem === 'AM' && hour === 12) hour = 0;
   }
 
+  // The stamp is an IST wall-clock reading — istNow() writes it with an
+  // explicit 'Asia/Kolkata' — so it has to be read back as IST. Building it
+  // from local parts uses the Apps Script project's timezone instead, which is
+  // whatever the account was created in. Every expiry then lands hours off, and
+  // getExpiringSubscribers is what decides who is removed from a paid group.
+  // The same fault was fixed in src/membership.js; this copy was missed.
   return new Date(
-    parseInt(match[3], 10), parseInt(match[2], 10) - 1, parseInt(match[1], 10),
-    hour, minute, second
+    Date.UTC(
+      parseInt(match[3], 10), parseInt(match[2], 10) - 1, parseInt(match[1], 10),
+      hour, minute, second
+    ) - IST_OFFSET_MS
   );
 }
 
@@ -2055,10 +2117,15 @@ function buildRevenueStats() {
       if (stats[sub.status] !== undefined) stats[sub.status]++;
       stats.totalRevenue += sub.total_paid;
 
+      // Members holding each plan right now. The MONEY per plan is counted
+      // from the payment log below instead: total_paid is a member's lifetime
+      // spend, so adding it here credited every rupee they ever paid to
+      // whichever plan they happen to hold today. Someone who bought a sprint
+      // pass and later an exam pass showed the whole amount under exam_pass
+      // and nothing under sprint_30.
       if (sub.plan) {
         if (!stats.byPlan[sub.plan]) stats.byPlan[sub.plan] = { count: 0, revenue: 0, label: sub.plan_label };
         stats.byPlan[sub.plan].count++;
-        stats.byPlan[sub.plan].revenue += sub.total_paid;
       }
 
       if (sub.status === 'active') {
@@ -2068,8 +2135,24 @@ function buildRevenueStats() {
     }
   }
 
-  // Recent payments give the dashboard a live activity feed.
   var pay = book().getSheetByName(PAYMENT_SHEET);
+
+  // Revenue per plan, from what was actually charged for each plan rather than
+  // from what each member has spent in total. The log is the only place that
+  // records which plan a given rupee was for.
+  if (pay && pay.getLastRow() > 1) {
+    var planCol = PAYMENT_HEADERS.indexOf('Plan');
+    var amountCol = PAYMENT_HEADERS.indexOf('Amount');
+    var all = pay.getRange(2, 1, pay.getLastRow() - 1, PAYMENT_HEADERS.length).getValues();
+    for (var p = 0; p < all.length; p++) {
+      var planId = String(all[p][planCol] || '').trim();
+      if (!planId) continue;
+      if (!stats.byPlan[planId]) stats.byPlan[planId] = { count: 0, revenue: 0, label: planId };
+      stats.byPlan[planId].revenue += Number(all[p][amountCol]) || 0;
+    }
+  }
+
+  // Recent payments give the dashboard a live activity feed.
   stats.recentPayments = [];
   if (pay && pay.getLastRow() > 1) {
     var take = Math.min(pay.getLastRow() - 1, 20);
