@@ -175,6 +175,21 @@ function connectivityChecks(data) {
         'One bot is doing both jobs. Set <code>TELEGRAM_PAYMENT_BOT_TOKEN</code> so a leak of the ' +
         'posting token cannot also open the paid group.'));
 
+  // Apps Script is pasted into each sheet by hand, so the dashboard routinely
+  // runs ahead of it and a feature looks broken when a manual step is simply
+  // outstanding. Name the actions rather than saying "outdated".
+  if (Array.isArray(data.sheets.missingActions) && data.sheets.missingActions.length) {
+    checks.push(check('fail', 'This sheet\'s Apps Script is out of date',
+      'It has never heard of: ' +
+      data.sheets.missingActions.map((a) => `<code>${a}</code>`).join(', ') + '. ' +
+      'Anything using them fails. Open the sheet → <strong>Extensions → Apps Script</strong>, ' +
+      'paste this group\'s file from <code>apps-script/</code> over what is there, then ' +
+      '<strong>Deploy → Manage deployments → edit → Version: New version</strong>.'));
+  } else if (data.sheets.scriptCurrent) {
+    checks.push(check('pass', 'Apps Script is current',
+      'This sheet knows every action the dashboard uses.'));
+  }
+
   checks.push(p.configured
       ? check(p.testMode ? 'warn' : 'pass', 'Razorpay keys',
           p.testMode

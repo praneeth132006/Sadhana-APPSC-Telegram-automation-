@@ -105,14 +105,42 @@ function readFilters() {
 /** Recomputes the selection counter and enables/disables the bulk button. */
 function refreshSelectionUi() {
   $('selectionCount').textContent = `${selected.size} selected`;
-  // Bulk status changes address one sheet tab at a time, so a subject must be
-  // chosen; "All subjects" would be ambiguous about which tab to write to.
-  const unusable = selected.size === 0 || filters.subject === 'all';
+
+  // Only an empty selection disables these. They used to be disabled whenever
+  // the subject filter was "All subjects", because the API writes one sheet tab
+  // at a time — so with 30 rows ticked the buttons sat there looking usable and
+  // did nothing at all when clicked, with the reason in small grey text. Every
+  // row already knows its own subject, so the selection is grouped by subject
+  // and sent as one call per tab instead.
+  const unusable = selected.size === 0;
   $('bulkApplyBtn').disabled = unusable;
   $('bulkDeleteBtn').disabled = unusable;
   $('bulkDeleteBtn').textContent = selected.size
     ? `🗑 Delete ${selected.size} selected`
     : '🗑 Delete selected';
+}
+
+/**
+ * groupSelectionBySubject — the ticked questions, split by the tab they live in.
+ *
+ * Bulk writes address one sheet tab per call. Rather than making the curator
+ * narrow the filter first, the selection is split here.
+ *
+ * @returns {{groups: Map<string, Array<string>>, unknown: Array<string>}}
+ *   `unknown` holds ids whose row is no longer on screen, so they can be
+ *   reported rather than quietly dropped from the count.
+ */
+function groupSelectionBySubject() {
+  const bySubject = new Map();
+  const unknown = [];
+
+  for (const id of selected) {
+    const row = rows.find((q) => q.question_id === id);
+    if (!row || !row.subject) { unknown.push(id); continue; }
+    if (!bySubject.has(row.subject)) bySubject.set(row.subject, []);
+    bySubject.get(row.subject).push(id);
+  }
+  return { groups: bySubject, unknown };
 }
 
 /** Builds one table row for a question. */
@@ -437,8 +465,9 @@ async function applyBulkDelete() {
   const ids = [...selected];
   if (!ids.length) return;
 
-  if (filters.subject === 'all') {
-    showToast('warn', 'Pick a single subject before deleting in bulk.');
+  const { groups, unknown } = groupSelectionBySubject();
+  if (!groups.size) {
+    showToast('warn', 'Could not tell which subject those questions are in. Reload and try again.');
     return;
   }
 
@@ -446,8 +475,12 @@ async function applyBulkDelete() {
   // they are throwing away: deleting the row does not unsend the poll.
   const postedCount = rows.filter((q) => selected.has(q.question_id) && q.posted === 'YES').length;
 
+  const scope = groups.size === 1
+    ? `"${[...groups.keys()][0]}"`
+    : `${groups.size} subjects (${[...groups.keys()].join(', ')})`;
+
   const typed = window.prompt(
-    `Permanently delete ${ids.length} question(s) from "${filters.subject}"?\n\n` +
+    `Permanently delete ${ids.length - unknown.length} question(s) from ${scope}?\n\n` +
     (postedCount
       ? `⚠️ ${postedCount} of them are already posted to Telegram. Deleting the row ` +
         'here does NOT remove the poll from the channel.\n\n'
@@ -465,26 +498,40 @@ async function applyBulkDelete() {
   button.disabled = true;
   button.textContent = 'Deleting…';
 
-  try {
-    const result = await api('/api/questions/bulk-delete', {
-      method: 'POST',
-      body: { subject: filters.subject, questionIds: ids }
-    });
+  let deleted = 0;
+  const missing = [...unknown];
+  const failures = [];
 
-    const missing = result.notFound || [];
-    if (missing.length) {
+  try {
+    // One call per tab. Sequential rather than parallel: each one takes a lock
+    // on the sheet, so firing them together would just make them queue and
+    // risk a timeout.
+    for (const [subject, subjectIds] of groups) {
+      try {
+        const result = await api('/api/questions/bulk-delete', {
+          method: 'POST',
+          body: { subject, questionIds: subjectIds }
+        });
+        deleted += result.deletedCount || 0;
+        missing.push(...(result.notFound || []));
+      } catch (err) {
+        // One failing tab must not hide what the others deleted.
+        failures.push(`${subject}: ${err.message}`);
+      }
+    }
+
+    if (failures.length) {
+      showToast('error', `Deleted ${deleted}. Failed — ${failures.join('; ')}`, 12000);
+    } else if (missing.length) {
       // Named, not counted: a curator who is told "27 of 29" and nothing else
       // has no way to find the two that survived.
-      showToast('warn',
-        `Deleted ${result.deletedCount}. Not found: ${missing.join(', ')}`, 12000);
+      showToast('warn', `Deleted ${deleted}. Not found: ${missing.join(', ')}`, 12000);
     } else {
-      showToast('success', `Deleted ${result.deletedCount} question(s)`);
+      showToast('success', `Deleted ${deleted} question(s)`);
     }
 
     selected.clear();
     await load();
-  } catch (err) {
-    showToast('error', err.message, 9000);
   } finally {
     refreshSelectionUi();
   }
@@ -496,8 +543,9 @@ async function applyBulkStatus() {
   const ids = [...selected];
   if (!ids.length) return;
 
-  if (filters.subject === 'all') {
-    showToast('warn', 'Pick a single subject before running a bulk status change.');
+  const { groups } = groupSelectionBySubject();
+  if (!groups.size) {
+    showToast('warn', 'Could not tell which subject those questions are in. Reload and try again.');
     return;
   }
 
@@ -505,16 +553,31 @@ async function applyBulkStatus() {
   button.disabled = true;
   button.textContent = 'Applying…';
 
+  let updated = 0;
+  const failures = [];
+
   try {
-    const result = await api('/api/questions/status', {
-      method: 'POST',
-      body: { subject: filters.subject, questionIds: ids, status }
-    });
-    showToast('success', `${result.updatedCount ?? ids.length} question(s) set to ${status}`);
+    // One call per tab, sequentially — each takes a lock on the sheet.
+    for (const [subject, subjectIds] of groups) {
+      try {
+        const result = await api('/api/questions/status', {
+          method: 'POST',
+          body: { subject, questionIds: subjectIds, status }
+        });
+        updated += result.updatedCount ?? subjectIds.length;
+      } catch (err) {
+        failures.push(`${subject}: ${err.message}`);
+      }
+    }
+
+    if (failures.length) {
+      showToast('error', `${updated} set to ${status}. Failed — ${failures.join('; ')}`, 12000);
+    } else {
+      showToast('success', `${updated} question(s) set to ${status}`);
+    }
+
     selected.clear();
     await load();
-  } catch (err) {
-    showToast('error', err.message, 9000);
   } finally {
     button.textContent = 'Apply to selection';
     refreshSelectionUi();
