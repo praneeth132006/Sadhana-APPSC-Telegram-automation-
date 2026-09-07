@@ -21,6 +21,7 @@
 // ============================================================================
 
 const crypto = require('crypto');
+const groups = require('./groups');
 
 /** Razorpay API root. */
 const API_BASE = 'https://api.razorpay.com/v1';
@@ -196,7 +197,11 @@ async function createPaymentLink({ plan, telegramId, name, username, callbackUrl
     amount: plan.amountPaise,
     currency: 'INR',
     accept_partial: false,
-    description: bmpOnly(`${plan.label} - APPSC Premium Group`, 255),
+    // Shown to the payer on the Razorpay checkout page and on their receipt.
+    // It used to be hardcoded to "APPSC Premium Group", so a UPSC student was
+    // charged for a product name that has nothing to do with what they bought,
+    // and every group carried branding belonging to one of them.
+    description: bmpOnly(`${plan.label} - ${groups.requireGroup(groupId).displayName}`, 255),
     // Expire the link so a stale one cannot be paid weeks later and grant
     // access the student no longer expects.
     expire_by: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
@@ -245,12 +250,15 @@ async function getPaymentLink(linkId) {
  * @returns {Promise<Object>} The created Razorpay plan
  */
 async function createPlan(plan) {
+  // Named after the group where one is known, so five plans are told apart in
+  // the Razorpay dashboard and a subscriber's statement says what they bought.
+  const groupName = plan.groupId ? groups.requireGroup(plan.groupId).displayName : '';
   return request('POST', '/plans', {
     period: 'monthly',
     interval: plan.intervalMonths || 1,
     item: {
       name: plan.label,
-      description: plan.description,
+      description: bmpOnly(groupName ? `${plan.description} (${groupName})` : plan.description, 255),
       amount: plan.amountPaise,
       currency: 'INR'
     },
