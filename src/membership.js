@@ -59,8 +59,19 @@ function formatIst(date) {
          `${get('hour')}:${get('minute')}:${get('second')} ${meridiem} IST`;
 }
 
+/** India is UTC+05:30 all year — no daylight saving — so one constant is exact. */
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
 /**
  * parseIst — reads back a timestamp this project wrote.
+ *
+ * The text is an IST wall-clock reading, so it must be interpreted as IST no
+ * matter where the process runs. This used to build the Date from local parts
+ * (`new Date(y, m, d, h, ...)`), which is only correct on a machine already set
+ * to Asia/Kolkata. On Vercel, which runs in UTC, every expiry read back 5 hours
+ * 30 minutes later than it was written: reminders fired late, lapsed members
+ * kept access for an extra evening, and the 5-minute test pass never expired
+ * inside the window it was meant to be watched in.
  *
  * @param {string} value
  * @returns {Date|null}
@@ -82,7 +93,12 @@ function parseIst(value) {
     if (meridiem === 'AM' && hour === 12) hour = 0;
   }
 
-  const date = new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), hour, minute, second);
+  // Build the instant in UTC from the IST reading, then step back by the
+  // offset, so the result is the same moment regardless of the server's TZ.
+  const utcMs = Date.UTC(
+    Number(match[3]), Number(match[2]) - 1, Number(match[1]), hour, minute, second
+  );
+  const date = new Date(utcMs - IST_OFFSET_MS);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
@@ -292,6 +308,23 @@ async function markExpired(groupId, subscriber, removed) {
 }
 
 /**
+ * planForSubscriber — the pass a member holds, as THEIR group defines it.
+ *
+ * plans.getPlan() is the legacy global table: same wording for everyone, so a
+ * UPSC member was reminded about their "Target APPSC 2026 Pass". Falls back to
+ * the global entry only for a plan id the group no longer sells, so a member on
+ * a retired pass still gets a sensible label rather than none.
+ *
+ * @param {string} groupId
+ * @param {string} planId
+ * @returns {Object|null}
+ */
+function planForSubscriber(groupId, planId) {
+  if (!planId) return null;
+  return groups.getPlanFor(groupId, planId, { includeTest: true }) || plans.getPlan(planId);
+}
+
+/**
  * sendRenewalReminder — nudges a member whose access is about to end.
  *
  * @param {Object} subscriber The stored member
@@ -300,7 +333,7 @@ async function markExpired(groupId, subscriber, removed) {
 async function sendRenewalReminder(groupId, subscriber, daysLeft) {
   const ctx = contextFor(groupId);
 
-  const plan = plans.getPlan(subscriber.plan);
+  const plan = planForSubscriber(groupId, subscriber.plan);
   const label = plan ? plan.label : subscriber.plan_label || 'your pass';
   const when = daysLeft <= 0
     ? 'today'
@@ -334,8 +367,11 @@ async function runDailyCheck({ groupId, dryRun = false } = {}) {
   const ctx = contextFor(groupId);
   const summary = { checked: 0, reminded: [], removed: [], failed: [], dryRun };
 
-  // Widest reminder window of any plan, so one query covers every case.
-  const lookAhead = Math.max(...plans.listPlans().map((p) => p.reminderDaysBefore || 0), 0);
+  // Widest reminder window of any pass THIS group sells, so one query covers
+  // every case without reaching for the legacy global table.
+  const lookAhead = Math.max(
+    ...groups.plansFor(groupId, { includeTest: true }).map((p) => p.reminderDaysBefore || 0), 0
+  );
   const candidates = await ctx.sheet.getExpiring(lookAhead);
   summary.checked = candidates.length;
 
@@ -347,7 +383,7 @@ async function runDailyCheck({ groupId, dryRun = false } = {}) {
     }
 
     const daysLeft = plans.daysUntil(expiry);
-    const plan = plans.getPlan(subscriber.plan);
+    const plan = planForSubscriber(groupId, subscriber.plan);
 
     try {
       if (daysLeft <= 0) {
@@ -459,6 +495,7 @@ async function runDailyCheckAllGroups({ dryRun = false } = {}) {
 }
 
 module.exports = {
+  IST_OFFSET_MS,
   contextFor,
   runDailyCheckAllGroups,
   getPremiumGroupId,

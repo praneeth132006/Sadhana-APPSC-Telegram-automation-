@@ -57,6 +57,10 @@ const count = Number(getArgValue('--count')) || 1; // How many questions to send
 const sendAll = hasFlag('--all');                // Send from ALL subjects
 const showStats = hasFlag('--stats');            // Show question stats only (don't send)
 const testMode = hasFlag('--test');              // Test Telegram connection only
+// Only Approved and Scheduled questions go out unless this is passed. The
+// dashboard has always worked this way; this script used to rely on a default
+// that did the opposite and published unreviewed Drafts to the paid channel.
+const includeDrafts = hasFlag('--include-drafts');
 
 /**
  * sleep — Promise-based delay function.
@@ -91,7 +95,7 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
 
   // Fetch unposted questions asynchronously from active data backend (Google Sheets or Excel)
   // This ensures questions that were not yet posted are retrieved up to the requested batch limit
-  const questions = await data.getUnpostedQuestions(subjectConfig.subject, questionsCount);
+  const questions = await data.getUnpostedQuestions(subjectConfig.subject, questionsCount, !includeDrafts);
 
   // If no unposted questions remain, inform the user
   if (questions.length === 0) {
@@ -125,9 +129,11 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
         pollIds[String(q.excel_row)] = sentPoll.poll.id;
       }
 
-      // Track 0-based data row index for marking as posted in Excel or Google Sheets
-      // This ensures the exact row is marked with timestamp upon successful delivery
-      postedRowIndices.push(q.row_index !== undefined ? q.row_index : q.excel_row);
+      // Track the 1-based sheet row. Sending row_index (0-based) instead used to
+      // make the sheet guess which of the two it had been handed, and that guess
+      // collapsed rows 3, 4 and 5 of a batch onto rows 2, 3 and 4 — so most of a
+      // batch stayed marked unposted and went out again on the next run.
+      postedRowIndices.push(data.sheetRowOf(q));
 
       // Log success with a preview of the question text
       const preview = q.question_text.length > 50
@@ -135,10 +141,11 @@ async function sendQuestionsForSubject(subjectConfig, questionsCount) {
         : q.question_text;
       console.log(`   ✅ [${i + 1}/${questions.length}] ${preview}`);
 
-      // Wait 1.5 seconds between sends to avoid Telegram rate limits
-      // Telegram allows ~30 msg/sec but being conservative prevents 429 errors
+      // Telegram allows a bot roughly 20 messages a minute into one group and
+      // each question costs two or three, so pace the batch. A flood-wait that
+      // still slips through is retried inside src/telegram.js.
       if (i < questions.length - 1) {
-        await sleep(1500);
+        await sleep(telegram.POST_SPACING_MS);
       }
     } catch (error) {
       // Log the error but continue with the next question
@@ -308,6 +315,7 @@ async function main() {
   console.log('\n📖 Usage:');
   console.log('  node send.js --subject <name> --count <n>   Send n questions from a subject');
   console.log('  node send.js --all --count <n>              Send n questions from ALL subjects');
+  console.log('  node send.js --subject <s> --include-drafts  Include unreviewed Draft questions');
   console.log('  node send.js --stats                        Show question statistics');
   console.log('  node send.js --test                         Test Telegram bot connection');
   console.log('');

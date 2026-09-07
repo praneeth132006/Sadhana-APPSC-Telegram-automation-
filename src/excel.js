@@ -187,7 +187,7 @@ function getUnpostedQuestions(subject, count = Infinity, excelPath = DEFAULT_EXC
  * Writes "YES | <timestamp>" so you can see exactly when each question was posted.
  *
  * @param {string} subject — The sheet name (subject) to update
- * @param {Array<number>} rowIndices — Array of 0-based row indices to mark as posted
+ * @param {Array<number>} rowIndices — 1-based Excel row numbers (2 = first data row)
  * @param {string} [excelPath] — Optional custom path to questions.xlsx
  */
 function markAsPosted(subject, rowIndices, excelPath = DEFAULT_EXCEL_PATH) {
@@ -203,14 +203,16 @@ function markAsPosted(subject, rowIndices, excelPath = DEFAULT_EXCEL_PATH) {
   // Get the current timestamp in IST (Indian Standard Time) for the "Posted" column
   const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
-  // Update the "Posted" column for each specified row
-  for (const rowIndex of rowIndices) {
-    // Normalize index: if rowIndex is within data length, treat as 0-based index;
-    // if greater than or equal to rows.length and >= 2, treat as 1-based excel_row (offset by 2 for 1-based indexing and header)
-    const normalizedIndex = (rowIndex >= rows.length && rowIndex >= 2) ? (rowIndex - 2) : rowIndex;
+  // Update the "Posted" column for each specified row.
+  // Row numbers are 1-based with row 1 as the header, so data starts at 2. This
+  // used to guess between a 0-based index and a row number based on the sheet's
+  // length, which marked the wrong rows whenever the batch fitted inside the
+  // sheet — questions went out and still looked unposted afterwards.
+  for (const rowNumber of rowIndices) {
+    const index = Number(rowNumber) - 2; // 0-based position in the data array
 
-    if (normalizedIndex >= 0 && normalizedIndex < rows.length) {
-      rows[normalizedIndex]['Posted'] = `YES | ${timestamp}`; // Mark as posted with IST timestamp
+    if (Number.isInteger(index) && index >= 0 && index < rows.length) {
+      rows[index]['Posted'] = `YES | ${timestamp}`; // Mark as posted with IST timestamp
     }
   }
 

@@ -68,10 +68,15 @@ async function writeConfig(configData) {
  * @param {number} count — Number of questions to retrieve
  * @returns {Promise<Array<Object>>} Array of unposted question objects
  */
-async function getUnpostedQuestions(subject, count, requireApproved = false) {
-  // If Google Sheets is enabled, delegate to sheets.getUnpostedQuestions()
+async function getUnpostedQuestions(subject, count, requireApproved = true) {
   // requireApproved restricts the batch to rows whose Status is Approved or
   // Scheduled, so a Draft or Rejected question can never reach the channel.
+  //
+  // It defaults to TRUE. It used to default to false, and send.js and
+  // schedule.js both relied on the default — so the dashboard published only
+  // reviewed questions while the CLI and the cron quietly published unreviewed
+  // Drafts into the same paid channel. Publishing to paying students is the
+  // dangerous direction, so it is the one that has to be asked for.
   if (isGoogleSheetsEnabled()) {
     return await sheets.getUnpostedQuestions(subject, count, requireApproved);
   }
@@ -125,5 +130,8 @@ module.exports = {
   writeConfig,
   getUnpostedQuestions,
   markAsPosted,
-  getStats
+  getStats,
+  // Re-exported so a caller holding only the data layer can name the row it
+  // is about to mark. See src/sheets.js for why the rule lives in one place.
+  sheetRowOf: sheets.sheetRowOf
 };

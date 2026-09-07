@@ -192,6 +192,12 @@ async function postNow() {
 
   clearLog('postLog');
   log('postLog', `Requesting ${count} question(s) from "${subject}"…`);
+  // Telegram rate-limits a bot to roughly 20 messages a minute into one group,
+  // so a batch is paced rather than fired off at once. Say so, or a run that is
+  // working normally looks like a hang.
+  if (count > 3) {
+    log('postLog', `Pacing this batch for Telegram's rate limit — about ${Math.ceil(count * 3 / 60) || 1} minute(s). Leave this tab open.`, 'muted');
+  }
 
   button.disabled = true;
   button.textContent = 'Posting…';

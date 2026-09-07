@@ -11,6 +11,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
 process.env.RAZORPAY_KEY_ID = 'rzp_test_dummy';
 process.env.RAZORPAY_KEY_SECRET = 'dummy_secret';
@@ -90,11 +92,57 @@ test('a 30-day pass expires 30 days out', () => {
   assert.equal(Math.round((expiry - now) / 86400000), 30);
 });
 
-test('the exam pass expires on the configured exam date, not after N days', () => {
+test('a timestamp survives a round trip whatever timezone the server is in', () => {
+  // formatIst writes an IST wall-clock reading; parseIst used to rebuild it
+  // from LOCAL parts, so on Vercel (UTC) every expiry read back 5h30m late.
+  // Reminders fired late, lapsed members kept an extra evening of access, and
+  // the 5-minute test pass never expired inside the window it exists to prove.
+  const membershipModule = require('../src/membership');
+  const instants = [
+    new Date('2026-09-07T12:00:00Z'),
+    new Date('2026-01-01T18:45:12Z'),   // crosses midnight IST
+    new Date('2026-06-30T18:29:59Z'),   // one second before an IST day rolls
+    new Date('2026-12-31T23:59:00Z')
+  ];
+
+  for (const instant of instants) {
+    const roundTripped = membershipModule.parseIst(membershipModule.formatIst(instant));
+    assert.ok(roundTripped, `${instant.toISOString()} did not parse back`);
+    // Seconds granularity is all the format carries, so compare at that.
+    assert.equal(
+      Math.floor(roundTripped.getTime() / 1000),
+      Math.floor(instant.getTime() / 1000),
+      `${instant.toISOString()} drifted by ` +
+      `${(roundTripped.getTime() - instant.getTime()) / 60000} minutes`
+    );
+  }
+});
+
+test('a 5-minute test pass really expires in 5 minutes, not 5 hours 35', () => {
+  // The concrete consequence of the parse bug, and the exact thing the test
+  // pass exists to let someone watch happen.
+  const membershipModule = require('../src/membership');
+  const bought = new Date('2026-09-07T12:00:00Z');
+  const expiry = plans.computeExpiry(plans.getPlan('test_5min'), bought);
+
+  const readBack = membershipModule.parseIst(membershipModule.formatIst(expiry));
+  assert.equal(Math.round((readBack - bought) / 60000), 5);
+});
+
+test('the exam pass expires at the end of the exam day in IST', () => {
+  // Asserted in IST rather than in the process's local calendar: the students
+  // are in India, so "the 30th" has to mean the 30th there whatever timezone
+  // the server runs in. Reading expiry.getDate() would pass in Asia/Kolkata and
+  // fail on Vercel, which is the bug this replaced.
   const expiry = plans.computeExpiry(plans.getPlan('exam_pass'), new Date('2026-09-05T12:00:00Z'));
-  assert.equal(expiry.getFullYear(), 2026);
-  assert.equal(expiry.getMonth(), 10, 'should be November');
-  assert.equal(expiry.getDate(), 30);
+
+  const ist = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).format(expiry);
+
+  assert.equal(ist, '30/11/2026, 23:59');
 });
 
 test('renewing early extends from the existing expiry, not from today', () => {
@@ -491,7 +539,7 @@ test('a payment link body carries no astral-plane characters', async () => {
 
   try {
     await razorpay.createPaymentLink({
-      plan: plans.getPlan('sprint_30'),
+      plan: groups.getPlanFor('appsc_q_en', 'sprint_30'),
       telegramId: '4242',
       name: 'Praneeth \u{1F3AF}',
       username: 'user\u{1F680}name',
@@ -507,6 +555,251 @@ test('a payment link body carries no astral-plane characters', async () => {
     assert.equal(body.customer.name, 'Praneeth');
     assert.equal(body.notes.telegram_username, 'username');
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ===========================================================================
+// Checkout can never be created in a way the webhook will refuse
+// ===========================================================================
+// handlePaymentEvent drops any event whose notes lack group_id, so a checkout
+// built from a plan that has no group takes the student's money and grants
+// nothing. These are the regression tests for that.
+
+test('a checkout for a plan with no group is refused before any money moves', async () => {
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = async () => { called = true; throw new Error('should never be reached'); };
+
+  try {
+    // plans.getPlan() is the legacy global table: correct wording, no group.
+    await assert.rejects(
+      razorpay.createPaymentLink({ plan: plans.getPlan('sprint_30'), telegramId: '4242' }),
+      /not scoped to a group/
+    );
+    await assert.rejects(
+      razorpay.createSubscription({
+        plan: plans.getPlan('autopay_monthly'), razorpayPlanId: 'plan_x', telegramId: '4242'
+      }),
+      /not scoped to a group/
+    );
+    assert.equal(called, false, 'Razorpay was called for a sale nobody could be credited with');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a group-scoped payment link carries the group id the webhook needs', async () => {
+  const originalFetch = globalThis.fetch;
+  let sentBody = null;
+  globalThis.fetch = async (url, opts) => {
+    sentBody = opts.body;
+    const payload = JSON.stringify({ id: 'plink_x', short_url: 'https://rzp.io/x' });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    await razorpay.createPaymentLink({
+      plan: groups.getPlanFor('appsc_q_te', 'sprint_30'),
+      telegramId: '4242'
+    });
+    const notes = JSON.parse(sentBody).notes;
+    assert.equal(notes.group_id, 'appsc_q_te');
+    assert.equal(notes.plan_id, 'sprint_30');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a subscription is refused when the Razorpay plan charges a different price', async () => {
+  // Razorpay cannot re-price a plan, so one created before a price change keeps
+  // charging the old amount while the button advertises the new one.
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    calls.push(`${opts.method} ${url}`);
+    const payload = url.includes('/plans/')
+      ? JSON.stringify({ id: 'plan_stale', item: { amount: 24900 } })
+      : JSON.stringify({ id: 'sub_x', short_url: 'https://rzp.io/s' });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    const plan = groups.getPlanFor('appsc_q_en', 'autopay_monthly');
+    await assert.rejects(
+      razorpay.createSubscription({ plan, razorpayPlanId: 'plan_stale', telegramId: '4242' }),
+      /no subscription was started/
+    );
+    assert.equal(calls.some((c) => c.startsWith('POST')), false, 'a mispriced subscription was created');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a subscription goes through when the plan charges the advertised price', async () => {
+  const originalFetch = globalThis.fetch;
+  let subscriptionBody = null;
+  const plan = groups.getPlanFor('upsc', 'autopay_monthly');
+
+  globalThis.fetch = async (url, opts) => {
+    if (url.includes('/plans/')) {
+      const payload = JSON.stringify({ id: 'plan_ok', item: { amount: plan.amountPaise } });
+      return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+    }
+    subscriptionBody = opts.body;
+    const payload = JSON.stringify({ id: 'sub_x', short_url: 'https://rzp.io/s' });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    await razorpay.createSubscription({ plan, razorpayPlanId: 'plan_ok', telegramId: '4242' });
+    assert.equal(JSON.parse(subscriptionBody).notes.group_id, 'upsc');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('every group that sells auto-pay is checked for its own Razorpay plan', () => {
+  // Auto-pay used to read process.env[plan.razorpayPlanIdEnv], a field group
+  // plans do not have, so it failed everywhere with "undefined is not set".
+  for (const group of groups.listGroups()) {
+    const autopay = groups.getPlanFor(group.id, 'autopay_monthly');
+    if (!autopay) continue;
+    assert.equal(typeof group.autopayReady, 'boolean');
+    assert.equal(group.autopayReady, Boolean(autopay.razorpayPlanId),
+      `${group.id} disagrees with itself about whether auto-pay is configured`);
+    if (!group.autopayReady) {
+      assert.equal(group.autopayMissing, `RAZORPAY_PLAN_${group.envPrefix}`);
+    }
+  }
+});
+
+// ===========================================================================
+// End to end: a rupee leaves a student's account and access arrives
+// ===========================================================================
+// Everything between the checkout call and the invite DM runs for real here —
+// the plan lookup, the Razorpay request body, the HMAC signature check, the
+// webhook handler, grantAccess, the expiry maths and the round trip through
+// the IST timestamp format. Only the two things outside this codebase are
+// stubbed: Razorpay's HTTP API and Telegram's.
+//
+// This is the test that would have caught all three payment bugs at once: the
+// missing group_id, the auto-pay plan id read from a field that does not
+// exist, and an expiry that drifted 5h30m on a UTC server.
+
+test('a student pays and ends up with access, start to finish', async () => {
+  const GROUP = 'appsc_q_te';
+
+  // Other tests in this file reload server.js with its collaborators stubbed,
+  // which leaves the cache holding a server bound to modules this test never
+  // sees. Clear them and require the set together, so the server under test and
+  // the sheet being stubbed are the same objects.
+  for (const key of Object.keys(require.cache)) {
+    if (/server\.js|membership\.js|sheets\.js|paybot\.js/.test(key)) delete require.cache[key];
+  }
+  const sheetsModule = require('../src/sheets');
+  const paybotModule = require('../src/paybot');
+  const membershipModule = require('../src/membership');
+  const serverModule = require('../server');
+
+  const plan = groups.getPlanFor(GROUP, 'sprint_30');
+  assert.ok(plan, 'the group does not sell the pass being bought');
+
+  // ---- The sheet and Telegram, in memory --------------------------------
+  const sheetRows = {};
+  const dms = [];
+  const originalForGroup = sheetsModule.forGroup;
+  const originalInvite = paybotModule.createJoinRequestInvite;
+  const originalDm = paybotModule.sendDirectMessage;
+  const originalFetch = globalThis.fetch;
+
+  sheetsModule.forGroup = (groupId) => ({
+    groupId,
+    getSubscriber: async (id) => sheetRows[`${groupId}:${id}`] || null,
+    upsertSubscriber: async (row) => {
+      const saved = Object.assign({}, sheetRows[`${groupId}:${row.telegram_id}`], row);
+      sheetRows[`${groupId}:${row.telegram_id}`] = saved;
+      return saved;
+    }
+  });
+  paybotModule.createJoinRequestInvite = async () => 'https://t.me/+invite-for-one';
+  paybotModule.sendDirectMessage = async (botEnv, userId, text) => { dms.push({ userId, text }); };
+
+  // Razorpay's API, answering the way the real one does.
+  let checkoutBody = null;
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('api.razorpay.com')) return originalFetch(url, opts);
+    checkoutBody = JSON.parse(opts.body);
+    const payload = JSON.stringify({
+      id: 'plink_e2e', short_url: 'https://rzp.io/i/e2e', amount: checkoutBody.amount
+    });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    // ---- 1. The bot hands the student a checkout link -------------------
+    const checkout = await serverModule.createCheckoutForStudent({
+      plan, telegramId: '90901', username: 'student', name: 'A Student'
+    });
+    assert.equal(checkout.url, 'https://rzp.io/i/e2e');
+    assert.equal(checkoutBody.amount, plan.amountPaise, 'the student is charged the advertised price');
+    assert.equal(checkoutBody.notes.group_id, GROUP, 'the sale could not be credited to any group');
+    assert.equal(checkoutBody.notes.telegram_id, '90901');
+
+    // ---- 2. They pay. Razorpay signs the webhook it sends us ------------
+    const body = JSON.stringify({
+      event: 'payment_link.paid',
+      payload: {
+        payment_link: { entity: { id: 'plink_e2e', notes: checkoutBody.notes } },
+        payment: { entity: { id: 'pay_e2e', amount: plan.amountPaise } }
+      }
+    });
+    const signature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+      .update(body).digest('hex');
+
+    // The signature check is the whole security model, so it runs for real.
+    assert.equal(razorpay.verifyWebhookSignature(body, signature), true);
+    assert.equal(razorpay.verifyWebhookSignature(body, signature.replace(/.$/, '0')), false,
+      'a tampered signature was accepted');
+
+    const before = Date.now();
+    const handled = await serverModule.handlePaymentEvent(JSON.parse(body));
+    assert.equal(handled.handled, true, handled.reason || 'the webhook did nothing');
+
+    // ---- 3. The sale is on the books, in the right group -----------------
+    const row = sheetRows[`${GROUP}:90901`];
+    assert.ok(row, 'nothing was written to the sheet');
+    assert.equal(row.status, 'active');
+    assert.equal(row.plan, 'sprint_30');
+    assert.equal(row.amount, plan.amountPaise / 100);
+    assert.equal(row.payment_id, 'pay_e2e');
+    assert.ok(!sheetRows[`appsc_q_en:90901`], 'the sale leaked into the sibling group');
+
+    // ---- 4. The expiry is right, read back the way the sweep reads it ----
+    const expiry = membershipModule.parseIst(row.expiry_date);
+    assert.ok(expiry, `expiry_date "${row.expiry_date}" could not be parsed back`);
+    const days = (expiry.getTime() - before) / 86400000;
+    assert.ok(Math.abs(days - 30) < 0.01,
+      `a 30-day pass expires in ${days.toFixed(3)} days — timestamps are drifting`);
+
+    // ---- 5. They are told, and they can get in --------------------------
+    assert.equal(dms.length, 1, 'the student was never told they were in');
+    assert.match(dms[0].text, /t\.me\/\+invite-for-one/);
+    assert.equal(dms[0].userId, '90901');
+
+    // ---- 6. Razorpay retries the same webhook ---------------------------
+    const replayed = await serverModule.handlePaymentEvent(JSON.parse(body));
+    assert.equal(replayed.handled, true);
+    assert.equal(dms.length, 1, 'a retried webhook sent a second invite');
+    assert.equal(
+      sheetRows[`${GROUP}:90901`].expiry_date, row.expiry_date,
+      'a retried webhook extended the pass a second time'
+    );
+  } finally {
+    sheetsModule.forGroup = originalForGroup;
+    paybotModule.createJoinRequestInvite = originalInvite;
+    paybotModule.sendDirectMessage = originalDm;
     globalThis.fetch = originalFetch;
   }
 });
@@ -556,14 +849,29 @@ test('two groups never resolve to the same sheet', () => {
 });
 
 test('prices are per group, not shared', () => {
-  // UPSC is priced differently on purpose; if plansFor ever read a single
-  // global plan table this would start passing by accident.
-  const a = groups.plansFor('appsc_q_en').find((p) => p.id === 'sprint_30');
-  const b = groups.plansFor('upsc').find((p) => p.id === 'sprint_30');
-  assert.ok(a && b);
-  assert.notEqual(a.amountPaise, b.amountPaise);
-  assert.equal(a.groupId, 'appsc_q_en');
-  assert.equal(b.groupId, 'upsc');
+  // Asserted against each group's own entry in groups.config.json rather than
+  // "UPSC costs more than APPSC": while every group is on test-stage pricing
+  // the amounts coincide, and a difference-based assertion would then be
+  // testing the price list instead of the lookup.
+  const config = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'groups.config.json'), 'utf8')
+  );
+
+  for (const configured of config.groups) {
+    for (const plan of groups.plansFor(configured.id, { includeTest: true })) {
+      assert.equal(plan.groupId, configured.id, `${plan.id} is not tagged with its group`);
+      assert.equal(
+        plan.amountPaise, configured.plans[plan.id],
+        `${configured.id}/${plan.id} is not priced from its own group entry`
+      );
+    }
+  }
+
+  // And the shape still comes from the shared planShapes block, so the wording
+  // is not five copies drifting apart.
+  const a = groups.getPlanFor('appsc_q_en', 'sprint_30');
+  const b = groups.getPlanFor('upsc', 'sprint_30');
+  assert.equal(a.label, b.label);
 });
 
 test('the test pass is hidden per group unless explicitly included', () => {
@@ -632,11 +940,18 @@ test('the two languages in a family cost the same but are separate groups', () =
     'the two languages must be different Telegram groups');
 });
 
-test('UPSC is priced on its own', () => {
-  const upsc = familyOf('TELEGRAM_PAYBOT_UPSC')[0];
-  const news = familyOf('TELEGRAM_PAYBOT_NEWS')[0];
-  const price = (g) => groups.plansFor(g.id).find((p) => p.id === 'sprint_30').amountPaise;
-  assert.notEqual(price(upsc), price(news));
+test('each family prices from its own group entry', () => {
+  const config = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'groups.config.json'), 'utf8')
+  );
+  const configured = (id) => config.groups.find((g) => g.id === id);
+
+  for (const env of ['TELEGRAM_PAYBOT_UPSC', 'TELEGRAM_PAYBOT_NEWS', 'TELEGRAM_PAYBOT_SADHANA']) {
+    for (const group of familyOf(env)) {
+      const price = groups.plansFor(group.id).find((p) => p.id === 'sprint_30').amountPaise;
+      assert.equal(price, configured(group.id).plans.sprint_30, `${group.id} is mispriced`);
+    }
+  }
 });
 
 test('a pass for one group does not admit its sibling', async () => {

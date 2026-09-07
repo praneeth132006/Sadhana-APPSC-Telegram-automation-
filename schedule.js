@@ -53,7 +53,9 @@ async function sendBatch(cfg) {
   console.log(`\n⏰ [${now}] Cron fired for: ${cfg.emoji} ${cfg.subject}`);
 
   // Fetch unposted questions asynchronously from Google Sheets or Excel
-  const questions = await data.getUnpostedQuestions(cfg.subject, cfg.questions_per_batch);
+  // Approved and Scheduled only. An unattended cron is the last place that
+  // should be allowed to publish a question nobody has reviewed.
+  const questions = await data.getUnpostedQuestions(cfg.subject, cfg.questions_per_batch, true);
 
   if (questions.length === 0) {
     console.log(`   📭 No unposted questions remaining for "${cfg.subject}"`);
@@ -71,15 +73,16 @@ async function sendBatch(cfg) {
     try {
       // Send the quiz poll to Telegram
       await telegram.sendQuizPoll(cfg.topic_thread_id, q);
-      // Track 0-based data row index for marking as posted in Excel or Google Sheets
-      postedRows.push(q.row_index !== undefined ? q.row_index : q.excel_row);
+      // Track the 1-based sheet row — see the note in send.js on why 0-based
+      // row_index silently marked the wrong rows.
+      postedRows.push(data.sheetRowOf(q));
 
       // Log success
       const preview = q.question_text.substring(0, 50);
       console.log(`   ✅ [${i + 1}/${questions.length}] ${preview}...`);
 
       // Rate limit delay
-      if (i < questions.length - 1) await sleep(1500);
+      if (i < questions.length - 1) await sleep(telegram.POST_SPACING_MS);
     } catch (error) {
       console.error(`   ❌ [${i + 1}/${questions.length}] Failed: ${error.message}`);
     }

@@ -22,6 +22,26 @@ const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const groups = require('./groups');
 
 /** Every operation a sheets client exposes. */
+/**
+ * sheetRowOf — the 1-based spreadsheet row a question came from.
+ *
+ * Every question carries both `row_index` (0-based position within the data)
+ * and `excel_row` (the real row number, header counted). markAsPosted takes the
+ * row number. Callers used to pass `row_index` and leave the sheet to guess
+ * which of the two it had been handed; that guess mapped the 3rd, 4th and 5th
+ * rows of a batch back onto rows 2, 3 and 4, so those questions went out to
+ * Telegram but stayed marked unposted and were sent again on the next run.
+ * One rule, one place, no guessing.
+ *
+ * @param {Object} q Question object from getUnpostedQuestions
+ * @returns {number} 1-based row number (2 is the first data row)
+ */
+function sheetRowOf(q) {
+  if (q && q.excel_row !== undefined && q.excel_row !== null && q.excel_row !== '') {
+    return Number(q.excel_row);
+  }
+  return Number(q && q.row_index) + 2;
+}
 const API_NAMES = ['ping', 'readConfig', 'getSubjects', 'writeConfig', 'getUnpostedQuestions', 'markAsPosted', 'getStats', 'getAnalytics', 'listQuestions', 'checkDuplicates', 'addQuestions', 'updateQuestion', 'deleteQuestion', 'bulkStatus', 'scheduleQuestions', 'getSubscriber', 'listSubscribers', 'getExpiring', 'getRevenue', 'upsertSubscriber'];
 
 /**
@@ -229,9 +249,11 @@ async function getSubjects(ctx) {
  *
  * @param {string} subject Subject tab name
  * @param {number} count Maximum questions to return
- * @param {boolean} requireApproved Only return Approved/Scheduled rows
+ * @param {boolean} requireApproved Only return Approved/Scheduled rows.
+ *   Defaults to true: an omitted argument must not be the one that publishes
+ *   unreviewed Drafts to a paid channel.
  */
-async function getUnpostedQuestions(ctx, subject, count = 1, requireApproved = false) {
+async function getUnpostedQuestions(ctx, subject, count = 1, requireApproved = true) {
   const result = await request(ctx, 'GET', {
     action: 'getQuestions',
     subject,
@@ -295,7 +317,19 @@ async function markAsPosted(ctx, subject, rowIndices, messageId = null, threadId
     threadId: threadId ? String(threadId) : '',
     pollIds: pollIds || {}
   });
-  return result.updatedCount || rowIndices.length;
+
+  // The sheet skips a row it cannot find, and says so by counting zero. This
+  // used to fall back to `|| rowIndices.length` and report a clean success, so
+  // a question that was never marked looked marked, stayed eligible, and went
+  // out to Telegram again on the next run. Surface it instead.
+  const updated = Number(result.updatedCount);
+  if (!updated) {
+    throw new Error(
+      `The sheet marked none of row(s) ${rowIndices.join(', ')} in "${subject}" as posted — ` +
+      'the row numbers may no longer exist in that tab.'
+    );
+  }
+  return updated;
 }
 
 /** Appends questions from the dashboard, skipping duplicates by default. */
@@ -419,6 +453,7 @@ module.exports = {
   isConfigured,
   getWebAppUrl,
   validateWebAppUrl,
+  sheetRowOf,
   API_NAMES
 };
 

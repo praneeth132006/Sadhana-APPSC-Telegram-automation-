@@ -36,6 +36,10 @@ process.env.TELEGRAM_GROUP_ID = '-1001234567890';
 // fills in a deleted one from the developer's .env when server.js loads it.
 process.env.TEST_PLAN_ENABLED = '';
 
+// Posting paces itself against Telegram's per-group rate limit. Real spacing
+// would make a five-question test take fifteen seconds for no extra coverage.
+process.env.POST_SPACING_MS = '1';
+
 // These tests exercise the server through its transitional single-group API,
 // so they configure one group of their own rather than inheriting whatever the
 // developer happens to have set up.
@@ -488,7 +492,9 @@ test('POST /api/telegram/post sends and records the posting trail', async () => 
 
   const [subject, rows, messageId, threadId, pollIds] = calls.find((c) => c.name === 'markAsPosted').args;
   assert.equal(subject, 'Polity');
-  assert.deepEqual(rows, [0]);
+  // The 1-based sheet row, never the 0-based row_index — the sheet must not
+  // have to guess which one it was handed.
+  assert.deepEqual(rows, [2]);
   assert.equal(messageId, 999);
   assert.equal(threadId, 12);
   assert.deepEqual(pollIds, { 2: 'poll-1' });
@@ -502,12 +508,109 @@ test('posting defaults to Approved-only eligibility', async () => {
   assert.equal(requireApproved, true, 'draft questions were eligible by default');
 });
 
+test('the data layer only publishes reviewed questions unless told otherwise', async () => {
+  // send.js and schedule.js relied on this default. It used to be false, so the
+  // dashboard published only Approved/Scheduled rows while the CLI and the cron
+  // pushed unreviewed Drafts into the same paid channel.
+  const data = require('../src/data');
+  // data.js calls the module-level export, not a bound client, so that is what
+  // has to be stubbed here.
+  const original = sheets.getUnpostedQuestions;
+  const seen = [];
+  sheets.getUnpostedQuestions = async (subject, count, requireApproved) => {
+    seen.push(requireApproved);
+    return [];
+  };
+
+  try {
+    await data.getUnpostedQuestions('Polity', 1);
+    await data.getUnpostedQuestions('Polity', 1, false);
+    assert.deepEqual(seen, [true, false], 'the omitted argument is not the safe one');
+  } finally {
+    sheets.getUnpostedQuestions = original;
+  }
+});
+
 test('the posting batch size is capped at 20', async () => {
   calls.length = 0;
   await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 5000 } });
 
   const [, count] = calls.find((c) => c.name === 'getUnpostedQuestions').args;
   assert.equal(count, 20);
+});
+
+test('every question in a batch is marked against its own sheet row', async () => {
+  // The regression this guards: rows used to be sent as 0-based indices and the
+  // sheet guessed, which collapsed the 3rd, 4th and 5th rows of a batch onto
+  // rows 2, 3 and 4. Five questions were posted, three rows were marked, and
+  // the two survivors went out a second time on the next run.
+  const original = clientStubs.getUnpostedQuestions;
+  clientStubs.getUnpostedQuestions = async () => [0, 1, 2, 3, 4].map((i) => ({
+    question_id: `POL-${i + 1}`, question_text: `Q${i + 1}`, row_index: i, excel_row: i + 2
+  }));
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/post', {
+      method: 'POST',
+      body: { subject: 'Polity', count: 5 }
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.json.postedCount, 5);
+
+    const marked = calls.filter((c) => c.name === 'markAsPosted').flatMap((c) => c.args[1]);
+    assert.deepEqual(marked, [2, 3, 4, 5, 6]);
+  } finally {
+    clientStubs.getUnpostedQuestions = original;
+  }
+});
+
+test('a question posted but not marked is reported, not silently counted', async () => {
+  // Reporting it as a plain success would leave a live poll looking unposted,
+  // and the next run would send it again.
+  const original = clientStubs.markAsPosted;
+  clientStubs.markAsPosted = async () => { throw new Error('sheet unreachable'); };
+
+  try {
+    const res = await authed('/api/telegram/post', {
+      method: 'POST',
+      body: { subject: 'Polity', count: 1 }
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.json.postedCount, 0);
+    assert.equal(res.json.results[0].ok, false);
+    assert.match(res.json.results[0].error, /Posted to Telegram but the sheet was not updated/);
+    assert.match(res.json.results[0].error, /row 2/);
+  } finally {
+    clientStubs.markAsPosted = original;
+  }
+});
+
+test('a second posting batch for the same subject is refused while one runs', async () => {
+  // Two overlapping batches read the same unposted rows and send both copies.
+  const originalSend = telegram.sendQuizPoll;
+  telegram.sendQuizPoll = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return { message_id: 999, poll: { id: 'poll-1' } };
+  };
+
+  try {
+    const [first, second] = await Promise.all([
+      authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } }),
+      // Started once the first is already inside its loop.
+      new Promise((resolve) => setTimeout(
+        () => resolve(authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } })), 20
+      ))
+    ]);
+
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 409);
+    assert.match(second.json.error, /already running/);
+  } finally {
+    telegram.sendQuizPoll = originalSend;
+  }
 });
 
 test('posting to a subject with no configured thread is refused', async () => {
@@ -574,11 +677,39 @@ function signWebhook(body) {
 test('the plan catalogue is public and exposes no secrets', async () => {
   const res = await call('/api/plans');
   assert.equal(res.status, 200);
-  assert.equal(res.json.data.plans.length, 3);
+  // Every group's real catalogue, not one global price list. Serving a single
+  // list here is what let the page advertise prices no group charged.
+  assert.ok(res.json.data.groups.length >= 2);
+  res.json.data.groups.forEach((g) => assert.ok(g.plans.length >= 1, `${g.id} has no plans`));
 
   // A price list is fine to publish; keys are not.
   assert.ok(!res.text.includes(process.env.RAZORPAY_KEY_SECRET), 'the Razorpay key secret leaked');
   assert.ok(!res.text.includes(process.env.RAZORPAY_WEBHOOK_SECRET), 'the webhook secret leaked');
+});
+
+test('the plan catalogue prices each group from its own config entry', async () => {
+  const config = JSON.parse(
+    require('node:fs').readFileSync(path.join(__dirname, '..', 'groups.config.json'), 'utf8')
+  );
+
+  for (const configured of config.groups) {
+    const res = await call(`/api/plans?group=${configured.id}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.json.data.group, configured.id);
+    assert.ok(res.json.data.plans.length >= 1);
+    for (const plan of res.json.data.plans) {
+      assert.equal(
+        plan.amountPaise, configured.plans[plan.id],
+        `${configured.id}/${plan.id} is advertised at a price the group does not charge`
+      );
+    }
+  }
+});
+
+test('the plan catalogue refuses an unknown group rather than inventing one', async () => {
+  const res = await call('/api/plans?group=not_a_group');
+  assert.equal(res.status, 400);
+  assert.match(res.json.error, /Unknown group/);
 });
 
 test('a webhook with a valid signature is processed', async () => {
@@ -679,9 +810,45 @@ test('member endpoints require authentication', async () => {
   }
 });
 
+test('a payment link is priced and tagged for the group that was selected', async () => {
+  // The regression: the route read plans.getPlan(), the legacy global table,
+  // whose plans carry no groupId. Razorpay then wrote an empty notes.group_id
+  // and the webhook dropped the event as "notes lacked group_id" — the student
+  // paid and got nothing back.
+  const config = JSON.parse(
+    require('node:fs').readFileSync(path.join(__dirname, '..', 'groups.config.json'), 'utf8')
+  );
+  const expected = config.groups.find((g) => g.id === 'appsc_news_en').plans.sprint_30;
+
+  const originalFetch = globalThis.fetch;
+  let sentBody = null;
+  // Only Razorpay is intercepted: `authed` reaches the server under test over
+  // fetch too, and swallowing that would make this pass against nothing.
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('api.razorpay.com')) return originalFetch(url, opts);
+    sentBody = opts.body;
+    const payload = JSON.stringify({ id: 'plink_x', short_url: 'https://rzp.io/x' });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    const res = await authed('/api/payments/link', {
+      method: 'POST',
+      body: { planId: 'sprint_30', telegramId: '4242' }
+    });
+
+    assert.equal(res.status, 200);
+    const body = JSON.parse(sentBody);
+    assert.equal(body.notes.group_id, 'appsc_news_en', 'the sale is not credited to any group');
+    assert.equal(body.amount, expected, 'the student is charged a price this group does not advertise');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('creating a payment link validates the plan and telegram id', async () => {
   const bad = [
-    [{ planId: 'not_a_plan', telegramId: '123' }, /Unknown plan/],
+    [{ planId: 'not_a_plan', telegramId: '123' }, /not a pass sold for this group/],
     [{ planId: 'sprint_30', telegramId: 'abc' }, /numeric/],
     [{ planId: 'sprint_30', telegramId: '' }, /numeric/],
     [{ planId: 'sprint_30', telegramId: "1; DROP TABLE" }, /numeric/]
@@ -915,11 +1082,23 @@ test('GET /api/groups lists the groups without leaking their secrets', async () 
   assert.ok(!res.text.includes('token-for-tests'), 'a sheet token reached the client');
 });
 
-test('the group picker shows each group its own prices', async () => {
+test('the group picker prices every group from its own config entry', async () => {
+  // Not "these two differ": on test-stage pricing they legitimately match, and
+  // that assertion would then be checking the price list rather than the wiring.
+  const config = JSON.parse(
+    require('node:fs').readFileSync(path.join(__dirname, '..', 'groups.config.json'), 'utf8')
+  );
   const res = await authed('/api/groups');
   const byId = Object.fromEntries(res.json.data.map((g) => [g.id, g]));
 
-  const sprint = (g) => (g.plans.find((p) => p.id === 'sprint_30') || {}).amountPaise;
-  assert.notEqual(sprint(byId.appsc_news_en), sprint(byId.upsc),
-    'every group is showing the same price');
+  for (const configured of config.groups) {
+    const shown = byId[configured.id];
+    assert.ok(shown, `${configured.id} is missing from the picker`);
+    for (const plan of shown.plans) {
+      assert.equal(
+        plan.amountPaise, configured.plans[plan.id],
+        `${configured.id}/${plan.id} is shown at the wrong price`
+      );
+    }
+  }
 });

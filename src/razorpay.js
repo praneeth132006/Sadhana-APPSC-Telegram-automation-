@@ -157,7 +157,41 @@ function bmpOnly(value, max) {
   return max ? cleaned.slice(0, max) : cleaned;
 }
 
+/** Formats paise as a rupee string. Local rather than imported from plans.js,
+ *  which would make this module and that one require each other. */
+function formatPaise(amountPaise) {
+  const rupees = Number(amountPaise) / 100;
+  return '₹' + (Number.isInteger(rupees) ? rupees : rupees.toFixed(2));
+}
+
+/**
+ * requireGroupId — refuses to create a checkout that the webhook cannot honour.
+ *
+ * `group_id` rides in notes and is the only thing that tells the webhook which
+ * of the five sheets a sale belongs to. handlePaymentEvent drops any event
+ * whose notes lack it — so a checkout created without one takes the student's
+ * money and grants nothing, with the failure showing up only in a server log
+ * nobody is reading. Refusing here turns that into a bot message before a
+ * single rupee moves.
+ *
+ * @param {Object} plan Plan object, expected to carry groupId
+ * @returns {string} The group id
+ * @throws {Error} When the plan is not group-scoped
+ */
+function requireGroupId(plan) {
+  const groupId = String((plan && plan.groupId) || '').trim();
+  if (!groupId) {
+    throw new Error(
+      `Plan "${(plan && plan.id) || 'unknown'}" is not scoped to a group, so a payment for it ` +
+      'could never be credited to anyone. Build it with groups.plansFor(groupId) / ' +
+      'groups.getPlanFor(groupId, planId) rather than plans.getPlan(planId).'
+    );
+  }
+  return groupId;
+}
+
 async function createPaymentLink({ plan, telegramId, name, username, callbackUrl }) {
+  const groupId = requireGroupId(plan);
   const body = {
     amount: plan.amountPaise,
     currency: 'INR',
@@ -176,7 +210,7 @@ async function createPaymentLink({ plan, telegramId, name, username, callbackUrl
       // untouched — so the group is something we set, never something the
       // payer can choose. Without it the webhook has no way to know which of
       // five sheets to record the sale in.
-      group_id: String(plan.groupId || '')
+      group_id: groupId
     },
     notify: { sms: false, email: false },
     reminder_enable: false
@@ -220,8 +254,35 @@ async function createPlan(plan) {
       amount: plan.amountPaise,
       currency: 'INR'
     },
-    notes: { plan_id: plan.id }
+    // group_id here is for the Razorpay dashboard only — a subscription carries
+    // its own notes, and those are what the webhook reads.
+    notes: { plan_id: plan.id, group_id: String(plan.groupId || '') }
   });
+}
+
+/**
+ * listPlans — every recurring plan on the account, newest first.
+ *
+ * @param {number} [count] How many to fetch (Razorpay's own cap is 100)
+ * @returns {Promise<Array<Object>>}
+ */
+async function listPlans(count = 100) {
+  const result = await request('GET', `/plans?count=${Math.min(Math.max(count, 1), 100)}`);
+  return result.items || [];
+}
+
+/**
+ * getPlan — reads a recurring plan back, to check what it actually charges.
+ *
+ * Razorpay bakes the amount into the plan and cannot re-price one, so a plan
+ * created before a price change keeps charging the old amount while the button
+ * advertises the new one. setup-razorpay.js uses this to say so.
+ *
+ * @param {string} planId Razorpay plan id
+ * @returns {Promise<Object>} The plan
+ */
+async function getPlan(planId) {
+  return request('GET', `/plans/${encodeURIComponent(planId)}`);
 }
 
 /**
@@ -235,6 +296,26 @@ async function createPlan(plan) {
  * @returns {Promise<Object>} The subscription, including short_url to pay at
  */
 async function createSubscription({ plan, razorpayPlanId, telegramId, username }) {
+  const groupId = requireGroupId(plan);
+  if (!String(razorpayPlanId || '').trim()) {
+    throw new Error(`No Razorpay plan id was supplied for "${plan.id}" in group "${groupId}".`);
+  }
+
+  // Razorpay bakes the amount into the plan and cannot re-price one, so a plan
+  // created before a price change keeps charging the old amount while the
+  // button advertises the new one. Read it back and refuse rather than charge a
+  // student something other than the price they were shown.
+  const live = await getPlan(razorpayPlanId);
+  const liveAmount = Number(live && live.item && live.item.amount);
+  if (liveAmount !== Number(plan.amountPaise)) {
+    throw new Error(
+      `Razorpay plan ${razorpayPlanId} charges ${formatPaise(liveAmount)} but "${plan.label}" ` +
+      `for ${groupId} is advertised at ${formatPaise(plan.amountPaise)}. ` +
+      'Create a plan at the new price with "node setup-razorpay.js" and update ' +
+      `RAZORPAY_PLAN_* — no subscription was started.`
+    );
+  }
+
   return request('POST', '/subscriptions', {
     plan_id: razorpayPlanId,
     total_count: plan.totalBillingCycles || 12,
@@ -244,7 +325,7 @@ async function createSubscription({ plan, razorpayPlanId, telegramId, username }
       telegram_id: String(telegramId),
       telegram_username: bmpOnly(username, 60),
       plan_id: plan.id,
-      group_id: String(plan.groupId || '')
+      group_id: groupId
     }
   });
 }
@@ -332,11 +413,14 @@ function verifyPaymentLinkSignature({ paymentLinkId, paymentId, referenceId, sta
 
 module.exports = {
   bmpOnly,
+  requireGroupId,
   isConfigured,
   isTestMode,
   createPaymentLink,
   getPaymentLink,
   createPlan,
+  getPlan,
+  listPlans,
   createSubscription,
   getSubscription,
   cancelSubscription,

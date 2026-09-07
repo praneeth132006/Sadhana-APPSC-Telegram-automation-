@@ -1,5 +1,5 @@
 // ==========================================================================
-// APPSC Questions (English)
+// Sadhana APPSC (English)
 // ==========================================================================
 // GENERATED FILE — DO NOT EDIT HERE.
 //
@@ -10,7 +10,7 @@
 // Group id : appsc_q_en
 // Subjects : 16
 //            Ancient India, Medieval India, Modern India, AP History, Physical Geography, Indian Geography, AP Geography, Indian Economy, AP Economy, Environment, Polity, International Relations, Science and Technology, Current Affairs, Indian Society, Disaster Management
-// Built    : 2026-09-06T13:34:30.789Z
+// Built    : 2026-09-07T09:05:14.732Z
 // ==========================================================================
 
 // ============================================================================
@@ -1093,10 +1093,19 @@ function markRowsAsPostedInSheet(subject, rowIndices, messageId, threadId, pollI
   var now = istNow();
   var updated = 0;
 
+  // Row numbers are 1-based sheet rows (row 1 is the header, so data starts at
+  // 2). The old code guessed between a 0-based data index and a sheet row with
+  // `n < 2 ? n + 2 : n`, which silently collapsed the 3rd, 4th and 5th rows of
+  // a batch onto rows 2, 3 and 4 — so most of a batch was posted to Telegram
+  // but never marked, and got posted again on the next run. No guessing now.
+  var seen = {};
+
   for (var i = 0; i < rowIndices.length; i++) {
-    // Callers pass either a 0-based data index or a 1-based sheet row.
-    var rowNumber = rowIndices[i] < 2 ? rowIndices[i] + 2 : rowIndices[i];
-    if (rowNumber < 2 || rowNumber > sheet.getLastRow()) continue;
+    var rowNumber = Number(rowIndices[i]);
+    if (!isFinite(rowNumber) || rowNumber < 2 || rowNumber > sheet.getLastRow()) continue;
+    // A repeated row in one batch must not inflate Times Posted.
+    if (seen[rowNumber]) continue;
+    seen[rowNumber] = true;
 
     var prior = Number(sheet.getRange(rowNumber, colNum(map, 'Times Posted')).getValue()) || 0;
 

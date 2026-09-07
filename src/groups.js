@@ -163,7 +163,13 @@ function decorate(group) {
       sheetUrl ? null : `SHEET_URL_${prefix}`,
       sheetToken ? null : `SHEET_TOKEN_${prefix}`,
       telegramGroupId ? null : `TELEGRAM_GROUP_${prefix}`
-    ].filter(Boolean)
+    ].filter(Boolean),
+    // Auto-pay is deliberately NOT part of `ready`: a group with no recurring
+    // plan id still sells its one-time passes perfectly well. But it is not
+    // silent either — without this the only symptom was a student tapping
+    // Monthly Auto-Pay and being told the bot could not create a link.
+    autopayReady: Boolean(razorpayPlanId),
+    autopayMissing: razorpayPlanId ? null : `RAZORPAY_PLAN_${prefix}`
   });
 }
 
