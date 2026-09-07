@@ -10,7 +10,7 @@
 // Group id : appsc_q_te
 // Subjects : 16
 //            Ancient India, Medieval India, Modern India, AP History, Physical Geography, Indian Geography, AP Geography, Indian Economy, AP Economy, Environment, Polity, International Relations, Science and Technology, Current Affairs, Indian Society, Disaster Management
-// Built    : 2026-09-07T09:05:14.732Z
+// Built    : 2026-09-07T11:50:24.704Z
 // ==========================================================================
 
 // ============================================================================
@@ -391,7 +391,7 @@ function doGet(e) {
 /**
  * doPost — mutating API surface.
  * Actions: addQuestions, markPosted, updateConfig, updateQuestion,
- *          deleteQuestion, bulkStatus, scheduleQuestions.
+ *          deleteQuestion, bulkDelete, bulkStatus, scheduleQuestions.
  */
 function doPost(e) {
   try {
@@ -472,6 +472,18 @@ function doPost(e) {
       return jsonResponse(deleted
         ? { success: true, message: 'Question ' + payload.questionId + ' deleted' }
         : { success: false, error: 'Question ' + payload.questionId + ' not found' });
+    }
+
+    if (action === 'bulkDelete') {
+      if (!payload.subject || !(payload.questionIds || []).length) {
+        return jsonResponse({ success: false, error: 'Missing subject or questionIds' });
+      }
+      var removed = bulkDeleteQuestionRows(payload.subject, payload.questionIds);
+      return jsonResponse({
+        success: true,
+        deletedCount: removed.deletedCount,
+        notFound: removed.notFound
+      });
     }
 
     if (action === 'bulkStatus') {
@@ -1340,6 +1352,50 @@ function deleteQuestionRow(subject, questionId, rowHint, verifyText) {
   if (rowNumber === -1) return false;
   sheet.deleteRow(rowNumber);
   return true;
+}
+
+/**
+ * bulkDeleteQuestionRows — removes many rows in one call.
+ *
+ * Deleting a row shifts every row below it up by one, so resolving a row number
+ * and then deleting in the order the ids arrived would destroy the wrong rows
+ * from the second deletion onwards. Every row is resolved FIRST, then deleted
+ * from the bottom of the sheet upwards, so no pending target ever moves.
+ *
+ * @param {string} subject Sheet tab
+ * @param {Array<string>} questionIds Question IDs to remove
+ * @returns {Object} { deletedCount, deleted, notFound }
+ */
+function bulkDeleteQuestionRows(subject, questionIds) {
+  var sheet = book().getSheetByName(subject);
+  if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
+
+  var map = headerMap(sheet);
+  var rows = [];
+  var deleted = [];
+  var notFound = [];
+  var seen = {};
+
+  for (var i = 0; i < questionIds.length; i++) {
+    var id = String(questionIds[i] || '').trim();
+    if (!id || seen[id]) continue;
+    seen[id] = true;
+
+    var rowNumber = findRowByQuestionId(sheet, map, id);
+    if (rowNumber === -1) { notFound.push(id); continue; }
+    rows.push({ row: rowNumber, id: id });
+  }
+
+  // Highest row first. Deleting row 9 cannot move row 4; deleting row 4 first
+  // would make every later row number point one row too low.
+  rows.sort(function (a, b) { return b.row - a.row; });
+
+  for (var j = 0; j < rows.length; j++) {
+    sheet.deleteRow(rows[j].row);
+    deleted.push(rows[j].id);
+  }
+
+  return { deletedCount: deleted.length, deleted: deleted, notFound: notFound };
 }
 
 /** Sets Status on many rows at once (approve / reject / archive in bulk). */
