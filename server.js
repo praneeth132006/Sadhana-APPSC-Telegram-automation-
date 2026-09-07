@@ -35,6 +35,7 @@ const groupRegistry = require('./src/groups');
 const razorpay = require('./src/razorpay');
 const membership = require('./src/membership');
 const plans = require('./src/plans');
+const botapp = require('./src/botapp');
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -602,7 +603,7 @@ async function handlePaymentEvent(event) {
 
     // A repeat delivery of the same payment must not send a second message.
     if (!granted.alreadyProcessed) {
-      await deliverAccess(granted, groupRegistry.getPlanFor(notes.group_id, notes.plan_id, { includeTest: true }), notes.telegram_id, notes.group_id);
+      await deliverAccess(granted, groupRegistry.getPlanFor(notes.group_id, notes.plan_id), notes.telegram_id, notes.group_id);
     }
     return { handled: true };
   }
@@ -634,7 +635,7 @@ async function handlePaymentEvent(event) {
     // already in the group are skipped: they need no invite, and a monthly link
     // is something members would learn to forward.
     if (!charged.alreadyProcessed && charged.isRejoining) {
-      await deliverAccess(charged, groupRegistry.getPlanFor(notes.group_id, notes.plan_id, { includeTest: true }), notes.telegram_id, notes.group_id);
+      await deliverAccess(charged, groupRegistry.getPlanFor(notes.group_id, notes.plan_id), notes.telegram_id, notes.group_id);
     }
     return { handled: true };
   }
@@ -717,6 +718,60 @@ function ensureTelegram() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Payment bots, served over Telegram webhooks
+// ---------------------------------------------------------------------------
+// The bots used to be three long-running laptop processes started by hand, so
+// in practice one ran and two did not — and the one that did had been started
+// before the prices changed and kept quoting the old ones from memory. Served
+// from here there is no process to forget, all three answer, and a price change
+// takes effect on deploy.
+
+/** Bots built so far, keyed by their token env var. Built on first update and
+ *  reused for the life of the instance, so a warm function does no extra work. */
+const paymentBots = new Map();
+
+/**
+ * paymentBotFor — the bot for one family, built once per instance.
+ *
+ * @param {string} payBotEnv Env var naming the bot's token
+ * @returns {Object} The bot app from src/botapp.js
+ */
+function paymentBotFor(payBotEnv) {
+  if (!paymentBots.has(payBotEnv)) {
+    paymentBots.set(payBotEnv, botapp.createPaymentBot({ payBotEnv, polling: false }));
+  }
+  return paymentBots.get(payBotEnv);
+}
+
+/** Every payment-bot env var a ready group names, deduplicated. */
+function paymentBotEnvs() {
+  return [...new Set(
+    groupRegistry.listGroups()
+      .filter((g) => g.ready && g.paymentBotEnv)
+      .map((g) => g.paymentBotEnv)
+  )].filter((env) => String(process.env[env] || '').trim());
+}
+
+/**
+ * telegramWebhookSecret — the value Telegram must echo back in a header.
+ *
+ * Telegram sends X-Telegram-Bot-Api-Secret-Token on every webhook delivery. It
+ * is the only thing separating a real update from anyone who guesses the URL,
+ * and this endpoint hands out invite links, so a missing secret means the
+ * endpoint refuses to run rather than trusting whatever arrives.
+ *
+ * Derived from CRON_SECRET so there is one fewer secret to set and rotate; it
+ * is a distinct value, not CRON_SECRET itself.
+ *
+ * @returns {string} The secret, or '' when CRON_SECRET is unset
+ */
+function telegramWebhookSecret() {
+  const base = String(process.env.TELEGRAM_WEBHOOK_SECRET || process.env.CRON_SECRET || '').trim();
+  if (!base) return '';
+  return crypto.createHash('sha256').update('telegram-webhook:' + base).digest('hex').slice(0, 48);
+}
+
 /** Small promise delay used to stay under Telegram's rate limits. */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -769,7 +824,7 @@ async function handlePublicRoute(pathname, method, req, res) {
     let catalogue;
     if (group) {
       try {
-        catalogue = groupRegistry.plansFor(group, { includeTest: plans.testPlanEnabled() });
+        catalogue = groupRegistry.plansFor(group);
       } catch (err) {
         sendJSON(res, 400, { success: false, error: err.message.split('\n')[0] });
         return true;
@@ -805,7 +860,7 @@ async function handlePublicRoute(pathname, method, req, res) {
           id: g.id,
           label: g.displayName,
           plans: groupRegistry
-            .plansFor(g.id, { includeTest: plans.testPlanEnabled() })
+            .plansFor(g.id)
             .map(describe)
         }))
       }
@@ -846,6 +901,58 @@ async function handlePublicRoute(pathname, method, req, res) {
       // failure — the payment is real and must not be silently dropped.
       console.error('[payments] webhook handling failed:', err.message);
       sendJSON(res, 500, { success: false, error: 'Processing failed, please retry' });
+    }
+    return true;
+  }
+
+  // ---- Telegram bot webhooks ---------------------------------------------
+  // Public in the routing sense only: Telegram cannot present a Firebase token,
+  // so the credential is the secret it echoes in a header. Without a matching
+  // one this refuses to act — the endpoint hands out paid-group invite links.
+  if (pathname.startsWith('/api/telegram/bot/') && method === 'POST') {
+    const secret = telegramWebhookSecret();
+    if (!secret) {
+      // Refusing beats running unauthenticated: anyone who guessed the URL
+      // could otherwise drive the bot.
+      sendJSON(res, 503, {
+        success: false,
+        error: 'No TELEGRAM_WEBHOOK_SECRET or CRON_SECRET set, so the bot webhook refuses to run.'
+      });
+      return true;
+    }
+
+    const offered = String(req.headers['x-telegram-bot-api-secret-token'] || '');
+    const a = Buffer.from(offered);
+    const b = Buffer.from(secret);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      console.warn('[bot] rejected a webhook with a bad secret token');
+      sendJSON(res, 401, { success: false, error: 'Unauthorised' });
+      return true;
+    }
+
+    const payBotEnv = decodeURIComponent(pathname.slice('/api/telegram/bot/'.length));
+    if (!paymentBotEnvs().includes(payBotEnv)) {
+      sendJSON(res, 404, { success: false, error: `No payment bot is configured as "${payBotEnv}".` });
+      return true;
+    }
+
+    let update;
+    try {
+      update = JSON.parse(await readRawBody(req));
+    } catch (err) {
+      sendJSON(res, 400, { success: false, error: 'Malformed update' });
+      return true;
+    }
+
+    // Answer Telegram before doing the work. processUpdate dispatches to
+    // handlers that talk to Razorpay and Google Sheets, and Telegram retries
+    // anything it does not get a prompt 200 for — which would mean a second
+    // payment link for one tap.
+    sendJSON(res, 200, { success: true });
+    try {
+      paymentBotFor(payBotEnv).bot.processUpdate(update);
+    } catch (err) {
+      console.error(`[bot] ${payBotEnv} failed to handle an update:`, err.message);
     }
     return true;
   }
@@ -1039,8 +1146,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         })),
         premiumGroupSet: groupRegistry.listGroups().some((g) => g.ready),
         dedicatedPaymentBot: paybot.hasDedicatedBot(),
-        cronSecretSet: Boolean(String(process.env.CRON_SECRET || '').trim()),
-        testPlanEnabled: plans.testPlanEnabled()
+        cronSecretSet: Boolean(String(process.env.CRON_SECRET || '').trim())
       },
       you: { email: user.email, uid: user.uid, provider: user.signInProvider, emailVerified: user.emailVerified }
     };
@@ -1254,9 +1360,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
     // plans.getPlan() returns the legacy global plan, which has no groupId:
     // razorpay then wrote an empty notes.group_id and the webhook dropped the
     // event as "notes lacked group_id" — the student paid and got nothing.
-    const plan = groupRegistry.getPlanFor(groupId, str(body.planId, 40), {
-      includeTest: plans.testPlanEnabled()
-    });
+    const plan = groupRegistry.getPlanFor(groupId, str(body.planId, 40));
     if (!plan) {
       sendJSON(res, 400, {
         success: false,

@@ -10,7 +10,7 @@
 // Group id : appsc_q_en
 // Subjects : 16
 //            Ancient India, Medieval India, Modern India, AP History, Physical Geography, Indian Geography, AP Geography, Indian Economy, AP Economy, Environment, Polity, International Relations, Science and Technology, Current Affairs, Indian Society, Disaster Management
-// Built    : 2026-09-07T09:05:14.732Z
+// Built    : 2026-09-07T10:32:12.739Z
 // ==========================================================================
 
 // ============================================================================

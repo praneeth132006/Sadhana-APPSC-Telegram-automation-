@@ -28,13 +28,6 @@ process.env.SHEET_API_TOKEN = 'test-sheet-token';
 process.env.TELEGRAM_BOT_TOKEN = '123:TEST';
 process.env.TELEGRAM_GROUP_ID = '-1001234567890';
 
-// The Rs 1 test pass must never be part of what these tests consider normal.
-// Left to the developer's .env, a machine with TEST_PLAN_ENABLED=true would see
-// a four-plan catalogue and a machine without it three, so the suite would pass
-// or fail depending on whose laptop ran it.
-// Empty rather than deleted: dotenv skips keys already present, but happily
-// fills in a deleted one from the developer's .env when server.js loads it.
-process.env.TEST_PLAN_ENABLED = '';
 
 // Posting paces itself against Telegram's per-group rate limit. Real spacing
 // would make a five-question test take fifteen seconds for no extra coverage.
@@ -710,6 +703,76 @@ test('the plan catalogue refuses an unknown group rather than inventing one', as
   const res = await call('/api/plans?group=not_a_group');
   assert.equal(res.status, 400);
   assert.match(res.json.error, /Unknown group/);
+});
+
+// ===========================================================================
+// The payment bots, served over Telegram webhooks
+// ===========================================================================
+// They used to be three long-running laptop processes started by hand. In
+// practice one ran and two did not, so two of the three bots answered nobody,
+// and the one that ran had been started before the prices changed and kept
+// quoting the old ones from memory. These cover the route that replaced them.
+
+/** The secret Telegram must echo back, derived the way server.js derives it. */
+function botWebhookSecret() {
+  return require('node:crypto')
+    .createHash('sha256')
+    .update('telegram-webhook:' + process.env.CRON_SECRET)
+    .digest('hex').slice(0, 48);
+}
+
+async function botWebhook(payBotEnv, update, secret) {
+  const res = await fetch(`${baseUrl}/api/telegram/bot/${encodeURIComponent(payBotEnv)}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Bot-Api-Secret-Token': secret === undefined ? botWebhookSecret() : secret
+    },
+    body: JSON.stringify(update)
+  });
+  return { status: res.status, json: await res.json() };
+}
+
+test('a bot webhook without the secret token is refused', async () => {
+  // The only thing between this endpoint and anyone who guesses the URL. It
+  // drives a bot that hands out paid-group invite links.
+  for (const offered of ['', 'wrong', botWebhookSecret().slice(0, -1) + 'x']) {
+    const res = await botWebhook('TELEGRAM_PAYBOT_NEWS', { update_id: 1 }, offered);
+    assert.equal(res.status, 401, `accepted the secret "${offered}"`);
+  }
+});
+
+test('a bot webhook for an unconfigured family is refused', async () => {
+  const res = await botWebhook('TELEGRAM_PAYBOT_NOT_A_THING', { update_id: 1 });
+  assert.equal(res.status, 404);
+  assert.match(res.json.error, /No payment bot is configured/);
+});
+
+test('a signed bot webhook is accepted and answered immediately', async () => {
+  // Telegram retries anything it does not get a prompt 200 for, and a retry
+  // here means a second payment link for one tap, so the 200 goes out before
+  // the update is dispatched.
+  const res = await botWebhook('TELEGRAM_PAYBOT_NEWS', {
+    update_id: 7,
+    message: { message_id: 1, date: 0, chat: { id: 4242, type: 'private' }, from: { id: 4242 }, text: '/nothing' }
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.success, true);
+});
+
+test('every configured family has a webhook endpoint that accepts updates', async () => {
+  // The regression this exists for: two of the three bots answering nobody.
+  const groupsModule = require('../src/groups');
+  const families = [...new Set(
+    groupsModule.listGroups().filter((g) => g.ready && g.paymentBotEnv).map((g) => g.paymentBotEnv)
+  )].filter((env) => String(process.env[env] || '').trim());
+
+  assert.ok(families.length >= 2, 'expected several payment bot families');
+
+  for (const payBotEnv of families) {
+    const res = await botWebhook(payBotEnv, { update_id: 1 });
+    assert.equal(res.status, 200, `${payBotEnv} does not answer its webhook`);
+  }
 });
 
 test('a webhook with a valid signature is processed', async () => {

@@ -214,7 +214,7 @@ async function grantAccess(options) {
   } = options;
 
   const ctx = contextFor(groupId);
-  const plan = groups.getPlanFor(groupId, planId, { includeTest: true });
+  const plan = groups.getPlanFor(groupId, planId);
   if (!plan) throw new Error(`Unknown plan "${planId}"`);
   if (!telegramId) throw new Error('grantAccess requires a telegramId');
 
@@ -321,7 +321,7 @@ async function markExpired(groupId, subscriber, removed) {
  */
 function planForSubscriber(groupId, planId) {
   if (!planId) return null;
-  return groups.getPlanFor(groupId, planId, { includeTest: true }) || plans.getPlan(planId);
+  return groups.getPlanFor(groupId, planId) || plans.getPlan(planId);
 }
 
 /**
@@ -370,7 +370,7 @@ async function runDailyCheck({ groupId, dryRun = false } = {}) {
   // Widest reminder window of any pass THIS group sells, so one query covers
   // every case without reaching for the legacy global table.
   const lookAhead = Math.max(
-    ...groups.plansFor(groupId, { includeTest: true }).map((p) => p.reminderDaysBefore || 0), 0
+    ...groups.plansFor(groupId).map((p) => p.reminderDaysBefore || 0), 0
   );
   const candidates = await ctx.sheet.getExpiring(lookAhead);
   summary.checked = candidates.length;
