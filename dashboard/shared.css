@@ -287,7 +287,11 @@
 
 .data-table tbody tr:hover { background: var(--bg-hover); }
 .data-table td.num { font-family: var(--font-mono); text-align: right; white-space: nowrap; }
-.data-table td.wrap { max-width: 520px; white-space: normal; line-height: 1.5; }
+/* The question cell now carries the FULL text rather than a 230-character
+   excerpt, so it gets more room and a floor: a multi-statement question in a
+   320px column is a very tall, very thin ribbon. No clamp and no ellipsis
+   here on purpose — a curator approving a question has to see all of it. */
+.data-table td.wrap { max-width: 680px; min-width: 320px; white-space: normal; line-height: 1.5; }
 .data-table .muted { color: var(--text-muted); }
 
 /* ---- Pills ------------------------------------------------------------- */

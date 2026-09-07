@@ -1196,6 +1196,35 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
   }
 
   // ---- Bulk status change --------------------------------------------------
+  // ---- Bulk delete ---------------------------------------------------------
+  // Deleting one row at a time through /api/questions/delete meant a confirm
+  // dialog and a round trip per question, which made clearing a batch of 29
+  // impractical. One call, one confirmation.
+  if (pathname === '/api/questions/bulk-delete' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const subject = validateSubject(body.subject);
+    if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
+
+    const ids = Array.isArray(body.questionIds)
+      ? [...new Set(body.questionIds.map((id) => str(id, 60)).filter(Boolean))]
+      : [];
+    if (!ids.length) { sendJSON(res, 400, { success: false, error: 'No questionIds provided' }); return true; }
+    // The same cap as a bulk status change. This one is irreversible, so the
+    // limit is about how much a single mistaken click can destroy, not load.
+    if (ids.length > 200) { sendJSON(res, 400, { success: false, error: 'Too many questionIds (max 200)' }); return true; }
+
+    const result = await db.bulkDelete(subject.value, ids);
+    console.log(`[questions] ${actor} deleted ${result.deletedCount} row(s) from "${subject.value}"`);
+    sendJSON(res, 200, {
+      success: true,
+      deletedCount: result.deletedCount,
+      // Named rather than counted, so a curator can see which ids survived
+      // instead of being told a number that does not add up.
+      notFound: result.notFound
+    });
+    return true;
+  }
+
   if (pathname === '/api/questions/status' && method === 'POST') {
     const body = await readJsonBody(req);
     const subject = validateSubject(body.subject);

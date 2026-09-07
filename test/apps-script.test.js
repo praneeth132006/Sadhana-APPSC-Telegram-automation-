@@ -792,6 +792,80 @@ test('markRowsAsPostedInSheet ignores a row repeated within one batch', () => {
   assert.equal(sheet.values[1][map['Times Posted']], 1);
 });
 
+test('bulk delete removes exactly the selected rows, not their neighbours', () => {
+  // The hazard: deleting a row shifts every row below it up by one. Resolving
+  // row numbers first and then deleting in the order the ids arrived destroys
+  // the wrong rows from the second deletion onwards. This deletes a middle
+  // slice, so an off-by-one in either direction leaves the wrong survivors.
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  const six = [1, 2, 3, 4, 5, 6].map((n) => ({
+    question: `Q${n}?`, option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }));
+  script.appendQuestionsToSheet('Polity', six, 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const idAt = (row) => String(sheet.values[row][map['Question ID']]);
+  const idsFor = (rows) => rows.map(idAt);
+
+  // Rows 2..7 hold Q1..Q6. Delete Q2, Q3 and Q5 — deliberately not contiguous.
+  const target = idsFor([2, 3, 5]);
+  const result = script.bulkDeleteQuestionRows('Polity', target);
+
+  assert.equal(result.deletedCount, 3);
+  // Array.from: the sandbox has its own realm, so its arrays fail the strict
+  // prototype check even when the contents match.
+  assert.deepEqual(Array.from(result.notFound), []);
+
+  const surviving = Array.from(sheet.values).slice(1).map((r) => String(r[map['Question']]));
+  assert.deepEqual(surviving, ['Q1?', 'Q4?', 'Q6?'],
+    'the wrong rows were deleted — row numbers shifted mid-loop');
+});
+
+test('bulk delete reports ids it could not find and still deletes the rest', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [
+    { question: 'Keep me?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A' },
+    { question: 'Delete me?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A' }
+  ], 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const doomed = String(sheet.values[2][map['Question ID']]);
+
+  const result = script.bulkDeleteQuestionRows('Polity', [doomed, 'POL-DOES-NOT-EXIST']);
+
+  assert.equal(result.deletedCount, 1);
+  assert.deepEqual(Array.from(result.notFound), ['POL-DOES-NOT-EXIST']);
+  assert.equal(sheet.values.length, 2, 'only the header and the survivor should remain');
+  assert.equal(String(sheet.values[1][map['Question']]), 'Keep me?');
+});
+
+test('bulk delete ignores a repeated id rather than deleting its neighbour', () => {
+  // Deleting the same row twice would take out whatever slid up into its place.
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [
+    { question: 'Go?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A' },
+    { question: 'Stay?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A' }
+  ], 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const doomed = String(sheet.values[1][map['Question ID']]);
+
+  const result = script.bulkDeleteQuestionRows('Polity', [doomed, doomed, doomed]);
+
+  assert.equal(result.deletedCount, 1);
+  assert.equal(sheet.values.length, 2);
+  assert.equal(String(sheet.values[1][map['Question']]), 'Stay?');
+});
+
 test('listQuestions filters and paginates', () => {
   const s = freshScript();
   const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);

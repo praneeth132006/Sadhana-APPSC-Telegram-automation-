@@ -840,6 +840,24 @@ body {
   box-shadow: 0 6px 20px var(--accent-glow);
 }
 
+/* Irreversible actions. Deliberately not the same blue as Apply: the two sit
+   side by side in the bulk bar and only one of them can be undone. */
+.btn-danger {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border: 1px solid var(--accent-danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.22);
+  color: #fca5a5;
+}
+
+.btn-danger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .btn-ghost {
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-secondary);

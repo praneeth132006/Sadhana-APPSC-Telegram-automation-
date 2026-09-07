@@ -85,6 +85,7 @@ function initFilters() {
   });
 
   $('bulkApplyBtn').addEventListener('click', applyBulkStatus);
+  $('bulkDeleteBtn').addEventListener('click', applyBulkDelete);
 }
 
 /** Copies the current control values into the filter state. */
@@ -106,7 +107,12 @@ function refreshSelectionUi() {
   $('selectionCount').textContent = `${selected.size} selected`;
   // Bulk status changes address one sheet tab at a time, so a subject must be
   // chosen; "All subjects" would be ambiguous about which tab to write to.
-  $('bulkApplyBtn').disabled = selected.size === 0 || filters.subject === 'all';
+  const unusable = selected.size === 0 || filters.subject === 'all';
+  $('bulkApplyBtn').disabled = unusable;
+  $('bulkDeleteBtn').disabled = unusable;
+  $('bulkDeleteBtn').textContent = selected.size
+    ? `🗑 Delete ${selected.size} selected`
+    : '🗑 Delete selected';
 }
 
 /** Builds one table row for a question. */
@@ -131,9 +137,14 @@ function questionRow(q) {
       el('div', { class: 'muted', style: 'font-size:0.74rem;margin-top:4px', text: q.subject })
     ]),
     el('td', { class: 'wrap' }, [
-      el('div', { text: truncate(q.question_text, 230), style: 'line-height:1.55' }),
-      el('div', { class: 'muted', style: 'font-size:0.76rem;margin-top:5px',
-        text: `✔ ${q.correct_answer} — ${truncate(answerText, 70)}` }),
+      // The full text, never an excerpt. A multi-statement APPSC question is
+      // routinely longer than 230 characters, and cutting it off hid the very
+      // part a curator needs to read before approving: the statements, and the
+      // "which of the above" line that decides the answer. white-space:pre-wrap
+      // keeps the line breaks the question was written with.
+      el('div', { text: q.question_text, style: 'line-height:1.55; white-space:pre-wrap' }),
+      el('div', { class: 'muted', style: 'font-size:0.76rem;margin-top:5px; white-space:pre-wrap',
+        text: `✔ ${q.correct_answer} — ${answerText}` }),
       q.tags ? el('div', { class: 'muted', style: 'font-size:0.74rem;margin-top:3px', text: '🏷️ ' + q.tags }) : null
     ]),
     el('td', {}, [q.topic ? el('span', { text: q.topic }) : el('span', { class: 'muted', text: '—' })]),
@@ -399,6 +410,72 @@ async function confirmDelete(q) {
     await load();
   } catch (err) {
     showToast('error', err.message, 9000);
+  }
+}
+
+/**
+ * applyBulkDelete — permanently removes every selected question.
+ *
+ * Deleting one at a time meant a confirm dialog and a round trip per question,
+ * so clearing a page of 29 was not realistically doable. This is one call and
+ * one confirmation — which is also why the confirmation is deliberately heavy:
+ * it names the count and the subject, and asks the curator to type DELETE.
+ * Nothing here can be undone from the dashboard.
+ */
+async function applyBulkDelete() {
+  const ids = [...selected];
+  if (!ids.length) return;
+
+  if (filters.subject === 'all') {
+    showToast('warn', 'Pick a single subject before deleting in bulk.');
+    return;
+  }
+
+  // How many of these are already live in Telegram, so the curator knows what
+  // they are throwing away: deleting the row does not unsend the poll.
+  const postedCount = rows.filter((q) => selected.has(q.question_id) && q.posted === 'YES').length;
+
+  const typed = window.prompt(
+    `Permanently delete ${ids.length} question(s) from "${filters.subject}"?\n\n` +
+    (postedCount
+      ? `⚠️ ${postedCount} of them are already posted to Telegram. Deleting the row ` +
+        'here does NOT remove the poll from the channel.\n\n'
+      : '') +
+    'The rows are removed from Google Sheets and cannot be recovered from here.\n\n' +
+    'Type DELETE to confirm:'
+  );
+  if (typed === null) return;
+  if (typed.trim().toUpperCase() !== 'DELETE') {
+    showToast('info', 'Nothing was deleted.');
+    return;
+  }
+
+  const button = $('bulkDeleteBtn');
+  button.disabled = true;
+  button.textContent = 'Deleting…';
+
+  try {
+    const result = await api('/api/questions/bulk-delete', {
+      method: 'POST',
+      body: { subject: filters.subject, questionIds: ids }
+    });
+
+    const missing = result.notFound || [];
+    if (missing.length) {
+      // Named, not counted: a curator who is told "27 of 29" and nothing else
+      // has no way to find the two that survived.
+      showToast('warn',
+        `Deleted ${result.deletedCount}. Not found: ${missing.join(', ')}`, 12000);
+    } else {
+      showToast('success', `Deleted ${result.deletedCount} question(s)`);
+    }
+
+    selected.clear();
+    await load();
+  } catch (err) {
+    showToast('error', err.message, 9000);
+  } finally {
+    refreshSelectionUi();
   }
 }
 
