@@ -10,7 +10,7 @@
 // Group id : appsc_news_en
 // Subjects : 16
 //            History, AP History, Geography, AP Geography, Economy, AP Economy, Polity, Society, Current Affairs, Science and Technology, Biology, Chemistry, Physics, Environment, General Studies, Disaster Management
-// Built    : 2026-09-07T12:12:06.764Z
+// Built    : 2026-09-07T13:07:53.038Z
 // ==========================================================================
 
 // ============================================================================
@@ -102,7 +102,7 @@ var QUESTION_HEADERS = [
 var COL_COUNT = QUESTION_HEADERS.length;
 
 /** Allowed values for the Status workflow column. */
-var STATUS_VALUES = ['Draft', 'Review', 'Approved', 'Scheduled', 'Posted', 'Rejected', 'Archived'];
+var STATUS_VALUES = ['Draft', 'Review', 'Approved', 'Scheduled', 'Sending', 'Posted', 'Rejected', 'Archived'];
 
 /** Allowed values for the Difficulty column. */
 var DIFFICULTY_VALUES = ['Easy', 'Medium', 'Hard'];
@@ -336,6 +336,13 @@ function doGet(e) {
     }
 
     // Unposted questions for the Telegram sender.
+    if (action === 'listPosted') {
+      if (!e.parameter.subject) {
+        return jsonResponse({ success: false, error: 'Missing subject' });
+      }
+      return jsonResponse({ success: true, data: listPostedQuestions(e.parameter.subject) });
+    }
+
     if (action === 'getQuestions') {
       var subject = params.subject;
       if (!subject) return jsonResponse({ success: false, error: 'Missing "subject" query parameter' });
@@ -391,7 +398,8 @@ function doGet(e) {
 /**
  * doPost — mutating API surface.
  * Actions: addQuestions, markPosted, updateConfig, updateQuestion,
- *          deleteQuestion, bulkStatus, scheduleQuestions.
+ *          deleteQuestion, bulkStatus, scheduleQuestions,
+ *          claimQuestions, releaseQuestions.
  */
 function doPost(e) {
   try {
@@ -472,6 +480,30 @@ function doPost(e) {
       return jsonResponse(deleted
         ? { success: true, message: 'Question ' + payload.questionId + ' deleted' }
         : { success: false, error: 'Question ' + payload.questionId + ' not found' });
+    }
+
+    if (action === 'unpostQuestions') {
+      if (!payload.subject || !(payload.rowNumbers || []).length) {
+        return jsonResponse({ success: false, error: 'Missing subject or rowNumbers' });
+      }
+      var restored = unpostQuestionRows(payload.subject, payload.rowNumbers, payload.status);
+      return jsonResponse({ success: true, unpostedCount: restored });
+    }
+
+    if (action === 'claimQuestions') {
+      if (!payload.subject || !(payload.rowNumbers || []).length) {
+        return jsonResponse({ success: false, error: 'Missing subject or rowNumbers' });
+      }
+      var claim = claimQuestionRows(payload.subject, payload.rowNumbers);
+      return jsonResponse({ success: true, claimed: claim.claimed, skipped: claim.skipped });
+    }
+
+    if (action === 'releaseQuestions') {
+      if (!payload.subject || !(payload.rowNumbers || []).length) {
+        return jsonResponse({ success: false, error: 'Missing subject or rowNumbers' });
+      }
+      var freed = releaseQuestionRows(payload.subject, payload.rowNumbers, payload.status);
+      return jsonResponse({ success: true, releasedCount: freed });
     }
 
     if (action === 'bulkStatus') {
@@ -675,6 +707,26 @@ function isPostedValue(value) {
 }
 
 /**
+ * isClaimedValue — is this row mid-send?
+ *
+ * The Posted column holds "SENDING | <when>" between the moment a question is
+ * handed to Telegram and the moment delivery is confirmed. Telegram can accept
+ * a poll and still leave the caller with a timeout or a dropped connection, so
+ * a row that is only marked AFTER a confirmed send can be delivered and left
+ * looking unposted — which is what put two questions into an endless re-post
+ * loop, going out again on every run.
+ *
+ * A claimed row is not eligible, so that can no longer happen. It is also not
+ * "Posted": it is unresolved, and the dashboard shows it as such.
+ *
+ * @param {*} value Raw Posted cell contents
+ * @returns {boolean}
+ */
+function isClaimedValue(value) {
+  return /^\s*sending\b/i.test(String(value === null || value === undefined ? '' : value));
+}
+
+/**
  * postedTimestampFrom — pulls the timestamp out of a legacy `YES | <when>` cell.
  *
  * @param {*} value Raw Posted cell contents
@@ -756,6 +808,8 @@ function rowToQuestion(row, map, subject, dataIndex) {
     // Normalised to a strict YES/NO here so every caller can compare directly;
     // posted_raw keeps the original cell for the migration to mine.
     posted: isPostedValue(cell(row, map, 'Posted')) ? 'YES' : 'NO',
+    // Mid-send: neither posted nor available. See isClaimedValue.
+    claimed: isClaimedValue(cell(row, map, 'Posted')),
     posted_raw: cell(row, map, 'Posted'),
     posted_at: cell(row, map, 'Posted At'),
     scheduled_for: cell(row, map, 'Scheduled For'),
@@ -796,6 +850,9 @@ function fetchUnpostedQuestions(subject, limit, requireApproved) {
     var q = rowToQuestion(data[i], map, subject, i);
     if (!q.question_text) continue;
     if (q.posted.toUpperCase() === 'YES') continue;
+    // Handed to Telegram and not yet resolved. Sending it again is exactly the
+    // duplicate this marker exists to prevent, so it waits for a human.
+    if (q.claimed) continue;
     if (q.status === 'Rejected' || q.status === 'Archived') continue;
     if (requireApproved && q.status !== 'Approved' && q.status !== 'Scheduled') continue;
     results.push(q);
@@ -1078,6 +1135,175 @@ function findExistingHashes(hashes) {
 // ============================================================================
 // Writes
 // ============================================================================
+
+/**
+ * unpostQuestionRows — puts rows back in the queue after their poll was deleted.
+ *
+ * Deleting a poll in Telegram used to leave the sheet claiming it was posted
+ * for ever, so the question could never be sent again and the counts were
+ * wrong. The dashboard's reconcile pass checks the channel and calls this for
+ * the ones that are gone.
+ *
+ * The posting trail is cleared with them: a Telegram Msg ID pointing at a
+ * message that no longer exists is worse than an empty cell, because the next
+ * reconcile would keep re-reporting it.
+ *
+ * @param {string} subject Sheet tab
+ * @param {Array<number>} rowNumbers 1-based sheet rows
+ * @param {string} [status] Status to restore, default Approved
+ * @returns {number} Rows returned to the queue
+ */
+function unpostQuestionRows(subject, rowNumbers, status) {
+  var sheet = book().getSheetByName(subject);
+  if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
+
+  return withScriptLock(function () {
+    var map = headerMap(sheet);
+    var lastRow = sheet.getLastRow();
+    var restore = normaliseChoice(status || 'Approved', STATUS_VALUES, 'Approved');
+    var count = 0;
+
+    for (var i = 0; i < rowNumbers.length; i++) {
+      var rowNumber = Number(rowNumbers[i]);
+      if (!isFinite(rowNumber) || rowNumber < 2 || rowNumber > lastRow) continue;
+
+      sheet.getRange(rowNumber, colNum(map, 'Posted')).setValue('NO');
+      sheet.getRange(rowNumber, colNum(map, 'Status')).setValue(restore);
+      sheet.getRange(rowNumber, colNum(map, 'Posted At')).setValue('');
+      sheet.getRange(rowNumber, colNum(map, 'Telegram Msg ID')).setValue('');
+      sheet.getRange(rowNumber, colNum(map, 'Poll ID')).setValue('');
+      // Times Posted is history and stays: it still went out once.
+      count++;
+    }
+    return count;
+  });
+}
+
+/**
+ * listPostedQuestions — posted rows that carry a Telegram message id.
+ *
+ * What the reconcile pass walks. Rows with no message id are skipped: they
+ * predate message-id tracking and there is nothing to check them against.
+ *
+ * @param {string} subject Sheet tab
+ * @returns {Array<Object>} { row, question_id, message_id, status }
+ */
+function listPostedQuestions(subject) {
+  var sheet = book().getSheetByName(subject);
+  if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return [];
+
+  var map = headerMap(sheet);
+  var lastCol = Math.max(sheet.getLastColumn(), COL_COUNT);
+  var data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  var out = [];
+
+  for (var i = 0; i < data.length; i++) {
+    var q = rowToQuestion(data[i], map, subject, i);
+    if (!q.question_text) continue;
+    if (q.posted.toUpperCase() !== 'YES') continue;
+    if (!String(q.telegram_msg_id || '').trim()) continue;
+    out.push({
+      row: q.excel_row,
+      question_id: q.question_id,
+      message_id: String(q.telegram_msg_id).trim(),
+      status: q.status
+    });
+  }
+  return out;
+}
+
+/**
+ * claimQuestionRows — reserves rows for sending, before anything is sent.
+ *
+ * Writes "SENDING | <when>" into Posted so the row stops being eligible the
+ * moment it is handed to Telegram, rather than when delivery is confirmed.
+ * Telegram can accept a poll and still leave the sender with a timeout or a
+ * dropped connection; a row marked only on confirmation is then delivered and
+ * still looks unposted, and goes out again on the next run — forever. Two
+ * questions were stuck in exactly that loop.
+ *
+ * Only genuinely available rows are claimed: anything already posted or
+ * already claimed comes back as skipped rather than being taken twice, which
+ * is also what stops two overlapping runs sending the same question.
+ *
+ * @param {string} subject Sheet tab
+ * @param {Array<number>} rowNumbers 1-based sheet rows
+ * @returns {Object} { claimed: [rows], skipped: [{row, reason}] }
+ */
+function claimQuestionRows(subject, rowNumbers) {
+  var sheet = book().getSheetByName(subject);
+  if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
+
+  return withScriptLock(function () {
+    var map = headerMap(sheet);
+    var lastRow = sheet.getLastRow();
+    var now = istNow();
+    var claimed = [];
+    var skipped = [];
+    var seen = {};
+
+    for (var i = 0; i < rowNumbers.length; i++) {
+      var rowNumber = Number(rowNumbers[i]);
+      if (!isFinite(rowNumber) || rowNumber < 2 || rowNumber > lastRow) {
+        skipped.push({ row: rowNumbers[i], reason: 'no such row' });
+        continue;
+      }
+      if (seen[rowNumber]) continue;
+      seen[rowNumber] = true;
+
+      var current = sheet.getRange(rowNumber, colNum(map, 'Posted')).getValue();
+      if (isPostedValue(current)) { skipped.push({ row: rowNumber, reason: 'already posted' }); continue; }
+      if (isClaimedValue(current)) { skipped.push({ row: rowNumber, reason: 'already sending' }); continue; }
+
+      sheet.getRange(rowNumber, colNum(map, 'Posted')).setValue('SENDING | ' + now);
+      sheet.getRange(rowNumber, colNum(map, 'Status')).setValue('Sending');
+      claimed.push(rowNumber);
+    }
+
+    return { claimed: claimed, skipped: skipped };
+  });
+}
+
+/**
+ * releaseQuestionRows — undoes a claim for a send that definitely did not happen.
+ *
+ * Only for a refusal Telegram made BEFORE delivering: a malformed poll, a
+ * question over the character limit, a bot removed from the group. A timeout
+ * or a dropped connection is not that — the poll may well be in the channel —
+ * so those keep the claim and wait for a person.
+ *
+ * @param {string} subject Sheet tab
+ * @param {Array<number>} rowNumbers 1-based sheet rows
+ * @param {string} [status] Status to restore, default Approved
+ * @returns {number} Rows released
+ */
+function releaseQuestionRows(subject, rowNumbers, status) {
+  var sheet = book().getSheetByName(subject);
+  if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
+
+  return withScriptLock(function () {
+    var map = headerMap(sheet);
+    var lastRow = sheet.getLastRow();
+    var restore = normaliseChoice(status || 'Approved', STATUS_VALUES, 'Approved');
+    var released = 0;
+
+    for (var i = 0; i < rowNumbers.length; i++) {
+      var rowNumber = Number(rowNumbers[i]);
+      if (!isFinite(rowNumber) || rowNumber < 2 || rowNumber > lastRow) continue;
+
+      // Never clear a row that reached Posted in the meantime.
+      if (!isClaimedValue(sheet.getRange(rowNumber, colNum(map, 'Posted')).getValue())) continue;
+
+      sheet.getRange(rowNumber, colNum(map, 'Posted')).setValue('NO');
+      sheet.getRange(rowNumber, colNum(map, 'Status')).setValue(restore);
+      released++;
+    }
+    return released;
+  });
+}
 
 /**
  * markRowsAsPostedInSheet — flips Posted to YES and records the full posting

@@ -917,6 +917,132 @@ test('a payment is refused rather than counted when the lock cannot be taken', (
   assert.throws(() => script.upsertSubscriber(paymentUpsert()), /busy with another payment/);
 });
 
+// ===========================================================================
+// A question can never be posted twice
+// ===========================================================================
+// Telegram can accept a poll and still leave the sender with a timeout, so a
+// row marked only after a confirmed send is delivered and still looks unposted
+// — and goes out again on every run after. Two questions were stuck in exactly
+// that loop. Claiming the row BEFORE the send is what stops it.
+
+/** Builds a sheet with `n` approved, unposted questions in rows 2..n+1. */
+function sheetWithQuestions(n) {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+  script.appendQuestionsToSheet('Polity',
+    Array.from({ length: n }, (_, i) => ({
+      question: `Q${i + 1}?`, option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd',
+      correct_answer: 'A', status: 'Approved'
+    })), 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  for (let row = 2; row <= n + 1; row++) {
+    sheet.getRange(row, script.colNum(map, 'Status')).setValue('Approved');
+  }
+  return { script, sheet, map };
+}
+
+test('a claimed question stops being eligible immediately', () => {
+  const { script } = sheetWithQuestions(3);
+
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 3);
+
+  script.claimQuestionRows('Polity', [2, 3]);
+
+  const left = script.fetchUnpostedQuestions('Polity', 10, true);
+  assert.equal(left.length, 1, 'a claimed question was offered up for sending again');
+  assert.equal(left[0].excel_row, 4);
+});
+
+test('a second run cannot claim what the first one already took', () => {
+  // The duplicate this exists to prevent: two overlapping posting runs.
+  const { script } = sheetWithQuestions(2);
+
+  const first = script.claimQuestionRows('Polity', [2, 3]);
+  assert.deepEqual(Array.from(first.claimed), [2, 3]);
+
+  const second = script.claimQuestionRows('Polity', [2, 3]);
+  assert.equal(second.claimed.length, 0, 'the same rows were handed out twice');
+  assert.deepEqual(Array.from(second.skipped).map((x) => x.reason), ['already sending', 'already sending']);
+});
+
+test('an already-posted question is never claimed again', () => {
+  const { script } = sheetWithQuestions(2);
+  script.markRowsAsPostedInSheet('Polity', [2], '900', '6', {});
+
+  const claim = script.claimQuestionRows('Polity', [2, 3]);
+  assert.deepEqual(Array.from(claim.claimed), [3]);
+  assert.equal(claim.skipped[0].reason, 'already posted');
+});
+
+test('marking a claimed row posted resolves the claim', () => {
+  const { script, sheet, map } = sheetWithQuestions(1);
+
+  script.claimQuestionRows('Polity', [2]);
+  assert.match(String(sheet.values[1][map['Posted']]), /^SENDING/);
+
+  script.markRowsAsPostedInSheet('Polity', [2], '901', '6', {});
+  assert.equal(sheet.values[1][map['Posted']], 'YES');
+  assert.equal(sheet.values[1][map['Status']], 'Posted');
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 0);
+});
+
+test('releasing a claim makes the question available again', () => {
+  // Only for a send Telegram refused outright, where nothing was delivered.
+  const { script } = sheetWithQuestions(1);
+
+  script.claimQuestionRows('Polity', [2]);
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 0);
+
+  assert.equal(script.releaseQuestionRows('Polity', [2], 'Approved'), 1);
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 1);
+});
+
+test('releasing never clears a row that reached Posted in the meantime', () => {
+  // The race: a slow release arriving after the send actually succeeded would
+  // otherwise un-post a live poll and send it a second time.
+  const { script, sheet, map } = sheetWithQuestions(1);
+
+  script.claimQuestionRows('Polity', [2]);
+  script.markRowsAsPostedInSheet('Polity', [2], '902', '6', {});
+
+  assert.equal(script.releaseQuestionRows('Polity', [2], 'Approved'), 0);
+  assert.equal(sheet.values[1][map['Posted']], 'YES');
+});
+
+// ===========================================================================
+// A poll deleted in Telegram comes back to the queue
+// ===========================================================================
+
+test('listPosted returns only posted rows that carry a message id', () => {
+  const { script } = sheetWithQuestions(3);
+
+  script.markRowsAsPostedInSheet('Polity', [2], '900', '6', {});
+  script.markRowsAsPostedInSheet('Polity', [3], '', '6', {});   // no message id
+
+  const posted = Array.from(script.listPostedQuestions('Polity'));
+  assert.equal(posted.length, 1, 'a row with no message id has nothing to check against');
+  assert.equal(posted[0].row, 2);
+  assert.equal(posted[0].message_id, '900');
+});
+
+test('un-posting clears the trail and makes the question eligible again', () => {
+  const { script, sheet, map } = sheetWithQuestions(1);
+  script.markRowsAsPostedInSheet('Polity', [2], '900', '6', { 2: 'poll-1' });
+
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 0);
+  assert.equal(script.unpostQuestionRows('Polity', [2], 'Approved'), 1);
+
+  assert.equal(sheet.values[1][map['Posted']], 'NO');
+  assert.equal(sheet.values[1][map['Status']], 'Approved');
+  assert.equal(sheet.values[1][map['Telegram Msg ID']], '', 'a dead message id was left behind');
+  assert.equal(sheet.values[1][map['Poll ID']], '');
+  // History: it did go out once, and that is not erased.
+  assert.equal(sheet.values[1][map['Times Posted']], 1);
+  assert.equal(script.fetchUnpostedQuestions('Polity', 10, true).length, 1);
+});
+
 test('listQuestions filters and paginates', () => {
   const s = freshScript();
   const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);

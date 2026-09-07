@@ -88,6 +88,10 @@ stub(sheets, 'getUnpostedQuestions', [
   { question_id: 'POL-1', question_text: 'Q1', row_index: 0, excel_row: 2 }
 ]);
 stub(sheets, 'markAsPosted', 1);
+stub(sheets, 'claimQuestions', { claimed: [2], skipped: [] });
+stub(sheets, 'releaseQuestions', 1);
+stub(sheets, 'listPosted', []);
+stub(sheets, 'unpostQuestions', 0);
 
 // Telegram: pretend the bot is healthy and every send succeeds.
 telegram.init = () => {};
@@ -524,6 +528,220 @@ test('the data layer only publishes reviewed questions unless told otherwise', a
   }
 });
 
+// ===========================================================================
+// A question is reserved before it is sent
+// ===========================================================================
+// Telegram can accept a poll and still leave this process with a timeout. A row
+// marked only after a confirmed send is then delivered and still looks
+// unposted, and goes out again on every run after — which is what put two real
+// questions into an endless re-post loop.
+
+test('rows are claimed before anything is sent', async () => {
+  calls.length = 0;
+  await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
+
+  const order = calls.map((c) => c.name);
+  const claimAt = order.indexOf('claimQuestions');
+  const markAt = order.indexOf('markAsPosted');
+
+  assert.ok(claimAt !== -1, 'nothing was claimed before sending');
+  assert.ok(claimAt < markAt, 'the row was marked before it was claimed');
+
+  const [subject, rows] = calls.find((c) => c.name === 'claimQuestions').args;
+  assert.equal(subject, 'Polity');
+  assert.deepEqual(rows, [2]);
+});
+
+test('a question another run already claimed is skipped, not sent', async () => {
+  const original = clientStubs.claimQuestions;
+  clientStubs.claimQuestions = async () => ({
+    claimed: [], skipped: [{ row: 2, reason: 'already sending' }]
+  });
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.json.postedCount, 0);
+    assert.match(res.json.results[0].error, /already sending/);
+    assert.equal(calls.filter((c) => c.name === 'markAsPosted').length, 0);
+  } finally {
+    clientStubs.claimQuestions = original;
+  }
+});
+
+test('a send with no answer keeps the claim rather than risking a duplicate', async () => {
+  // A timeout is not proof of non-delivery. The poll may be in the channel.
+  const originalSend = telegram.sendQuizPoll;
+  telegram.sendQuizPoll = async () => { throw new Error('ETIMEDOUT'); };
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
+
+    assert.equal(res.json.postedCount, 0);
+    assert.equal(calls.filter((c) => c.name === 'releaseQuestions').length, 0,
+      'a row that may have been delivered was handed back for re-sending');
+    assert.deepEqual(res.json.strandedRows, [2]);
+    assert.match(res.json.results[0].error, /held as "Sending"/);
+  } finally {
+    telegram.sendQuizPoll = originalSend;
+  }
+});
+
+test('a send Telegram refused outright hands the row back', async () => {
+  // A 400 means nothing was delivered, so the question must not be stranded.
+  const originalSend = telegram.sendQuizPoll;
+  telegram.sendQuizPoll = async () => {
+    const err = new Error('Bad Request: poll question is too long');
+    err.response = { body: { error_code: 400, description: 'poll question is too long' } };
+    throw err;
+  };
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
+
+    const released = calls.find((c) => c.name === 'releaseQuestions');
+    assert.ok(released, 'a refused question was left stranded');
+    assert.deepEqual(released.args[1], [2]);
+    assert.deepEqual(res.json.strandedRows, []);
+    assert.match(res.json.results[0].error, /Telegram refused it/);
+  } finally {
+    telegram.sendQuizPoll = originalSend;
+  }
+});
+
+test('a flood wait is never treated as proof the poll was not delivered', async () => {
+  // 429 can arrive after Telegram accepted the message.
+  const originalSend = telegram.sendQuizPoll;
+  telegram.sendQuizPoll = async () => {
+    const err = new Error('Too Many Requests');
+    err.response = { body: { error_code: 429, parameters: { retry_after: 5 } } };
+    throw err;
+  };
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 1 } });
+    assert.equal(calls.filter((c) => c.name === 'releaseQuestions').length, 0);
+    assert.deepEqual(res.json.strandedRows, [2]);
+  } finally {
+    telegram.sendQuizPoll = originalSend;
+  }
+});
+
+test('asking for more than are ready explains why, instead of looking broken', async () => {
+  // "2 of 2 posted" after asking for 5 reads like a failure. It is usually a
+  // full queue, and the answer belongs in the message.
+  const originalList = clientStubs.listQuestions;
+  clientStubs.listQuestions = async () => ({
+    total: 4, page: 1, totalPages: 1,
+    questions: [
+      { question_id: 'A', posted: 'YES', status: 'Posted', claimed: false },
+      { question_id: 'B', posted: 'YES', status: 'Posted', claimed: false },
+      { question_id: 'C', posted: 'NO', status: 'Draft', claimed: false },
+      { question_id: 'D', posted: 'NO', status: 'Approved', claimed: false }
+    ]
+  });
+
+  try {
+    const res = await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 5 } });
+
+    assert.equal(res.json.requestedCount, 5);
+    assert.equal(res.json.eligibleCount, 1);
+    assert.match(res.json.message, /you asked for 5/);
+    assert.match(res.json.message, /2 already posted/);
+    assert.match(res.json.message, /1 not approved yet/);
+  } finally {
+    clientStubs.listQuestions = originalList;
+  }
+});
+
+// ===========================================================================
+// Reconciling the sheet against the channel
+// ===========================================================================
+
+test('reconcile reports deleted polls and changes nothing until asked', async () => {
+  const originalPosted = clientStubs.listPosted;
+  const originalExists = telegram.pollStillExists;
+  clientStubs.listPosted = async () => ([
+    { row: 2, question_id: 'POL-1', message_id: '900', status: 'Posted' },
+    { row: 3, question_id: 'POL-2', message_id: '901', status: 'Posted' }
+  ]);
+  telegram.pollStillExists = async (id) => String(id) !== '901';
+
+  try {
+    calls.length = 0;
+    const res = await authed('/api/telegram/reconcile', {
+      method: 'POST', body: { subject: 'Polity' }
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.json.applied, false);
+    assert.equal(res.json.missing.length, 1);
+    assert.equal(res.json.missing[0].questionId, 'POL-2');
+    assert.equal(calls.filter((c) => c.name === 'unpostQuestions').length, 0,
+      'a read-only check wrote to the sheet');
+  } finally {
+    clientStubs.listPosted = originalPosted;
+    telegram.pollStillExists = originalExists;
+  }
+});
+
+test('reconcile puts deleted polls back in the queue when applied', async () => {
+  const originalPosted = clientStubs.listPosted;
+  const originalExists = telegram.pollStillExists;
+  const originalUnpost = clientStubs.unpostQuestions;
+  clientStubs.listPosted = async () => ([
+    { row: 7, question_id: 'POL-9', message_id: '909', status: 'Posted' }
+  ]);
+  telegram.pollStillExists = async () => false;
+  // Captured here rather than through the shared recorder: replacing a stub
+  // directly bypasses it.
+  const unpostArgs = [];
+  clientStubs.unpostQuestions = async (...args) => { unpostArgs.push(args); return 1; };
+
+  try {
+    const res = await authed('/api/telegram/reconcile', {
+      method: 'POST', body: { subject: 'Polity', apply: true }
+    });
+
+    assert.equal(res.json.restored, 1);
+    assert.equal(unpostArgs.length, 1);
+    assert.equal(unpostArgs[0][0], 'Polity');
+    assert.deepEqual(unpostArgs[0][1], [7]);
+  } finally {
+    clientStubs.listPosted = originalPosted;
+    telegram.pollStillExists = originalExists;
+    clientStubs.unpostQuestions = originalUnpost;
+  }
+});
+
+test('reconcile leaves a poll alone when it cannot tell', async () => {
+  // Guessing "deleted" would put a live question back in the queue and post it
+  // a second time, which is the opposite of the point.
+  const originalPosted = clientStubs.listPosted;
+  const originalExists = telegram.pollStillExists;
+  clientStubs.listPosted = async () => ([
+    { row: 2, question_id: 'POL-1', message_id: '900', status: 'Posted' }
+  ]);
+  telegram.pollStillExists = async () => null;
+
+  try {
+    const res = await authed('/api/telegram/reconcile', {
+      method: 'POST', body: { subject: 'Polity', apply: true }
+    });
+    assert.equal(res.json.missing.length, 0);
+    assert.deepEqual(res.json.unknown, ['POL-1']);
+    assert.equal(res.json.restored, 0);
+  } finally {
+    clientStubs.listPosted = originalPosted;
+    telegram.pollStillExists = originalExists;
+  }
+});
+
 test('the posting batch size is capped at 20', async () => {
   calls.length = 0;
   await authed('/api/telegram/post', { method: 'POST', body: { subject: 'Polity', count: 5000 } });
@@ -538,9 +756,12 @@ test('every question in a batch is marked against its own sheet row', async () =
   // rows 2, 3 and 4. Five questions were posted, three rows were marked, and
   // the two survivors went out a second time on the next run.
   const original = clientStubs.getUnpostedQuestions;
+  const originalClaim = clientStubs.claimQuestions;
   clientStubs.getUnpostedQuestions = async () => [0, 1, 2, 3, 4].map((i) => ({
     question_id: `POL-${i + 1}`, question_text: `Q${i + 1}`, row_index: i, excel_row: i + 2
   }));
+  // The rows must be claimed before they can be sent.
+  clientStubs.claimQuestions = async (subject, rows) => ({ claimed: rows, skipped: [] });
 
   try {
     calls.length = 0;
@@ -556,14 +777,18 @@ test('every question in a batch is marked against its own sheet row', async () =
     assert.deepEqual(marked, [2, 3, 4, 5, 6]);
   } finally {
     clientStubs.getUnpostedQuestions = original;
+    clientStubs.claimQuestions = originalClaim;
   }
 });
 
-test('a question posted but not marked is reported, not silently counted', async () => {
-  // Reporting it as a plain success would leave a live poll looking unposted,
-  // and the next run would send it again.
+test('a question posted but not marked stays claimed, and says so', async () => {
+  // The poll is public and the sheet does not know. The row keeps its claim so
+  // it cannot go out again, and the message says which row needs a person.
   const original = clientStubs.markAsPosted;
+  const originalRelease = clientStubs.releaseQuestions;
+  let released = 0;
   clientStubs.markAsPosted = async () => { throw new Error('sheet unreachable'); };
+  clientStubs.releaseQuestions = async () => { released++; return 1; };
 
   try {
     const res = await authed('/api/telegram/post', {
@@ -574,10 +799,13 @@ test('a question posted but not marked is reported, not silently counted', async
     assert.equal(res.status, 200);
     assert.equal(res.json.postedCount, 0);
     assert.equal(res.json.results[0].ok, false);
-    assert.match(res.json.results[0].error, /Posted to Telegram but the sheet was not updated/);
-    assert.match(res.json.results[0].error, /row 2/);
+    assert.match(res.json.results[0].error, /Posted to Telegram, but the sheet did not record it/);
+    assert.match(res.json.results[0].error, /Row 2 is held as "Sending"/);
+    assert.deepEqual(res.json.strandedRows, [2]);
+    assert.equal(released, 0, 'a live poll was handed back for re-sending');
   } finally {
     clientStubs.markAsPosted = original;
+    clientStubs.releaseQuestions = originalRelease;
   }
 });
 

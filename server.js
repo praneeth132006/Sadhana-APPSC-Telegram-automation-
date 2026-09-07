@@ -793,6 +793,51 @@ async function paymentBotUsername(payBotEnv) {
   return username;
 }
 
+/**
+ * describeShortfall — why the batch was smaller than the number asked for.
+ *
+ * "2 of 2 posted" after asking for 5 looks like a broken poster. It is usually
+ * a full queue: everything else is already posted, or still a Draft. Counting
+ * the tab and naming the reason turns that into an answer.
+ *
+ * @param {Object} db Group-bound sheets client
+ * @param {string} subject Subject tab
+ * @param {number} asked How many the curator requested
+ * @param {number} eligible How many were actually available
+ * @param {boolean} requireApproved Whether Drafts were excluded
+ * @returns {Promise<string>} One sentence, or a fallback when the tab cannot be read
+ */
+async function describeShortfall(db, subject, asked, eligible, requireApproved) {
+  try {
+    const page = await db.listQuestions({ subject, pageSize: 500 });
+    const all = page.questions || [];
+
+    const posted = all.filter((q) => String(q.posted).toUpperCase() === 'YES').length;
+    const sending = all.filter((q) => q.claimed).length;
+    const draft = all.filter((q) =>
+      String(q.posted).toUpperCase() !== 'YES' && !q.claimed &&
+      !['Approved', 'Scheduled', 'Rejected', 'Archived'].includes(q.status)).length;
+    const refused = all.filter((q) =>
+      String(q.posted).toUpperCase() !== 'YES' && !q.claimed &&
+      ['Rejected', 'Archived'].includes(q.status)).length;
+
+    const parts = [];
+    if (posted) parts.push(`${posted} already posted`);
+    if (draft) parts.push(`${draft} not approved yet`);
+    if (refused) parts.push(`${refused} rejected or archived`);
+    if (sending) parts.push(`${sending} held as "Sending"`);
+
+    if (!parts.length) return `"${subject}" has nothing else to send.`;
+    return `The rest of "${subject}": ${parts.join(', ')}.` +
+      (draft && requireApproved
+        ? ' Approve them in the Question Bank, or switch eligibility to include Drafts.'
+        : '');
+  } catch (err) {
+    // Never let the explanation break the response that reports real posts.
+    return `Only ${eligible} of ${asked} were eligible in "${subject}".`;
+  }
+}
+
 /** Small promise delay used to stay under Telegram's rate limits. */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1533,6 +1578,69 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
   // without dropping to the CLI. It is the most sensitive route in the app:
   // it writes to a public channel, so it is authenticated, rate limited, and
   // capped at a small batch per call.
+  // ---- Reconcile the sheet against the channel -----------------------------
+  // Telegram never tells a bot that a message was deleted, so a poll removed
+  // from the channel left the sheet claiming it was posted for ever: the
+  // question could never be re-sent and the counts were wrong. This walks the
+  // posted rows, checks each poll is still there, and puts the deleted ones
+  // back in the queue.
+  if (pathname === '/api/telegram/reconcile' && method === 'POST') {
+    const body = await readJsonBody(req);
+
+    const subject = validateSubject(body.subject);
+    if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
+
+    try {
+      ensureTelegram();
+    } catch (err) {
+      sendJSON(res, 400, { success: false, error: err.message });
+      return true;
+    }
+
+    // Reporting only unless asked to write, so it can be run to look first.
+    const apply = body.apply === true;
+    const deadline = Date.now() + POST_BUDGET_MS;
+
+    const posted = await db.listPosted(subject.value);
+    const missing = [];
+    const unknown = [];
+    let checked = 0;
+
+    for (const row of posted) {
+      if (Date.now() > deadline) break;
+      checked++;
+
+      const exists = await telegram.pollStillExists(row.message_id);
+      if (exists === false) missing.push(row);
+      else if (exists === null) unknown.push(row.question_id);
+
+      // Telegram rate-limits edits like anything else.
+      await sleep(400);
+    }
+
+    let restored = 0;
+    if (apply && missing.length) {
+      restored = await db.unpostQuestions(subject.value, missing.map((m) => m.row), 'Approved');
+      console.log(`[reconcile] ${actor} returned ${restored} deleted poll(s) to the queue in "${subject.value}"`);
+    }
+
+    sendJSON(res, 200, {
+      success: true,
+      applied: apply,
+      checked,
+      totalPosted: posted.length,
+      missing: missing.map((m) => ({ questionId: m.question_id, row: m.row, messageId: m.message_id })),
+      // Named, so "3 could not be checked" is actionable rather than ominous.
+      unknown,
+      restored,
+      message: apply
+        ? `${restored} deleted poll(s) put back in the queue for "${subject.value}".`
+        : `${missing.length} of ${checked} checked poll(s) are no longer in the channel.` +
+          (missing.length ? ' Run again with Apply to put them back in the queue.' : '')
+    });
+    return true;
+  }
+
   if (pathname === '/api/telegram/post' && method === 'POST') {
     const body = await readJsonBody(req);
 
@@ -1577,6 +1685,7 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         sendJSON(res, 200, {
           success: true,
           postedCount: 0,
+          requestedCount: count,
           results: [],
           message: requireApproved
             ? `No Approved or Scheduled questions waiting in "${subject.value}"`
@@ -1585,32 +1694,59 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         return true;
       }
 
+      // ---- Claim before sending ------------------------------------------
+      // A poll can reach Telegram and still leave this process with a timeout
+      // or a dropped connection. Marking only after a confirmed send therefore
+      // left delivered questions looking unposted, and they went out again on
+      // every subsequent run — two of them were stuck in that loop. Claiming
+      // first means the worst case is a question that needs a human to resolve,
+      // never one that is posted twice.
+      const rowsWanted = questions.map((q) => sheets.sheetRowOf(q));
+      const claim = await db.claimQuestions(subject.value, rowsWanted);
+      const claimedRows = new Set(claim.claimed);
+
       const results = [];
       const postedRowIndices = [];
+      const strandedRows = [];
 
-      // Every question is marked Posted the moment its poll is out, one row at a
-      // time. Batching the marks until the end of the loop meant a serverless
-      // timeout — which a 20-question batch reliably hit — left questions live on
-      // Telegram but still showing "not posted", so the next run sent them again.
-      for (let i = 0; i < questions.length; i++) {
-        const q = questions[i];
+      // Anything another run took first is reported, not silently dropped.
+      for (const skip of claim.skipped || []) {
+        const q = questions.find((item) => sheets.sheetRowOf(item) === Number(skip.row));
+        results.push({
+          questionId: q ? q.question_id : `row ${skip.row}`,
+          ok: false,
+          error: `Skipped — ${skip.reason}.`,
+          preview: q ? q.question_text.slice(0, 80) : ''
+        });
+      }
 
-        // Stop cleanly while there is still time to record what has been sent.
-        // Running out of budget mid-write is exactly what produced duplicates.
+      const toSend = questions.filter((q) => claimedRows.has(sheets.sheetRowOf(q)));
+
+      for (let i = 0; i < toSend.length; i++) {
+        const q = toSend[i];
+        const sheetRow = sheets.sheetRowOf(q);
+
+        // Stop cleanly while there is still time to record what has been sent,
+        // and hand back what was never attempted.
         if (Date.now() > deadline) {
-          results.push({
-            questionId: q.question_id,
+          const untouched = toSend.slice(i).map((rest) => sheets.sheetRowOf(rest));
+          try {
+            await db.releaseQuestions(subject.value, untouched, q.status);
+          } catch (releaseErr) {
+            console.error('[post] could not release unsent rows:', releaseErr.message);
+          }
+          toSend.slice(i).forEach((rest) => results.push({
+            questionId: rest.question_id,
             ok: false,
             error: 'Stopped before the request timed out — run again to post the rest.',
-            preview: q.question_text.slice(0, 80)
-          });
-          continue;
+            preview: rest.question_text.slice(0, 80)
+          }));
+          break;
         }
 
         try {
           const sent = await telegram.sendQuizPoll(subjectConfig.topic_thread_id, q);
 
-          const sheetRow = sheets.sheetRowOf(q);
           const messageId = sent && sent.message_id ? sent.message_id : null;
           const pollIds = sent && sent.poll && sent.poll.id
             ? { [String(sheetRow)]: sent.poll.id }
@@ -1623,37 +1759,76 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
             postedRowIndices.push(sheetRow);
             results.push({ questionId: q.question_id, ok: true, preview: q.question_text.slice(0, 80) });
           } catch (markErr) {
-            // The poll is already public; say so loudly rather than reporting a
-            // plain failure, because re-running would post it a second time.
+            // The poll is public and the row is still claimed, so it cannot go
+            // out again. It needs a person, and says so.
             console.error(`[post] row ${sheetRow} posted but not marked:`, markErr.message);
+            strandedRows.push(sheetRow);
             results.push({
               questionId: q.question_id,
               ok: false,
-              error: `Posted to Telegram but the sheet was not updated (${markErr.message}). Mark row ${sheetRow} as Posted by hand to avoid a duplicate.`,
+              error: `Posted to Telegram, but the sheet did not record it (${markErr.message}). ` +
+                     `Row ${sheetRow} is held as "Sending" so it cannot be posted twice — mark it Posted by hand.`,
               preview: q.question_text.slice(0, 80)
             });
           }
         } catch (err) {
-          results.push({ questionId: q.question_id, ok: false, error: err.message, preview: q.question_text.slice(0, 80) });
+          // Did Telegram refuse it, or did the answer go missing? Only a refusal
+          // proves nothing was delivered, and only then is it safe to hand the
+          // row back. Anything else keeps the claim.
+          if (telegram.wasRejectedBeforeDelivery(err)) {
+            try {
+              await db.releaseQuestions(subject.value, [sheetRow], q.status);
+            } catch (releaseErr) {
+              console.error(`[post] could not release row ${sheetRow}:`, releaseErr.message);
+            }
+            results.push({
+              questionId: q.question_id, ok: false,
+              error: `Telegram refused it: ${err.message}`,
+              preview: q.question_text.slice(0, 80)
+            });
+          } else {
+            strandedRows.push(sheetRow);
+            results.push({
+              questionId: q.question_id, ok: false,
+              error: `No answer from Telegram (${err.message}). It may or may not have gone out, ` +
+                     `so row ${sheetRow} is held as "Sending" rather than risking a duplicate. Check the channel.`,
+              preview: q.question_text.slice(0, 80)
+            });
+          }
         }
 
         // Telegram allows roughly 20 messages a minute into one group and each
         // question costs two or three, so pace the batch. A 429 is still handled
         // inside src/telegram.js, this just makes hitting one much less likely.
-        if (i < questions.length - 1) await sleep(telegram.POST_SPACING_MS);
+        if (i < toSend.length - 1) await sleep(telegram.POST_SPACING_MS);
       }
 
       const postedCount = postedRowIndices.length;
       const remaining = questions.length - postedCount;
 
+      // "2 of 2 posted" after asking for 5 reads like a failure and explains
+      // nothing. When fewer were eligible than were asked for, say so and say
+      // what the rest are, so the answer is not "the poster is broken".
+      let message = `${postedCount} of ${questions.length} question(s) posted to "${subject.value}"`;
+      if (questions.length < count) {
+        const shortfall = await describeShortfall(db, subject.value, count, questions.length, requireApproved);
+        message += ` — you asked for ${count}, and ${questions.length} ${questions.length === 1 ? 'was' : 'were'} ready. ${shortfall}`;
+      } else if (remaining) {
+        message += ` — run again to send the remaining ${remaining}`;
+      }
+      if (strandedRows.length) {
+        message += ` ⚠️ ${strandedRows.length} row(s) are held as "Sending" and need checking.`;
+      }
+
       sendJSON(res, 200, {
         success: true,
         postedCount,
+        requestedCount: count,
+        eligibleCount: questions.length,
+        strandedRows,
         failedCount: questions.length - postedCount,
         results,
-        message: remaining
-          ? `${postedCount} of ${questions.length} question(s) posted to "${subject.value}" — run again to send the remaining ${remaining}`
-          : `${postedCount} of ${questions.length} question(s) posted to "${subject.value}"`
+        message
       });
       return true;
 

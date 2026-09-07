@@ -232,6 +232,71 @@ async function postNow() {
   }
 }
 
+/**
+ * reconcileChannel — finds posted questions whose poll is no longer in Telegram.
+ *
+ * Runs read-only first and reports what it found, because putting a question
+ * back in the queue means it will be posted again — a decision that belongs to
+ * a person, not to a background check.
+ */
+async function reconcileChannel() {
+  const subject = $('postSubject').value;
+  const button = $('reconcileBtn');
+
+  clearLog('reconcileLog');
+  log('reconcileLog', `Checking every posted question in "${subject}" is still in the channel…`);
+  log('reconcileLog', 'Each one is a separate Telegram call, so this is not instant.', 'muted');
+
+  button.disabled = true;
+  button.textContent = 'Checking…';
+
+  try {
+    const found = await api('/api/telegram/reconcile', {
+      method: 'POST',
+      body: { subject, apply: false }
+    });
+
+    (found.unknown || []).forEach((id) =>
+      log('reconcileLog', `• ${id} — could not be checked, left alone`, 'muted'));
+
+    if (!found.missing.length) {
+      log('reconcileLog', `All ${found.checked} posted question(s) are still in the channel.`, 'ok');
+      showToast('success', 'Nothing missing — the sheet matches the channel.');
+      return;
+    }
+
+    // The message id is shown because it is how you spot a row whose id is
+    // wrong rather than whose poll is gone — re-queueing one of those would
+    // post a question that is already live.
+    found.missing.forEach((m) =>
+      log('reconcileLog', `• ${m.questionId} (row ${m.row}, msg ${m.messageId}) — not in the channel`, 'fail'));
+
+    const confirmed = window.confirm(
+      `${found.missing.length} posted question(s) are no longer in the channel.\n\n` +
+      'Put them back in the queue as Approved?\n\n' +
+      'They will be eligible to post again, and their old message id is cleared.'
+    );
+    if (!confirmed) {
+      log('reconcileLog', 'Left as they are. Nothing changed.', 'muted');
+      return;
+    }
+
+    const applied = await api('/api/telegram/reconcile', {
+      method: 'POST',
+      body: { subject, apply: true }
+    });
+    log('reconcileLog', applied.message, 'ok');
+    showToast('success', applied.message);
+    await loadAnalytics();
+  } catch (err) {
+    log('reconcileLog', 'Failed: ' + err.message, 'fail');
+    showToast('error', err.message, 9000);
+  } finally {
+    button.disabled = false;
+    button.textContent = '🔍 Check the channel for deleted polls';
+  }
+}
+
 /** Marks the next N pending questions of a subject as Scheduled. */
 async function queueForLater() {
   const subject = $('scheduleSubject').value;
@@ -331,6 +396,7 @@ initDashboard({
     initSubjectSelects();
     renderCliList();
     $('postNowBtn').addEventListener('click', postNow);
+  $('reconcileBtn').addEventListener('click', reconcileChannel);
     $('scheduleBtn').addEventListener('click', queueForLater);
     $('refreshBtn').addEventListener('click', load);
     await load();
