@@ -12,6 +12,9 @@
 /** Milliseconds in a day, used for every expiry calculation. */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** India is UTC+05:30 all year — no daylight saving — so one constant is exact. */
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
 /**
  * PLANS — the three passes, keyed by the id stored in the sheet and in
  * Razorpay's `notes`, so a row can always be traced back to what was sold.
@@ -121,8 +124,13 @@ function parseExamDate() {
   if (!match) return null;
 
   const [, dd, mm, yyyy] = match;
-  // End of that day, so a pass bought for "30-11-2026" lasts all of the 30th.
-  const date = new Date(Number(yyyy), Number(mm) - 1, Number(dd), 23, 59, 59, 999);
+  // End of that day IN IST, so a pass bought for "30-11-2026" lasts all of the
+  // 30th for a student in India. Building it from local parts was only correct
+  // on a machine set to Asia/Kolkata; on Vercel, which runs in UTC, the pass
+  // ran 5 hours 30 minutes past the exam day it was sold for.
+  const date = new Date(
+    Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd), 23, 59, 59, 999) - IST_OFFSET_MS
+  );
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
@@ -171,6 +179,7 @@ function daysUntil(date, from = new Date()) {
 
 module.exports = {
   PLANS,
+  IST_OFFSET_MS,
   PLAN_ORDER,
   DAY_MS,
   getPlan,

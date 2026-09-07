@@ -202,11 +202,19 @@ function connectivityChecks(data) {
       : check('fail', 'Premium group',
           'Set <code>TELEGRAM_PREMIUM_GROUP_ID</code> (or <code>TELEGRAM_GROUP_ID</code>) so paid members have somewhere to join.'));
 
-    checks.push(p.recurringPlanReady
-      ? check('pass', 'Monthly Auto-Pay plan', 'Razorpay plan id configured.')
-      : check('warn', 'Monthly Auto-Pay plan',
-          'No <code>RAZORPAY_MONTHLY_PLAN_ID</code>. The two one-time passes work; the recurring option will error ' +
-          'until you run <code>node setup-razorpay.js</code> and add the id to <code>.env</code>.'));
+    // Auto-pay needs one Razorpay plan per group: Razorpay bakes the amount
+    // into the plan, so five groups cannot share one. Name the groups that are
+    // missing theirs and the exact variable each needs, rather than a single
+    // "not configured" that says nothing about which of the five will break.
+    const noAutopay = (p.groups || []).filter((g) => !g.autopayReady);
+    checks.push(noAutopay.length === 0
+      ? check('pass', 'Monthly Auto-Pay plans', 'Every group has its own Razorpay plan id.')
+      : check('warn', 'Monthly Auto-Pay plans',
+          `No Razorpay plan for ${noAutopay.map((g) => `<strong>${g.label}</strong>`).join(', ')}. ` +
+          'The one-time passes still sell; Monthly Auto-Pay will error for those groups until you run ' +
+          '<code>node setup-razorpay.js</code> and add ' +
+          noAutopay.map((g) => `<code>${g.autopayMissing}</code>`).join(', ') +
+          ' to <code>.env</code>.'));
 
     checks.push(p.publicBaseUrl
       ? check('pass', 'Public base URL', `Webhooks and redirects use <code>${p.publicBaseUrl}</code>.`)

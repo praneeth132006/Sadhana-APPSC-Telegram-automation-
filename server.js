@@ -52,6 +52,23 @@ const HOST = process.env.HOST || (process.env.VERCEL ? '0.0.0.0' : '127.0.0.1');
 
 const DASHBOARD_DIR = path.resolve(__dirname, 'dashboard');
 
+/** Subjects with a posting batch in flight, as "<group>::<subject>".
+ *  Two overlapping batches read the same unposted rows and send both copies, so
+ *  the second caller is turned away rather than allowed to duplicate the first.
+ *  This covers a re-click or a cron firing on top of a manual run within one
+ *  instance; it is not a distributed lock. */
+const postsInFlight = new Set();
+
+/** Wall-clock budget for one /api/telegram/post request, in milliseconds.
+ *  The loop stops on its own before this, so the partial batch is reported
+ *  honestly instead of the platform killing the request mid-write. Keep it
+ *  below the platform's function timeout (`maxDuration` in vercel.json). */
+const POST_BUDGET_MS = Number(process.env.POST_BUDGET_MS) || 240000;
+
+/** Most questions one request will post. Anything larger is better split
+ *  across runs than raced against the function timeout. */
+const MAX_POST_BATCH = 20;
+
 /** Largest JSON body we accept. A full batch of questions is far below this. */
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
@@ -453,10 +470,23 @@ async function serveStatic(res, pathname) {
  */
 async function createCheckoutForStudent({ plan, telegramId, username, name }) {
   if (plan.type === 'recurring') {
-    const razorpayPlanId = String(process.env[plan.razorpayPlanIdEnv] || '').trim();
+    // Group-scoped plans come from groups.config.json and carry razorpayPlanId
+    // directly; only the legacy single-group table has razorpayPlanIdEnv. This
+    // used to read process.env[plan.razorpayPlanIdEnv] unconditionally, so for
+    // every group plan it looked up process.env[undefined] and auto-pay failed
+    // with "undefined is not set" no matter how the environment was configured.
+    const razorpayPlanId = String(
+      plan.razorpayPlanId ||
+      (plan.razorpayPlanIdEnv ? process.env[plan.razorpayPlanIdEnv] : '') ||
+      ''
+    ).trim();
+
     if (!razorpayPlanId) {
+      const envName = plan.groupId
+        ? `RAZORPAY_PLAN_${groupRegistry.requireGroup(plan.groupId).envPrefix}`
+        : (plan.razorpayPlanIdEnv || 'RAZORPAY_MONTHLY_PLAN_ID');
       throw new Error(
-        `${plan.razorpayPlanIdEnv} is not set. Run "node setup-razorpay.js" once and put the id in .env.`
+        `${envName} is not set. Run "node setup-razorpay.js" once and put the id in .env.`
       );
     }
 
@@ -953,13 +983,20 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         testMode: razorpay.isTestMode(),
         webhookSecretSet: Boolean(String(process.env.RAZORPAY_WEBHOOK_SECRET || '').trim()),
         publicBaseUrl: String(process.env.PUBLIC_BASE_URL || '') || null,
-        recurringPlanReady: Boolean(String(process.env.RAZORPAY_MONTHLY_PLAN_ID || '').trim()),
+        // Auto-pay needs one Razorpay plan PER GROUP, because the amount is
+        // baked into the plan and the groups need not charge the same. The old
+        // single RAZORPAY_MONTHLY_PLAN_ID answered for none of them.
+        recurringPlanReady: groupRegistry.listGroups().every((g) => g.autopayReady),
         // Per group, because "is the premium group set?" has five answers now.
         groups: groupRegistry.listGroups().map((g) => ({
           id: g.id,
           label: g.displayName,
           ready: g.ready,
           missing: g.missing,
+          autopayReady: g.autopayReady,
+          // Named so the Health page can print the exact variable to set,
+          // rather than "auto-pay is not configured" with no next step.
+          autopayMissing: g.autopayMissing,
           paymentBotEnv: g.paymentBotEnv,
           dedicatedPaymentBot: paybot.hasDedicatedBot(g.paymentBotEnv)
         })),
@@ -1176,8 +1213,20 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
   if (pathname === '/api/payments/link' && method === 'POST') {
     const body = await readJsonBody(req);
 
-    const plan = plans.getPlan(str(body.planId, 40));
-    if (!plan) { sendJSON(res, 400, { success: false, error: 'Unknown plan' }); return true; }
+    // Group-scoped, so the plan carries this group's price AND its group id.
+    // plans.getPlan() returns the legacy global plan, which has no groupId:
+    // razorpay then wrote an empty notes.group_id and the webhook dropped the
+    // event as "notes lacked group_id" — the student paid and got nothing.
+    const plan = groupRegistry.getPlanFor(groupId, str(body.planId, 40), {
+      includeTest: plans.testPlanEnabled()
+    });
+    if (!plan) {
+      sendJSON(res, 400, {
+        success: false,
+        error: `"${str(body.planId, 40)}" is not a pass sold for this group.`
+      });
+      return true;
+    }
 
     const telegramId = str(body.telegramId, 32);
     if (!/^\d+$/.test(telegramId)) {
@@ -1242,8 +1291,9 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
     const subject = validateSubject(body.subject);
     if (!subject.ok) { sendJSON(res, 400, { success: false, error: subject.error }); return true; }
 
-    const count = Math.min(Math.max(parseInt(body.count, 10) || 1, 1), 20);
+    const count = Math.min(Math.max(parseInt(body.count, 10) || 1, 1), MAX_POST_BATCH);
     const requireApproved = body.requireApproved !== false;
+    const deadline = Date.now() + POST_BUDGET_MS;
 
     try {
       ensureTelegram();
@@ -1264,54 +1314,104 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
       return true;
     }
 
-    const questions = await db.getUnpostedQuestions(subject.value, count, requireApproved);
-    if (!questions.length) {
-      sendJSON(res, 200, {
-        success: true,
-        postedCount: 0,
-        results: [],
-        message: requireApproved
-          ? `No Approved or Scheduled questions waiting in "${subject.value}"`
-          : `No unposted questions left in "${subject.value}"`
+    const lockKey = `${groupId}::${subject.value}`;
+    if (postsInFlight.has(lockKey)) {
+      sendJSON(res, 409, {
+        success: false,
+        error: `A posting batch for "${subject.value}" is already running. Wait for it to finish — starting a second one would post the same questions twice.`
       });
       return true;
     }
-
-    const results = [];
-    const postedRowIndices = [];
-    const pollIds = {};
-    let lastMessageId = null;
-
-    for (let i = 0; i < questions.length; i++) {
-      const q = questions[i];
-      try {
-        const sent = await telegram.sendQuizPoll(subjectConfig.topic_thread_id, q);
-        if (sent && sent.message_id) lastMessageId = sent.message_id;
-        if (sent && sent.poll && sent.poll.id) pollIds[String(q.excel_row)] = sent.poll.id;
-
-        postedRowIndices.push(q.row_index !== undefined ? q.row_index : q.excel_row);
-        results.push({ questionId: q.question_id, ok: true, preview: q.question_text.slice(0, 80) });
-      } catch (err) {
-        results.push({ questionId: q.question_id, ok: false, error: err.message, preview: q.question_text.slice(0, 80) });
+    postsInFlight.add(lockKey);
+    try {
+      const questions = await db.getUnpostedQuestions(subject.value, count, requireApproved);
+      if (!questions.length) {
+        sendJSON(res, 200, {
+          success: true,
+          postedCount: 0,
+          results: [],
+          message: requireApproved
+            ? `No Approved or Scheduled questions waiting in "${subject.value}"`
+            : `No unposted questions left in "${subject.value}"`
+        });
+        return true;
       }
-      // Telegram tolerates roughly 30 messages/second; 1.5s is deliberately safe.
-      if (i < questions.length - 1) await sleep(1500);
-    }
 
-    if (postedRowIndices.length) {
-      await db.markAsPosted(
-        subject.value, postedRowIndices, lastMessageId, subjectConfig.topic_thread_id, pollIds
-      );
-    }
+      const results = [];
+      const postedRowIndices = [];
 
-    sendJSON(res, 200, {
-      success: true,
-      postedCount: postedRowIndices.length,
-      failedCount: results.length - postedRowIndices.length,
-      results,
-      message: `${postedRowIndices.length} of ${questions.length} question(s) posted to "${subject.value}"`
-    });
-    return true;
+      // Every question is marked Posted the moment its poll is out, one row at a
+      // time. Batching the marks until the end of the loop meant a serverless
+      // timeout — which a 20-question batch reliably hit — left questions live on
+      // Telegram but still showing "not posted", so the next run sent them again.
+      for (let i = 0; i < questions.length; i++) {
+        const q = questions[i];
+
+        // Stop cleanly while there is still time to record what has been sent.
+        // Running out of budget mid-write is exactly what produced duplicates.
+        if (Date.now() > deadline) {
+          results.push({
+            questionId: q.question_id,
+            ok: false,
+            error: 'Stopped before the request timed out — run again to post the rest.',
+            preview: q.question_text.slice(0, 80)
+          });
+          continue;
+        }
+
+        try {
+          const sent = await telegram.sendQuizPoll(subjectConfig.topic_thread_id, q);
+
+          const sheetRow = sheets.sheetRowOf(q);
+          const messageId = sent && sent.message_id ? sent.message_id : null;
+          const pollIds = sent && sent.poll && sent.poll.id
+            ? { [String(sheetRow)]: sent.poll.id }
+            : null;
+
+          try {
+            await db.markAsPosted(
+              subject.value, [sheetRow], messageId, subjectConfig.topic_thread_id, pollIds
+            );
+            postedRowIndices.push(sheetRow);
+            results.push({ questionId: q.question_id, ok: true, preview: q.question_text.slice(0, 80) });
+          } catch (markErr) {
+            // The poll is already public; say so loudly rather than reporting a
+            // plain failure, because re-running would post it a second time.
+            console.error(`[post] row ${sheetRow} posted but not marked:`, markErr.message);
+            results.push({
+              questionId: q.question_id,
+              ok: false,
+              error: `Posted to Telegram but the sheet was not updated (${markErr.message}). Mark row ${sheetRow} as Posted by hand to avoid a duplicate.`,
+              preview: q.question_text.slice(0, 80)
+            });
+          }
+        } catch (err) {
+          results.push({ questionId: q.question_id, ok: false, error: err.message, preview: q.question_text.slice(0, 80) });
+        }
+
+        // Telegram allows roughly 20 messages a minute into one group and each
+        // question costs two or three, so pace the batch. A 429 is still handled
+        // inside src/telegram.js, this just makes hitting one much less likely.
+        if (i < questions.length - 1) await sleep(telegram.POST_SPACING_MS);
+      }
+
+      const postedCount = postedRowIndices.length;
+      const remaining = questions.length - postedCount;
+
+      sendJSON(res, 200, {
+        success: true,
+        postedCount,
+        failedCount: questions.length - postedCount,
+        results,
+        message: remaining
+          ? `${postedCount} of ${questions.length} question(s) posted to "${subject.value}" — run again to send the remaining ${remaining}`
+          : `${postedCount} of ${questions.length} question(s) posted to "${subject.value}"`
+      });
+      return true;
+
+    } finally {
+      postsInFlight.delete(lockKey);
+    }
   }
 
   return false;
@@ -1412,7 +1512,10 @@ const server = http.createServer(async (req, res) => {
 
 // Cap header size and idle sockets so a slow client cannot hold resources.
 server.headersTimeout = 20000;
-server.requestTimeout = 60000;
+// A posting batch paces itself against Telegram's per-group rate limit, so one
+// request legitimately runs for minutes. Match POST_BUDGET_MS with headroom,
+// and keep it in step with `maxDuration` in vercel.json.
+server.requestTimeout = POST_BUDGET_MS + 60000;
 server.keepAliveTimeout = 10000;
 
 if (require.main === module) {

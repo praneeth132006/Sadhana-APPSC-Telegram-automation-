@@ -59,8 +59,19 @@ function formatIst(date) {
          `${get('hour')}:${get('minute')}:${get('second')} ${meridiem} IST`;
 }
 
+/** India is UTC+05:30 all year — no daylight saving — so one constant is exact. */
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
 /**
  * parseIst — reads back a timestamp this project wrote.
+ *
+ * The text is an IST wall-clock reading, so it must be interpreted as IST no
+ * matter where the process runs. This used to build the Date from local parts
+ * (`new Date(y, m, d, h, ...)`), which is only correct on a machine already set
+ * to Asia/Kolkata. On Vercel, which runs in UTC, every expiry read back 5 hours
+ * 30 minutes later than it was written: reminders fired late, lapsed members
+ * kept access for an extra evening, and the 5-minute test pass never expired
+ * inside the window it was meant to be watched in.
  *
  * @param {string} value
  * @returns {Date|null}
@@ -82,7 +93,12 @@ function parseIst(value) {
     if (meridiem === 'AM' && hour === 12) hour = 0;
   }
 
-  const date = new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), hour, minute, second);
+  // Build the instant in UTC from the IST reading, then step back by the
+  // offset, so the result is the same moment regardless of the server's TZ.
+  const utcMs = Date.UTC(
+    Number(match[3]), Number(match[2]) - 1, Number(match[1]), hour, minute, second
+  );
+  const date = new Date(utcMs - IST_OFFSET_MS);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
@@ -459,6 +475,7 @@ async function runDailyCheckAllGroups({ dryRun = false } = {}) {
 }
 
 module.exports = {
+  IST_OFFSET_MS,
   contextFor,
   runDailyCheckAllGroups,
   getPremiumGroupId,

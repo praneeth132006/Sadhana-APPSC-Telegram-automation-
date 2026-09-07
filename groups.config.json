@@ -19,6 +19,15 @@
     "a SUBJECTS_JSON script property, so the same google_apps_script.js is pasted",
     "into every sheet and each one declares its own subjects rather than five",
     "copies of the file drifting apart.",
+    "⚠️ TEST-STAGE PRICING: every group is currently on Rs 1 / Rs 2 / Rs 3 so the",
+    "payment flow can be exercised end to end with real money at negligible cost.",
+    "Put the real prices back before students are given the bot. Note that the",
+    "recurring plan's amount is baked into the Razorpay plan, so changing",
+    "autopay_monthly here is not enough: remove RAZORPAY_PLAN_<PREFIX> from .env",
+    "and re-run `node setup-razorpay.js` to mint a plan at the new price. A",
+    "subscription is refused outright when the two disagree, so a student can",
+    "never be charged an amount other than the one they were shown.",
+    "",
     "shortName is what the dashboard switcher shows. The full label and language are too long for the header, and a truncated group name is worse than a short one: it is the field that says which sheet you are about to write to."
   ],
   "planShapes": {
@@ -67,13 +76,13 @@
   "groups": [
     {
       "id": "appsc_news_en",
-      "label": "APPSC Newspaper Questions",
+      "label": "APPSC Newspaper",
       "language": "English",
       "envPrefix": "APPSC_NEWS_EN",
       "plans": {
-        "sprint_30": 29900,
-        "autopay_monthly": 24900,
-        "exam_pass": 79900,
+        "sprint_30": 100,
+        "autopay_monthly": 200,
+        "exam_pass": 300,
         "test_5min": 100
       },
       "paymentBotEnv": "TELEGRAM_PAYBOT_NEWS",
@@ -99,13 +108,13 @@
     },
     {
       "id": "appsc_news_te",
-      "label": "APPSC Newspaper Questions",
+      "label": "APPSC Newspaper",
       "language": "Telugu",
       "envPrefix": "APPSC_NEWS_TE",
       "plans": {
-        "sprint_30": 29900,
-        "autopay_monthly": 24900,
-        "exam_pass": 79900,
+        "sprint_30": 100,
+        "autopay_monthly": 200,
+        "exam_pass": 300,
         "test_5min": 100
       },
       "paymentBotEnv": "TELEGRAM_PAYBOT_NEWS",
@@ -131,13 +140,13 @@
     },
     {
       "id": "appsc_q_en",
-      "label": "APPSC Questions",
+      "label": "Sadhana APPSC",
       "language": "English",
       "envPrefix": "APPSC_Q_EN",
       "plans": {
-        "sprint_30": 29900,
-        "autopay_monthly": 24900,
-        "exam_pass": 79900,
+        "sprint_30": 100,
+        "autopay_monthly": 200,
+        "exam_pass": 300,
         "test_5min": 100
       },
       "paymentBotEnv": "TELEGRAM_PAYBOT_SADHANA",
@@ -163,13 +172,13 @@
     },
     {
       "id": "appsc_q_te",
-      "label": "APPSC Questions",
+      "label": "Sadhana APPSC",
       "language": "Telugu",
       "envPrefix": "APPSC_Q_TE",
       "plans": {
-        "sprint_30": 29900,
-        "autopay_monthly": 24900,
-        "exam_pass": 79900,
+        "sprint_30": 100,
+        "autopay_monthly": 200,
+        "exam_pass": 300,
         "test_5min": 100
       },
       "paymentBotEnv": "TELEGRAM_PAYBOT_SADHANA",
@@ -199,9 +208,9 @@
       "language": "English",
       "envPrefix": "UPSC",
       "plans": {
-        "sprint_30": 39900,
-        "autopay_monthly": 34900,
-        "exam_pass": 99900,
+        "sprint_30": 100,
+        "autopay_monthly": 200,
+        "exam_pass": 300,
         "test_5min": 100
       },
       "paymentBotEnv": "TELEGRAM_PAYBOT_UPSC",

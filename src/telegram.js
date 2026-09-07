@@ -12,6 +12,16 @@
 
 const TelegramBot = require('node-telegram-bot-api'); // Telegram Bot API wrapper library
 
+/**
+ * POST_SPACING_MS — pause between questions in a posting batch.
+ *
+ * Telegram caps a bot at roughly 20 messages a minute into a single group, and
+ * one question costs two or three messages (the long-question message, the
+ * poll, the explanation). Pacing keeps a batch under that ceiling; a 429 that
+ * still slips through is absorbed by sendWithFloodWait below.
+ */
+const POST_SPACING_MS = Number(process.env.POST_SPACING_MS) || 3000;
+
 let bot = null;     // Module-level variable to hold the bot instance
 let groupId = null;  // Module-level variable to store the supergroup chat ID
 
@@ -93,14 +103,16 @@ function formatDateHashtag(dateStr) {
   const parsed = new Date(clean);
   // Validate that the parsed timestamp is a real calendar date
   if (!isNaN(parsed.getTime())) {
-    // Zero-pad calendar day of month to 2 digits
-    const day = String(parsed.getDate()).padStart(2, '0');
-    // Zero-pad 1-based month index to 2 digits
-    const month = String(parsed.getMonth() + 1).padStart(2, '0');
-    // Extract full 4-digit calendar year
-    const year = parsed.getFullYear();
+    // Read the calendar parts in IST, not in whatever zone the server happens
+    // to run in. getDate()/getMonth() are local: on Vercel (UTC) a sheet date
+    // of "Sat Sep 05 2026 00:00:00 GMT+0530" is the instant 04 Sep 18:30 UTC,
+    // so the tag came out a day early for every question posted from the cloud.
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric'
+    }).formatToParts(parsed);
+    const get = (type) => (parts.find((p) => p.type === type) || {}).value || '';
     // Return #Date_DD_MM_YYYY with "Date_" letter prefix for Telegram hashtag entity recognition
-    return '#Date_' + day + '_' + month + '_' + year;
+    return '#Date_' + get('day') + '_' + get('month') + '_' + get('year');
   }
 
   // Case 4: Fallback for non-standard formats — strip special symbols and ensure Telegram hashtag compatibility
@@ -232,6 +244,53 @@ async function createForumTopic(name) {
 }
 
 /**
+ * retryAfterSeconds — Reads Telegram's "wait this long" hint off a 429 error.
+ *
+ * node-telegram-bot-api surfaces the API payload on err.response.body, so a
+ * flood-wait arrives as { error_code: 429, parameters: { retry_after: 12 } }.
+ * Anything else returns 0, meaning "not a rate limit, do not retry".
+ *
+ * @param {Error} err — Error thrown by a bot.* call
+ * @returns {number} Seconds to wait, or 0 when the error is not a 429
+ */
+function retryAfterSeconds(err) {
+  const body = (err && err.response && err.response.body) || {};
+  if (Number(body.error_code) !== 429) return 0;
+  const params = body.parameters || {};
+  // Telegram always sends retry_after with a 429; default to 3s if it did not.
+  return Math.max(1, Number(params.retry_after) || 3);
+}
+
+/**
+ * sendWithFloodWait — Runs a Telegram send, honouring 429 flood-wait replies.
+ *
+ * Groups are limited to roughly 20 messages a minute, and each question costs
+ * two or three messages, so a batch of any size will hit that ceiling. Without
+ * this the first 429 aborted the whole batch mid-way — which is what made a
+ * 20-question run stop after 8.
+ *
+ * @param {Function} send — Zero-argument function performing the send
+ * @param {number} [attempts] — How many flood-waits to sit through
+ * @returns {Promise<Object>} Whatever the send resolved to
+ */
+async function sendWithFloodWait(send, attempts = 3) {
+  let lastErr;
+  for (let attempt = 0; attempt <= attempts; attempt++) {
+    try {
+      return await send();
+    } catch (err) {
+      const wait = retryAfterSeconds(err);
+      // Not a rate limit (bad HTML, question too long, bot kicked out): fail now.
+      if (!wait || attempt === attempts) throw err;
+      lastErr = err;
+      console.warn(`⏳ Telegram rate limit — waiting ${wait}s before retrying`);
+      await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * sendQuizPoll — Sends a quiz-type poll to a specific forum topic.
  * The poll shows 4 options, marks the correct one, and shows
  * an explanation via the 💡 (lightbulb) icon after the user answers.
@@ -282,34 +341,24 @@ async function sendQuizPoll(threadId, question) {
     pollConfig.explanation_parse_mode = 'HTML';     // Allow basic HTML formatting
   }
 
-  // ---- Format Hashtags: Date and Newspaper metadata ----
-  // Format date as #DD_MM_YYYY (e.g. #05_09_2026) and newspaper as #TheHindu
-  const dateTag = formatDateHashtag(question.date || '');
-  const newspaperTag = formatNewspaperHashtag(question.newspaper || '');
-  // Collect available tags with descriptive icons
-  const tagParts = [];
-  if (dateTag) tagParts.push('📅 ' + dateTag);
-  if (newspaperTag) tagParts.push('📰 ' + newspaperTag);
-  // Join tags into a single line string
-  const tagLine = tagParts.join('  ');
+  // The date / newspaper hashtag line that used to sit under the question was
+  // removed on request: it added visual noise to every poll and pushed long
+  // questions over Telegram's 300-character poll limit for no benefit. The
+  // Date and Newspaper columns are still recorded in the sheet.
 
-  // Telegram limits poll question text to a maximum of 300 characters.
-  // APPSC and competitive exam questions with multiple statements frequently exceed this limit.
-  // If the question exceeds 290 characters, we send the full question text with statements
-  // AND attached hashtags directly in the topic message, and then follow up with the quiz poll.
+  // Telegram limits poll question text to 300 characters. APPSC and other
+  // competitive-exam questions with multiple statements routinely exceed that,
+  // so anything longer goes out as a normal topic message first and the poll
+  // then points at it.
   let pollQuestion = question.question_text;
   if (pollQuestion.length > 290) {
-    // Construct question message with hashtags attached directly at the end (never sent separately)
-    const questionTextWithTags = `📝 <b>Question:</b>\n\n${escapeHtml(question.question_text)}` +
-      (tagLine ? `\n\n${tagLine}` : '');
-
-    // Post the complete question and statement list with inline hashtags to the forum topic
-    await bot.sendMessage(groupId, questionTextWithTags, {
+    await sendWithFloodWait(() => bot.sendMessage(groupId, `📝 <b>Question:</b>\n\n${escapeHtml(question.question_text)}`, {
       message_thread_id: threadId, // Direct message to the specific subject forum topic
       parse_mode: 'HTML'           // Format as HTML for clean readability
-    });
+    }));
 
-    // Extract the concluding prompt if present (e.g. "Which of the statements given above are correct?")
+    // Reuse the concluding prompt (e.g. "Which of the statements given above
+    // are correct?") as the poll question when it is short enough to fit.
     const lines = question.question_text.trim().split('\n');
     const lastLine = lines[lines.length - 1].trim();
     if (lastLine.endsWith('?') && lastLine.length < 250) {
@@ -317,25 +366,10 @@ async function sendQuizPoll(threadId, question) {
     } else {
       pollQuestion = '👆 Choose the correct answer for the question above:';
     }
-  } else {
-    // If question is short (<= 290 chars):
-    // If question + tags fits within Telegram's 300-char poll question limit, attach hashtags directly!
-    if (tagLine && (pollQuestion.length + tagLine.length + 2 <= 300)) {
-      pollQuestion = `${pollQuestion}\n\n${tagLine}`;
-    } else if (tagLine) {
-      // If adding hashtags pushes pollQuestion beyond 300 characters,
-      // send the question with hashtags as a formatted topic message, then follow up with poll
-      const shortQuestionWithTags = `📝 <b>Question:</b>\n\n${escapeHtml(question.question_text)}\n\n${tagLine}`;
-      await bot.sendMessage(groupId, shortQuestionWithTags, {
-        message_thread_id: threadId,
-        parse_mode: 'HTML'
-      });
-      pollQuestion = '👆 Choose the correct answer for the question above:';
-    }
   }
 
   // Send the quiz poll to the Telegram group, targeting the specific topic
-  const sent = await bot.sendPoll(groupId, pollQuestion, options, pollConfig);
+  const sent = await sendWithFloodWait(() => bot.sendPoll(groupId, pollQuestion, options, pollConfig));
 
   // Send the detailed Answer & Explanation message using Telegram's native <tg-spoiler> tag
   // This guarantees:
@@ -355,10 +389,16 @@ async function sendQuizPoll(threadId, question) {
       `📖 <b>Explanation:</b>\n${explanationText}</tg-spoiler>`;
 
     // Send the spoiler message to the specific forum topic thread
-    await bot.sendMessage(groupId, spoilerMessage, {
-      message_thread_id: threadId,
-      parse_mode: 'HTML'
-    });
+    // The poll itself is already out and the row is about to be marked posted,
+    // so a failure here must not undo that — log it and move on.
+    try {
+      await sendWithFloodWait(() => bot.sendMessage(groupId, spoilerMessage, {
+        message_thread_id: threadId,
+        parse_mode: 'HTML'
+      }));
+    } catch (err) {
+      console.warn(`⚠️  Poll sent but its explanation message failed: ${err.message}`);
+    }
   }
 
   return sent; // Return the sent message object (contains message_id)
@@ -553,5 +593,6 @@ module.exports = {
   extractGroupIdFromLink,
   detectGroupId,
   formatDateHashtag,
-  formatNewspaperHashtag
+  formatNewspaperHashtag,
+  POST_SPACING_MS
 };

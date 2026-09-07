@@ -737,7 +737,7 @@ test('markRowsAsPostedInSheet records the full posting trail', () => {
   ], 'Curator', true);
 
   const map = script.headerMap(sheet);
-  const updated = script.markRowsAsPostedInSheet('Polity', [0], '9001', '12', { 2: 'poll-abc' });
+  const updated = script.markRowsAsPostedInSheet('Polity', [2], '9001', '12', { 2: 'poll-abc' });
 
   assert.equal(updated, 1);
   assert.equal(sheet.values[1][map['Posted']], 'YES');
@@ -749,8 +749,47 @@ test('markRowsAsPostedInSheet records the full posting trail', () => {
   assert.ok(sheet.values[1][map['Posted At']], 'a timestamp was written');
 
   // A repost increments the counter rather than overwriting it.
-  script.markRowsAsPostedInSheet('Polity', [0], '9002', '12', {});
+  script.markRowsAsPostedInSheet('Polity', [2], '9002', '12', {});
   assert.equal(sheet.values[1][map['Times Posted']], 2);
+});
+
+test('markRowsAsPostedInSheet marks every row of a batch, not just the first two', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  const five = [1, 2, 3, 4, 5].map((n) => ({
+    question: `Q${n}?`, option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }));
+  script.appendQuestionsToSheet('Polity', five, 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  // Rows 2..6 — the whole batch. The old index-guessing collapsed rows 4, 5 and
+  // 6 onto 2, 3 and 4, so only three rows were ever marked and the rest were
+  // posted again on the next run.
+  const updated = script.markRowsAsPostedInSheet('Polity', [2, 3, 4, 5, 6], '9001', '12', {});
+
+  assert.equal(updated, 5);
+  for (let row = 1; row <= 5; row++) {
+    assert.equal(sheet.values[row][map['Posted']], 'YES', `row ${row + 1} is marked posted`);
+    assert.equal(sheet.values[row][map['Times Posted']], 1, `row ${row + 1} posted exactly once`);
+  }
+});
+
+test('markRowsAsPostedInSheet ignores a row repeated within one batch', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [
+    { question: 'Once?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A' }
+  ], 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  const updated = script.markRowsAsPostedInSheet('Polity', [2, 2, 2], '9001', '12', {});
+
+  assert.equal(updated, 1);
+  assert.equal(sheet.values[1][map['Times Posted']], 1);
 });
 
 test('listQuestions filters and paginates', () => {
