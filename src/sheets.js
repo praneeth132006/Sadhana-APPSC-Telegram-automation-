@@ -203,11 +203,25 @@ async function request(ctx, method, params) {
     throw new Error('Google Sheets response exceeded the size limit.');
   }
 
-  // A script deployed with "Who has access: Me" answers with a login page.
-  if (/accounts\.google\.com|<!doctype html/i.test(text)) {
-    throw new Error(
-      'Google Apps Script returned a sign-in page. Redeploy the Web App with "Who has access: Anyone".'
-    );
+  // Apps Script answers with HTML in two very different situations, and calling
+  // both a "sign-in page" sent me chasing a deployment setting when the real
+  // message — a data-validation rule rejecting a write — was sitting in the
+  // body. Separate them, and quote what the page actually says.
+  if (/<!doctype html|<html/i.test(text)) {
+    if (/accounts\.google\.com|ServiceLogin/i.test(text)) {
+      throw new Error(
+        'Google Apps Script returned a sign-in page. Redeploy the Web App with "Who has access: Anyone".'
+      );
+    }
+    // An uncaught error inside the script. The useful sentence is in the page.
+    const detail = text
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const message = (detail.match(/(?:Error|Exception)[:\s]+([^]{0,300})/i) || [null, detail])[1];
+    throw new Error('Google Apps Script failed: ' + String(message).slice(0, 300));
   }
 
   let result;

@@ -10,7 +10,7 @@
 // Group id : appsc_news_te
 // Subjects : 16
 //            History, AP History, Geography, AP Geography, Economy, AP Economy, Polity, Society, Current Affairs, Science and Technology, Biology, Chemistry, Physics, Environment, General Studies, Disaster Management
-// Built    : 2026-09-07T15:25:27.231Z
+// Built    : 2026-09-07T16:06:53.534Z
 // ==========================================================================
 
 // ============================================================================
@@ -1259,6 +1259,12 @@ function claimQuestionRows(subject, rowNumbers) {
   var sheet = book().getSheetByName(subject);
   if (!sheet) throw new Error('Sheet tab "' + subject + '" not found.');
 
+  // A sheet set up by an older script still carries a YES/NO-only rule on the
+  // Posted column, which rejects the SENDING marker and takes the whole write
+  // down with it. Repair the rules before writing rather than requiring the
+  // curator to know they need re-running.
+  applyPostedDataValidation(sheet);
+
   return withScriptLock(function () {
     var map = headerMap(sheet);
     var lastRow = sheet.getLastRow();
@@ -2383,12 +2389,22 @@ function applyPostedDataValidation(sheet) {
   var rows = Math.max(sheet.getMaxRows() - 1, 1);
   var map = headerMap(sheet);
 
+  // The Posted column is not a two-value dropdown any more. It also carries
+  // "SENDING | <when>" while a question is with Telegram but not yet confirmed,
+  // and older rows carry the legacy "YES | <when>". A requireValueInList rule
+  // REJECTS those writes outright — the script throws and Apps Script answers
+  // with an HTML error page, so claiming a row failed with nothing in the
+  // response that named the cause. Kept as a dropdown for the two values a
+  // curator would ever pick by hand, but no longer rejecting what the poster
+  // writes.
   var yesNo = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['YES', 'NO'], true).setAllowInvalid(false).build();
+    .requireValueInList(['YES', 'NO'], true).setAllowInvalid(true).build();
   sheet.getRange(2, colNum(map, 'Posted'), rows, 1).setDataValidation(yesNo);
 
+  // Same for Status: it now includes "Sending", and a rule built before that
+  // existed would reject it on any sheet whose validation was set earlier.
   var status = SpreadsheetApp.newDataValidation()
-    .requireValueInList(STATUS_VALUES, true).setAllowInvalid(false).build();
+    .requireValueInList(STATUS_VALUES, true).setAllowInvalid(true).build();
   sheet.getRange(2, colNum(map, 'Status'), rows, 1).setDataValidation(status);
 
   var difficulty = SpreadsheetApp.newDataValidation()
