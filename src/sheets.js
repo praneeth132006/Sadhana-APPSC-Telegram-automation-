@@ -203,11 +203,25 @@ async function request(ctx, method, params) {
     throw new Error('Google Sheets response exceeded the size limit.');
   }
 
-  // A script deployed with "Who has access: Me" answers with a login page.
-  if (/accounts\.google\.com|<!doctype html/i.test(text)) {
-    throw new Error(
-      'Google Apps Script returned a sign-in page. Redeploy the Web App with "Who has access: Anyone".'
-    );
+  // Apps Script answers with HTML in two very different situations, and calling
+  // both a "sign-in page" sent me chasing a deployment setting when the real
+  // message — a data-validation rule rejecting a write — was sitting in the
+  // body. Separate them, and quote what the page actually says.
+  if (/<!doctype html|<html/i.test(text)) {
+    if (/accounts\.google\.com|ServiceLogin/i.test(text)) {
+      throw new Error(
+        'Google Apps Script returned a sign-in page. Redeploy the Web App with "Who has access: Anyone".'
+      );
+    }
+    // An uncaught error inside the script. The useful sentence is in the page.
+    const detail = text
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const message = (detail.match(/(?:Error|Exception)[:\s]+([^]{0,300})/i) || [null, detail])[1];
+    throw new Error('Google Apps Script failed: ' + String(message).slice(0, 300));
   }
 
   let result;
@@ -218,7 +232,31 @@ async function request(ctx, method, params) {
   }
 
   if (result.success === false) {
-    throw new Error(result.error || 'Unknown Google Sheets API error');
+    const message = String(result.error || 'Unknown Google Sheets API error');
+
+    // "Unknown POST action: bulkDelete" means the script pasted into this
+    // sheet is older than the code calling it. Apps Script is not deployed by
+    // merging or by `vercel deploy` — it is a copy-paste into each sheet's
+    // script editor — so this is the one failure mode that looks like a broken
+    // feature and is really a missed manual step. The raw message named the
+    // action and nothing else, which told a curator nothing about what to do.
+    const stale = message.match(/^Unknown (?:POST|GET) action: (\w+)/);
+    if (stale) {
+      const err = new Error(
+        `This sheet's Apps Script does not know the "${stale[1]}" action, so it is older than ` +
+        'the dashboard. Open the sheet → Extensions → Apps Script, paste the current ' +
+        'apps-script file for this group over what is there, and Deploy → Manage deployments ' +
+        '→ edit → Version: New version.'
+      );
+      // Marked so the API can answer 409 rather than 500: nothing is broken
+      // here, a step is outstanding.
+      err.statusCode = 409;
+      err.staleScript = true;
+      err.missingAction = stale[1];
+      throw err;
+    }
+
+    throw new Error(message);
   }
   return result;
 }

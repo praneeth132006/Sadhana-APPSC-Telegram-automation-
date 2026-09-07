@@ -592,6 +592,49 @@ test('the data layer only publishes reviewed questions unless told otherwise', a
 });
 
 // ===========================================================================
+// A sheet running an older Apps Script says so
+// ===========================================================================
+// Apps Script is pasted into each sheet by hand — merging a PR and deploying
+// the site do not touch it. So the dashboard routinely runs ahead of the
+// script, and the sheet answers "Unknown POST action: bulkDelete". That came
+// back as a bare 500 and a red toast naming the action, which told a curator
+// nothing about the manual step they had missed.
+
+test('an action the sheet has never heard of is a 409, not a 500', async () => {
+  const original = clientStubs.bulkDelete;
+  clientStubs.bulkDelete = async () => {
+    // Exactly what src/sheets.js raises for this reply.
+    const err = new Error('This sheet\'s Apps Script does not know the "bulkDelete" action…');
+    err.statusCode = 409;
+    err.staleScript = true;
+    err.missingAction = 'bulkDelete';
+    throw err;
+  };
+
+  try {
+    const res = await authed('/api/questions/bulk-delete', {
+      method: 'POST', body: { subject: 'Polity', questionIds: ['POL-1'] }
+    });
+    assert.equal(res.status, 409, 'a missing manual step was reported as a server fault');
+    assert.match(res.json.error, /Apps Script does not know/);
+  } finally {
+    clientStubs.bulkDelete = original;
+  }
+});
+
+test('the stale-script message says what to do, not just what failed', () => {
+  // Reconstructed the way src/sheets.js builds it, so the wording is asserted
+  // rather than assumed.
+  const sheetsModule = require('../src/sheets');
+  assert.equal(typeof sheetsModule.forGroup, 'function');
+
+  const raw = { success: false, error: 'Unknown POST action: bulkDelete' };
+  const stale = String(raw.error).match(/^Unknown (?:POST|GET) action: (\w+)/);
+  assert.ok(stale, 'the reply shape the sheet actually sends is no longer recognised');
+  assert.equal(stale[1], 'bulkDelete');
+});
+
+// ===========================================================================
 // A question is reserved before it is sent
 // ===========================================================================
 // Telegram can accept a poll and still leave this process with a timeout. A row
