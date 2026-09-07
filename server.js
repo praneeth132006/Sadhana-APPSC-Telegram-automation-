@@ -1268,7 +1268,9 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
         configured: groupRegistry.listGroups().some((g) => g.ready), reachable: false, version: null,
         requiredVersion: REQUIRED_SHEET_VERSION,
         tokenRequired: null, current: false, bound: null, spreadsheetName: null,
-        membershipReady: null, membershipError: null, error: null
+        membershipReady: null, membershipError: null, error: null,
+        // Which of the newest Apps Script actions this sheet has never heard of.
+        missingActions: null, scriptCurrent: null
       },
       telegram: {
         configured: telegramConfigured(), reachable: false, botUsername: null,
@@ -1329,6 +1331,29 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
           health.sheets.membershipReady = false;
           health.sheets.membershipError = err.message;
         }
+
+        // Apps Script is pasted into each sheet by hand — merging a PR or
+        // deploying does not touch it. So the dashboard routinely runs ahead of
+        // the script and a feature looks broken when a manual step is simply
+        // outstanding. Probe the newest actions with arguments that cannot
+        // match anything, and report which ones the script has never heard of.
+        const NEWEST_ACTIONS = ['bulkDelete', 'claimQuestions', 'unpostQuestions', 'listPosted'];
+        const missingActions = [];
+        for (const action of NEWEST_ACTIONS) {
+          try {
+            const client = sheets.forGroup(healthGroup);
+            if (action === 'bulkDelete') await client.bulkDelete('__probe__', ['__probe__']);
+            else if (action === 'claimQuestions') await client.claimQuestions('__probe__', [999999]);
+            else if (action === 'unpostQuestions') await client.unpostQuestions('__probe__', [999999]);
+            else await client.listPosted('__probe__');
+          } catch (err) {
+            // Only a script that does not KNOW the action counts. "Sheet tab
+            // __probe__ not found" means it knows it perfectly well.
+            if (err.staleScript) missingActions.push(action);
+          }
+        }
+        health.sheets.missingActions = missingActions;
+        health.sheets.scriptCurrent = missingActions.length === 0;
       } catch (err) {
         health.sheets.error = err.message;
       }
