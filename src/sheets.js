@@ -42,7 +42,7 @@ function sheetRowOf(q) {
   }
   return Number(q && q.row_index) + 2;
 }
-const API_NAMES = ['ping', 'readConfig', 'getSubjects', 'writeConfig', 'getUnpostedQuestions', 'markAsPosted', 'getStats', 'getAnalytics', 'listQuestions', 'checkDuplicates', 'addQuestions', 'updateQuestion', 'deleteQuestion', 'claimQuestions', 'releaseQuestions', 'unpostQuestions', 'listPosted', 'bulkStatus', 'scheduleQuestions', 'getSubscriber', 'listSubscribers', 'getExpiring', 'getRevenue', 'upsertSubscriber'];
+const API_NAMES = ['ping', 'readConfig', 'getSubjects', 'writeConfig', 'getUnpostedQuestions', 'markAsPosted', 'getStats', 'getAnalytics', 'listQuestions', 'checkDuplicates', 'addQuestions', 'updateQuestion', 'deleteQuestion', 'bulkDelete', 'claimQuestions', 'releaseQuestions', 'unpostQuestions', 'listPosted', 'bulkStatus', 'scheduleQuestions', 'getSubscriber', 'listSubscribers', 'getExpiring', 'getRevenue', 'upsertSubscriber'];
 
 /**
  * getWebAppUrl — resolves and validates the deployed Apps Script URL.
@@ -388,6 +388,23 @@ async function markAsPosted(ctx, subject, rowIndices, messageId = null, threadId
   return updated;
 }
 
+/**
+ * bulkDelete — removes many questions from one subject in a single call.
+ *
+ * @param {string} subject Subject tab name
+ * @param {Array<string>} questionIds Question IDs to remove
+ * @returns {Promise<Object>} { deletedCount, notFound }
+ */
+async function bulkDelete(ctx, subject, questionIds) {
+  if (!questionIds || !questionIds.length) return { deletedCount: 0, notFound: [] };
+  const result = await request(ctx, 'POST', {
+    action: 'bulkDelete',
+    subject,
+    questionIds
+  });
+  return { deletedCount: result.deletedCount || 0, notFound: result.notFound || [] };
+}
+
 /** Appends questions from the dashboard, skipping duplicates by default. */
 async function addQuestions(ctx, subject, questions, addedBy, skipDuplicates = true) {
   return request(ctx, 'POST', {
@@ -549,7 +566,7 @@ API_NAMES.forEach((name) => {
 const IMPLEMENTATIONS = {
   ping, readConfig, getSubjects, writeConfig, getUnpostedQuestions, markAsPosted,
   getStats, getAnalytics, listQuestions, checkDuplicates, addQuestions,
-  updateQuestion, deleteQuestion, claimQuestions, releaseQuestions,
+  updateQuestion, deleteQuestion, bulkDelete, claimQuestions, releaseQuestions,
   unpostQuestions, listPosted, bulkStatus, scheduleQuestions, getSubscriber,
   listSubscribers, getExpiring, getRevenue, upsertSubscriber
 };

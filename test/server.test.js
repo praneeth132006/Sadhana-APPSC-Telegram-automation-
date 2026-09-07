@@ -83,6 +83,7 @@ stub(sheets, 'addQuestions', { addedCount: 1, skippedCount: 0, ids: ['POL-202609
 stub(sheets, 'updateQuestion', { message: 'updated' });
 stub(sheets, 'deleteQuestion', { message: 'deleted' });
 stub(sheets, 'bulkStatus', 2);
+stub(sheets, 'bulkDelete', { deletedCount: 2, notFound: [] });
 stub(sheets, 'scheduleQuestions', 3);
 stub(sheets, 'getUnpostedQuestions', [
   { question_id: 'POL-1', question_text: 'Q1', row_index: 0, excel_row: 2 }
@@ -471,6 +472,68 @@ test('bulk status applies to a valid selection', async () => {
   });
   assert.equal(res.status, 200);
   assert.equal(res.json.updatedCount, 2);
+});
+
+test('bulk delete removes a whole selection in one call', async () => {
+  calls.length = 0;
+  const res = await authed('/api/questions/bulk-delete', {
+    method: 'POST',
+    body: { subject: 'Polity', questionIds: ['POL-1', 'POL-2'] }
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.json.deletedCount, 2);
+  assert.deepEqual(res.json.notFound, []);
+
+  const [subject, ids] = calls.find((c) => c.name === 'bulkDelete').args;
+  assert.equal(subject, 'Polity');
+  assert.deepEqual(ids, ['POL-1', 'POL-2']);
+});
+
+test('bulk delete validates its input the way bulk status does', async () => {
+  const bad = [
+    [{ subject: 'Polity', questionIds: [] }, /No questionIds/],
+    [{ subject: 'Polity' }, /No questionIds/],
+    // 201 DISTINCT ids: the cap is applied after deduplication, because it
+    // exists to limit how many rows one mistaken click destroys, and 201 copies
+    // of one id destroys exactly one row.
+    [{ subject: 'Polity', questionIds: Array.from({ length: 201 }, (_, i) => `POL-${i}`) }, /max 200/],
+    [{ subject: '../secrets', questionIds: ['POL-1'] }, /.+/]
+  ];
+
+  for (const [body, pattern] of bad) {
+    const res = await authed('/api/questions/bulk-delete', { method: 'POST', body });
+    assert.equal(res.status, 400, `accepted ${JSON.stringify(body).slice(0, 60)}`);
+    assert.match(res.json.error, pattern);
+  }
+});
+
+test('bulk delete deduplicates ids before deleting', async () => {
+  // A duplicate id would delete the row and then delete whatever slid into its
+  // place. The sheet guards this too; sending it clean costs nothing.
+  calls.length = 0;
+  await authed('/api/questions/bulk-delete', {
+    method: 'POST',
+    body: { subject: 'Polity', questionIds: ['POL-1', 'POL-1', 'POL-2', 'POL-1'] }
+  });
+
+  const [, ids] = calls.find((c) => c.name === 'bulkDelete').args;
+  assert.deepEqual(ids, ['POL-1', 'POL-2']);
+});
+
+test('bulk delete names the ids it could not find', async () => {
+  // "Deleted 27 of 29" with no names leaves a curator no way to find the two.
+  const original = clientStubs.bulkDelete;
+  clientStubs.bulkDelete = async () => ({ deletedCount: 1, notFound: ['POL-2'] });
+  try {
+    const res = await authed('/api/questions/bulk-delete', {
+      method: 'POST',
+      body: { subject: 'Polity', questionIds: ['POL-1', 'POL-2'] }
+    });
+    assert.deepEqual(res.json.notFound, ['POL-2']);
+  } finally {
+    clientStubs.bulkDelete = original;
+  }
 });
 
 // ===========================================================================
