@@ -119,20 +119,19 @@ function loadScript(spreadsheet) {
       // rather than from Extensions > Apps Script inside the Sheet.
       getActiveSpreadsheet: () => spreadsheet,
       openById: (id) => (id === 'known-sheet-id' ? new FakeSpreadsheet([], 'Opened By Id') : null),
-      newDataValidation: () => ({
-        requireValueInList() { return this; },
-        setAllowInvalid() { return this; },
-        build: () => ({ kind: 'validation' }),
-        // The chained builder returns itself from each call.
-        ...(function builder() {
-          const self = {
-            requireValueInList: () => self,
-            setAllowInvalid: () => self,
-            build: () => ({ kind: 'validation' })
-          };
-          return self;
-        })()
-      }),
+      // Records what was built. It used to discard every argument and hand back
+      // `{kind:'validation'}`, so no test could see that the Posted column was
+      // being given a YES/NO-only rule that rejects the SENDING marker the
+      // poster writes — the same kind of blind spot as the missing appendRow.
+      newDataValidation: () => {
+        const built = { kind: 'validation', values: null, allowInvalid: null };
+        const self = {
+          requireValueInList: (values) => { built.values = values.slice(); return self; },
+          setAllowInvalid: (flag) => { built.allowInvalid = flag; return self; },
+          build: () => built
+        };
+        return self;
+      },
       newConditionalFormatRule: () => {
         const self = {
           whenTextEqualTo: () => self,
@@ -1232,6 +1231,49 @@ function sheetWithQuestions(n) {
   }
   return { script, sheet, map };
 }
+
+test('the Posted column accepts the SENDING marker the poster writes', () => {
+  // The Posted column used to carry a requireValueInList('YES','NO') rule with
+  // setAllowInvalid(false). Claiming a row writes "SENDING | <when>", which the
+  // rule REJECTED — the script threw, Apps Script answered with an HTML error
+  // page, and claiming failed against every real sheet.
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [{
+    question: 'Q1?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A'
+  }], 'Curator', true);
+  script.applyPostedDataValidation(sheet);
+
+  const rules = sheet.validations || [];
+  assert.ok(rules.length, 'no validation was applied at all');
+
+  const posted = rules.find((r) => r.values && r.values.includes('YES') && r.values.includes('NO'));
+  assert.ok(posted, 'the Posted column has no validation rule');
+  assert.notEqual(posted.allowInvalid, false,
+    'the Posted rule still rejects "SENDING | <when>", so claiming a row fails');
+
+  const status = rules.find((r) => r.values && r.values.includes('Approved'));
+  assert.ok(status, 'the Status column has no validation rule');
+  assert.notEqual(status.allowInvalid, false,
+    'the Status rule still rejects "Sending"');
+
+  // Difficulty stays strict on purpose: nothing but Easy/Medium/Hard is ever
+  // written to it, so a typo there should be refused.
+  const difficulty = rules.find((r) => r.values && r.values.includes('Medium'));
+  assert.ok(difficulty, 'the Difficulty column has no validation rule');
+  assert.equal(difficulty.allowInvalid, false,
+    'Difficulty was loosened without reason');
+});
+
+test('Sending is one of the statuses the sheet will accept', () => {
+  // A rule built before "Sending" existed would reject the status half of a
+  // claim even once the Posted half went through.
+  const script = freshScript();
+  assert.ok(script.STATUS_VALUES.includes('Sending'),
+    'Sending is written by claimQuestionRows and must be a legal status');
+});
 
 test('a claimed question stops being eligible immediately', () => {
   const { script } = sheetWithQuestions(3);
