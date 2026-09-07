@@ -589,6 +589,39 @@ test('a checkout for a plan with no group is refused before any money moves', as
   }
 });
 
+test('the checkout describes the group being bought, not one hardcoded name', async () => {
+  // The description is on the Razorpay checkout page and on the payer's
+  // receipt. It was hardcoded to "APPSC Premium Group", so a UPSC student paid
+  // for a product name belonging to a different group entirely.
+  const originalFetch = globalThis.fetch;
+  const seen = {};
+  globalThis.fetch = async (url, opts) => {
+    if (!String(url).includes('api.razorpay.com')) return originalFetch(url, opts);
+    const body = JSON.parse(opts.body);
+    seen[body.notes.group_id] = body.description;
+    const payload = JSON.stringify({ id: 'plink_x', short_url: 'https://rzp.io/x' });
+    return { ok: true, status: 200, text: async () => payload, json: async () => JSON.parse(payload) };
+  };
+
+  try {
+    for (const group of groups.listGroups()) {
+      await razorpay.createPaymentLink({
+        plan: groups.getPlanFor(group.id, 'sprint_30'), telegramId: '4242'
+      });
+      assert.ok(
+        seen[group.id].includes(group.displayName),
+        `${group.id} is sold as "${seen[group.id]}"`
+      );
+      assert.ok(!seen[group.id].includes('APPSC Premium Group'));
+    }
+
+    // And the five descriptions are distinct, which the hardcoded one was not.
+    assert.equal(new Set(Object.values(seen)).size, groups.listGroups().length);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('a group-scoped payment link carries the group id the webhook needs', async () => {
   const originalFetch = globalThis.fetch;
   let sentBody = null;
