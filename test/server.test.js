@@ -1082,10 +1082,12 @@ test('a bot webhook for an unconfigured family is refused', async () => {
   assert.match(res.json.error, /No payment bot is configured/);
 });
 
-test('a signed bot webhook is accepted and answered immediately', async () => {
-  // Telegram retries anything it does not get a prompt 200 for, and a retry
-  // here means a second payment link for one tap, so the 200 goes out before
-  // the update is dispatched.
+test('a signed bot webhook is accepted and answered once the work is done', async () => {
+  // This used to answer before dispatching the update, so that Telegram never
+  // retried and never issued a second payment link for one tap. On the
+  // deployment that froze the instance mid-reply and every bot went silent, so
+  // the 200 now goes out after the handlers have settled. See
+  // test/botapp.test.js.
   const res = await botWebhook('TELEGRAM_PAYBOT_NEWS', {
     update_id: 7,
     message: { message_id: 1, date: 0, chat: { id: 4242, type: 'private' }, from: { id: 4242 }, text: '/nothing' }
