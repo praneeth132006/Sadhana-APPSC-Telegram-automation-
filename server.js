@@ -60,6 +60,14 @@ const DASHBOARD_DIR = path.resolve(__dirname, 'dashboard');
  *  instance; it is not a distributed lock. */
 const postsInFlight = new Set();
 
+/**
+ * Wall-clock budget for handling one Telegram bot update, in milliseconds.
+ * Telegram waits about a minute before treating a webhook as failed and
+ * retrying it; a retry re-runs the handler and can issue a second payment link
+ * for one tap. Stay clearly under that.
+ */
+const BOT_UPDATE_BUDGET_MS = 20000;
+
 /** Wall-clock budget for one /api/telegram/post request, in milliseconds.
  *  The loop stops on its own before this, so the partial batch is reported
  *  honestly instead of the platform killing the request mid-write. Keep it
@@ -1096,16 +1104,42 @@ async function handlePublicRoute(pathname, method, req, res) {
       return true;
     }
 
-    // Answer Telegram before doing the work. processUpdate dispatches to
-    // handlers that talk to Razorpay and Google Sheets, and Telegram retries
-    // anything it does not get a prompt 200 for — which would mean a second
-    // payment link for one tap.
-    sendJSON(res, 200, { success: true });
+    // Do the work BEFORE answering Telegram.
+    //
+    // This used to answer 200 first, on the reasoning that Telegram retries
+    // anything it does not get a prompt 200 for and a retry would mean a second
+    // payment link for one tap. That reasoning holds for a long-lived server
+    // and is fatal here: the instance is frozen the moment the response is
+    // sent, so the handler's outbound call to Telegram died mid-TLS-handshake
+    // with "Client network socket disconnected", exit 128. Telegram recorded a
+    // clean delivery and the student got no reply — every bot silently useless.
+    //
+    // processUpdate() dispatches synchronously and returns nothing, so settle()
+    // (see src/botapp.js) is what actually waits for the handlers.
     try {
-      paymentBotFor(payBotEnv).bot.processUpdate(update);
+      const app = paymentBotFor(payBotEnv);
+      app.bot.processUpdate(update);
+      // Cap the wait well under Telegram's patience: if a handler hangs on
+      // Razorpay or Sheets, a late 200 becomes a retry and a duplicate payment
+      // link. Answering on time and letting the straggler finish is safer.
+      let budgetTimer;
+      try {
+        await Promise.race([
+          app.settle(),
+          new Promise((resolve) => {
+            budgetTimer = setTimeout(resolve, BOT_UPDATE_BUDGET_MS);
+          })
+        ]);
+      } finally {
+        // The losing timer keeps the event loop alive for the full budget —
+        // holding the instance open long after the reply went out, and hanging
+        // process exit for anything that runs this in-process.
+        clearTimeout(budgetTimer);
+      }
     } catch (err) {
       console.error(`[bot] ${payBotEnv} failed to handle an update:`, err.message);
     }
+    sendJSON(res, 200, { success: true });
     return true;
   }
 
