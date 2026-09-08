@@ -140,6 +140,8 @@ async function main() {
     }
   }
 
+  const failures = [];
+
   console.log('════════════════════════════════════════════════════');
   console.log(`🔗 Telegram webhooks — ${mode}`);
   console.log('════════════════════════════════════════════════════\n');
@@ -181,7 +183,52 @@ async function main() {
       drop_pending_updates: false,
       max_connections: 20
     });
-    console.log(out.ok ? `   ✅ ${url}\n` : `   ❌ ${out.description}\n`);
+    if (!out.ok) {
+      console.log(`   ❌ ${out.description}\n`);
+      failures.push(payBotEnv);
+      continue;
+    }
+
+    // Telegram answering ok is not proof the webhook stuck. A local `node
+    // bot.js` polling this same token calls deleteWebhook, so a poller running
+    // anywhere wipes the registration a moment after it is made — leaving a ✅
+    // on screen and a bot that answers nothing. Read it back and believe only
+    // that. This is the failure that took all three bots down silently.
+    const check = await call(token, 'getWebhookInfo');
+    if ((check.result || {}).url !== url) {
+      console.log(
+        `   ❌ Telegram accepted the webhook, then it vanished.\n` +
+        `      Something is still polling ${payBotEnv} and deleting it — almost\n` +
+        `      always a running \`node bot.js\`. Stop it, then run this again.\n`
+      );
+      failures.push(payBotEnv);
+      continue;
+    }
+
+    console.log(`   ✅ ${url}\n`);
+  }
+
+  // A per-bot readback only proves the webhook survived that instant. A poller
+  // deletes on its own schedule, so one that wiped a bot registered earlier in
+  // this loop would still have printed ✅. Sweep every bot once at the end,
+  // after the last write, and report on that.
+  if (mode === 'set') {
+    for (const payBotEnv of list) {
+      if (failures.includes(payBotEnv)) continue;
+      const token = String(process.env[payBotEnv]).trim();
+      const url = `${base}/api/telegram/bot/${encodeURIComponent(payBotEnv)}`;
+      const check = await call(token, 'getWebhookInfo');
+      if ((check.result || {}).url !== url) failures.push(payBotEnv);
+    }
+  }
+
+  if (failures.length) {
+    console.error(
+      `❌ ${failures.length} of ${list.length} bots are NOT registered: ${failures.join(', ')}\n` +
+      '   Those bots answer nothing until this succeeds.\n' +
+      '   Stop every running `node bot.js` (pkill -f "node bot.js"), then re-run.'
+    );
+    process.exit(1);
   }
 
   if (mode === 'set') {
