@@ -213,6 +213,56 @@ function createPaymentBot({ payBotEnv, polling = false }) {
   return found;
   }
 
+  // --------------------------------------------------------------------
+  // Keeping handler work alive on the deployment
+  // --------------------------------------------------------------------
+  // processUpdate() dispatches to the handlers below synchronously and throws
+  // their promises away — nothing anywhere holds a reference to the work. A
+  // long-lived `node bot.js` does not care: the process stays up and the reply
+  // goes out whenever it is ready.
+  //
+  // On Vercel it is fatal. server.js answered Telegram 200 and returned, the
+  // instance was frozen mid-flight, and the outbound call to Telegram died with
+  // "Client network socket disconnected before secure TLS connection was
+  // established" — unhandled rejection, exit 128, and a bot that answers
+  // nothing while Telegram reports a clean delivery.
+  //
+  // Intercepting on()/onText() here means every handler registered below is
+  // tracked without each one having to remember to opt in.
+  const pending = new Set();
+
+  function track(handler) {
+    if (typeof handler !== 'function') return handler;
+    return function trackedHandler(...args) {
+      const work = Promise.resolve()
+        .then(() => handler.apply(this, args))
+        .catch((err) => {
+          // Swallow here so one failing handler cannot become the unhandled
+          // rejection that kills the whole instance mid-reply.
+          console.error(`[bot] ${payBotEnv} handler failed: ${err && err.message}`);
+        });
+      pending.add(work);
+      work.finally(() => pending.delete(work));
+      return work;
+    };
+  }
+
+  const registerOn = bot.on.bind(bot);
+  const registerOnText = bot.onText.bind(bot);
+  bot.on = (event, handler) => registerOn(event, track(handler));
+  bot.onText = (regexp, handler) => registerOnText(regexp, track(handler));
+
+  /**
+   * Resolve once no handler work is outstanding. Loops rather than awaiting the
+   * set once, because a handler can start more work — send a reply, then write
+   * to the sheet — while we are already waiting on it.
+   *
+   * @returns {Promise<void>}
+   */
+  async function settle() {
+    while (pending.size) await Promise.allSettled([...pending]);
+  }
+
   bot.onText(/^\/start/, async (msg) => {
   const name = msg.from.first_name || 'there';
   const groups = familyGroups();
@@ -545,7 +595,7 @@ function createPaymentBot({ payBotEnv, polling = false }) {
     console.error(`[bot] ${payBotEnv} polling error: ${err.message}`);
   });
 
-  return { payBotEnv, bot, familyGroups, plansFor, ALLOWED_UPDATES };
+  return { payBotEnv, bot, familyGroups, plansFor, ALLOWED_UPDATES, settle };
 
 }
 
