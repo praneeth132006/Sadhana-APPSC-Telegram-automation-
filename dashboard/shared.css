@@ -1322,3 +1322,13 @@
   text-transform: uppercase;
   opacity: 0.32;
 }
+
+/* The Questions table carries a pager above it as well as below. The footer
+   pager sits under the last row, so with a 200-row page it could only be
+   reached by scrolling past every row first. */
+.pagination-top {
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  padding-top: 12px;
+  padding-bottom: 12px;
+}

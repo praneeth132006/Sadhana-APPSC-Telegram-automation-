@@ -10,7 +10,7 @@
 // Group id : appsc_news_en
 // Subjects : 16
 //            History, AP History, Geography, AP Geography, Economy, AP Economy, Polity, Society, Current Affairs, Science and Technology, Biology, Chemistry, Physics, Environment, General Studies, Disaster Management
-// Built    : 2026-09-07T16:06:53.533Z
+// Built    : 2026-09-08T16:25:49.302Z
 // ==========================================================================
 
 // ============================================================================
@@ -928,11 +928,25 @@ function listQuestions(params) {
   var total = matched.length;
   var start = (page - 1) * pageSize;
 
+  // Counted over everything the filter matched, not just the page being
+  // returned. The dashboard used to count the rows it had been handed, so with
+  // 303 matches and a 200-row page "Posted" read 200 — a number describing the
+  // pagination rather than the question bank. matched already holds every row,
+  // so this costs one more pass over it and no extra sheet reads.
+  var counts = { posted: 0, approved: 0, needsDetail: 0 };
+  for (var m = 0; m < matched.length; m++) {
+    var row = matched[m];
+    if (String(row.posted).toUpperCase() === 'YES') counts.posted++;
+    if (row.status === 'Approved') counts.approved++;
+    if (!row.explanation || !row.topic) counts.needsDetail++;
+  }
+
   return {
     total: total,
     page: page,
     pageSize: pageSize,
     totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    counts: counts,
     questions: matched.slice(start, start + pageSize)
   };
 }

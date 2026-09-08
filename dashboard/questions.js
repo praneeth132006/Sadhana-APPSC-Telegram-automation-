@@ -31,7 +31,7 @@ let rows = [];
 const selected = new Set();
 
 /** Pagination metadata from the last response. */
-let pageInfo = { total: 0, page: 1, totalPages: 1 };
+let pageInfo = { total: 0, page: 1, totalPages: 1, counts: null };
 
 // ---------------------------------------------------------------------------
 // Filter controls
@@ -77,12 +77,17 @@ function initFilters() {
 
   $('filterPageSize').addEventListener('change', () => { readFilters(); filters.page = 1; load(); });
 
-  $('prevBtn').addEventListener('click', () => {
-    if (filters.page > 1) { filters.page--; load(); }
-  });
-  $('nextBtn').addEventListener('click', () => {
-    if (filters.page < pageInfo.totalPages) { filters.page++; load(); }
-  });
+  // Two pagers, one above the table and one below it, wired identically.
+  for (const id of ['prevBtn', 'prevBtnTop']) {
+    $(id).addEventListener('click', () => {
+      if (filters.page > 1) { filters.page--; load(); }
+    });
+  }
+  for (const id of ['nextBtn', 'nextBtnTop']) {
+    $(id).addEventListener('click', () => {
+      if (filters.page < pageInfo.totalPages) { filters.page++; load(); }
+    });
+  }
 
   $('bulkApplyBtn').addEventListener('click', applyBulkStatus);
   $('bulkDeleteBtn').addEventListener('click', applyBulkDelete);
@@ -229,18 +234,37 @@ function renderTable() {
   ]));
 }
 
-/** Summary tiles above the table, computed from the current page + total. */
+/**
+ * Summary tiles above the table.
+ *
+ * These describe the whole filter, not the page. Counting the rows this page
+ * happened to be handed meant that with 303 matches and a 200-row page,
+ * "Posted" read 200 — a fact about the pagination, not about the question bank,
+ * and it changed when you pressed Next.
+ *
+ * The counts come from the sheet's Apps Script alongside the page. A sheet
+ * still running an older copy of the script sends no counts, so fall back to
+ * counting this page and say so in the label rather than showing a whole-bank
+ * number that is silently only a page.
+ */
 function renderStats() {
-  const postedOnPage = rows.filter((q) => q.posted === 'YES').length;
-  const approvedOnPage = rows.filter((q) => q.status === 'Approved').length;
-  const needsWork = rows.filter((q) => !q.explanation || !q.topic).length;
+  const overall = pageInfo.counts;
+  const scope = overall ? '' : ' (page)';
+  const sub = overall ? 'across all pages of this filter' : 'this page only — sheet script is out of date';
+
+  const posted = overall ? overall.posted : rows.filter((q) => q.posted === 'YES').length;
+  const approved = overall ? overall.approved : rows.filter((q) => q.status === 'Approved').length;
+  const needsWork = overall ? overall.needsDetail : rows.filter((q) => !q.explanation || !q.topic).length;
 
   replaceChildren($('statGrid'),
     statCard('Matching Questions', num(pageInfo.total), { sub: 'across all pages of this filter' }),
     statCard('On This Page', num(rows.length), { tone: 'info', sub: `page ${pageInfo.page} of ${pageInfo.totalPages}` }),
-    statCard('Posted (page)', num(postedOnPage), { tone: 'ok' }),
-    statCard('Approved (page)', num(approvedOnPage), { tone: 'ok' }),
-    statCard('Needs Detail (page)', num(needsWork), { tone: needsWork ? 'warn' : 'ok', sub: 'missing explanation or topic' })
+    statCard('Posted' + scope, num(posted), { tone: 'ok', sub }),
+    statCard('Approved' + scope, num(approved), { tone: 'ok', sub }),
+    statCard('Needs Detail' + scope, num(needsWork), {
+      tone: needsWork ? 'warn' : 'ok',
+      sub: overall ? 'missing explanation or topic' : 'missing explanation or topic — this page only'
+    })
   );
 }
 
@@ -249,10 +273,21 @@ function renderPagination() {
   const from = pageInfo.total === 0 ? 0 : (pageInfo.page - 1) * filters.pageSize + 1;
   const to = Math.min(pageInfo.page * filters.pageSize, pageInfo.total);
 
-  $('paginationInfo').textContent = `Showing ${num(from)}–${num(to)} of ${num(pageInfo.total)}`;
-  $('pageLabel').textContent = `Page ${pageInfo.page} / ${pageInfo.totalPages}`;
-  $('prevBtn').disabled = pageInfo.page <= 1;
-  $('nextBtn').disabled = pageInfo.page >= pageInfo.totalPages;
+  const info = `Showing ${num(from)}–${num(to)} of ${num(pageInfo.total)}`;
+  const label = `Page ${pageInfo.page} / ${pageInfo.totalPages}`;
+  const atStart = pageInfo.page <= 1;
+  const atEnd = pageInfo.page >= pageInfo.totalPages;
+
+  for (const [infoId, labelId, prevId, nextId] of [
+    ['paginationInfo', 'pageLabel', 'prevBtn', 'nextBtn'],
+    ['paginationInfoTop', 'pageLabelTop', 'prevBtnTop', 'nextBtnTop']
+  ]) {
+    $(infoId).textContent = info;
+    $(labelId).textContent = label;
+    $(prevId).disabled = atStart;
+    $(nextId).disabled = atEnd;
+  }
+
   $('resultSummary').textContent = `${num(pageInfo.total)} question(s) match`;
 }
 
@@ -271,7 +306,13 @@ async function load() {
   try {
     const data = await api('/api/questions', { query: filters });
     rows = data.questions || [];
-    pageInfo = { total: data.total || 0, page: data.page || 1, totalPages: data.totalPages || 1 };
+    pageInfo = {
+      total: data.total || 0,
+      page: data.page || 1,
+      totalPages: data.totalPages || 1,
+      // Absent when the sheet runs an older Apps Script; renderStats falls back.
+      counts: data.counts || null
+    };
 
     // Drop selections that are no longer visible so a bulk action cannot hit
     // a row the curator can no longer see.

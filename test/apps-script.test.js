@@ -1582,3 +1582,53 @@ test('doGet reports an unknown action instead of throwing', () => {
   assert.equal(response.success, false);
   assert.match(response.error, /Unknown GET action/);
 });
+
+test('listQuestions counts the whole filter, not the page it returns', () => {
+  // The bug this covers: the dashboard counted the rows it had been handed, so
+  // with 303 matches and a 200-row page "Posted" read 200 — a fact about the
+  // pagination rather than the question bank, which changed on pressing Next.
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [
+    { question: 'Alpha?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A', status: 'Approved', explanation: 'why', topic: 'Polity' },
+    { question: 'Beta?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A', status: 'Approved', explanation: 'why', topic: 'Polity' },
+    { question: 'Gamma?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A', status: 'Draft' },
+    { question: 'Delta?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A', status: 'Draft' }
+  ], 'Curator', true);
+
+  const all = script.listQuestions({ subject: 'Polity' });
+  assert.equal(all.total, 4);
+  assert.equal(all.counts.approved, 2);
+  // Gamma and Delta were added with neither an explanation nor a topic.
+  assert.equal(all.counts.needsDetail, 2);
+
+  // The heart of it: one row per page, and the counts still describe all four.
+  for (const page of [1, 2, 3, 4]) {
+    const slice = script.listQuestions({ subject: 'Polity', pageSize: '1', page: String(page) });
+    assert.equal(slice.questions.length, 1, `page ${page} holds one row`);
+    assert.deepEqual(slice.counts, all.counts, `page ${page} reported page-scoped counts`);
+  }
+});
+
+test('listQuestions counts posted rows across the whole filter', () => {
+  const s = freshScript();
+  const sheet = new FakeSheet('Polity', [s.QUESTION_HEADERS.slice()]);
+  const script = loadScript(new FakeSpreadsheet([sheet]));
+
+  script.appendQuestionsToSheet('Polity', [
+    { question: 'One?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A' },
+    { question: 'Two?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A' },
+    { question: 'Three?', option_a: 'a', option_b: 'b', option_c: 'c', option_d: 'd', correct_answer: 'A' }
+  ], 'Curator', true);
+
+  const map = script.headerMap(sheet);
+  // A legacy "YES | timestamp" cell counts as posted, the same as elsewhere.
+  sheet.values[1][map['Posted']] = 'YES';
+  sheet.values[2][map['Posted']] = 'YES | 2026-09-08 10:00:00';
+
+  const first = script.listQuestions({ subject: 'Polity', pageSize: '1', page: '1' });
+  assert.equal(first.counts.posted, 2, 'counted only the single row on the page');
+  assert.equal(first.total, 3);
+});
