@@ -1296,7 +1296,13 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
   // ---- System health -------------------------------------------------------
   if (pathname === '/api/health' && method === 'GET') {
     const health = {
-      server: { ok: true, port: PORT, host: HOST, node: process.version, uptimeSeconds: Math.round(process.uptime()) },
+      // serverless: on Vercel the process binds 0.0.0.0 because the container
+      // requires it, and there is no LAN for that to expose it to.
+      server: {
+        ok: true, port: PORT, host: HOST, node: process.version,
+        uptimeSeconds: Math.round(process.uptime()),
+        serverless: Boolean(process.env.VERCEL)
+      },
       auth: auth.describeConfig(),
       sheets: {
         configured: groupRegistry.listGroups().some((g) => g.ready), reachable: false, version: null,
@@ -1333,7 +1339,21 @@ async function handleAuthedRoute(pathname, method, req, res, query, user) {
           dedicatedPaymentBot: paybot.hasDedicatedBot(g.paymentBotEnv)
         })),
         premiumGroupSet: groupRegistry.listGroups().some((g) => g.ready),
-        dedicatedPaymentBot: paybot.hasDedicatedBot(),
+        // Every ready group's payment bot must hold its own token. This used to
+        // call hasDedicatedBot() with no argument, which reads
+        // process.env[undefined] and is therefore always false — so the Health
+        // page showed "One bot is doing both jobs" however the bots were set up,
+        // and pointed at TELEGRAM_PAYMENT_BOT_TOKEN, the legacy single-bot
+        // fallback, rather than the per-family tokens actually in use.
+        dedicatedPaymentBot: (() => {
+          const ready = groupRegistry.listGroups().filter((g) => g.ready);
+          return ready.length > 0 && ready.every((g) => paybot.hasDedicatedBot(g.paymentBotEnv));
+        })(),
+        // Which groups are still falling back to another bot's token, so the
+        // warning can name them instead of saying "one bot" for all five.
+        sharedPaymentBotGroups: groupRegistry.listGroups()
+          .filter((g) => g.ready && !paybot.hasDedicatedBot(g.paymentBotEnv))
+          .map((g) => ({ label: g.displayName, env: g.paymentBotEnv })),
         cronSecretSet: Boolean(String(process.env.CRON_SECRET || '').trim())
       },
       you: { email: user.email, uid: user.uid, provider: user.signInProvider, emailVerified: user.emailVerified }

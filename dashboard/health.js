@@ -168,12 +168,18 @@ function connectivityChecks(data) {
   // Two bots is the safer arrangement: the payment bot holds admin rights over
   // the paid group, so sharing that token with the public posting bot means one
   // leak exposes both.
+  const sharing = Array.isArray(p.sharedPaymentBotGroups) ? p.sharedPaymentBotGroups : [];
   checks.push(p.dedicatedPaymentBot
     ? check('pass', 'Separate payment bot',
-        'Payments and group access run on their own bot token, apart from the questions bot.')
+        'Payments and group access run on their own bot tokens, apart from the questions bot.')
     : check('warn', 'Separate payment bot',
-        'One bot is doing both jobs. Set <code>TELEGRAM_PAYMENT_BOT_TOKEN</code> so a leak of the ' +
-        'posting token cannot also open the paid group.'));
+        // Name the groups and the exact variables. Saying "one bot is doing both
+        // jobs" was both wrong and unactionable once each family had its own.
+        (sharing.length
+          ? 'Falling back to another bot\'s token for ' +
+            sharing.map((g) => `<strong>${g.label}</strong> (set <code>${g.env}</code>)`).join(', ') + '. '
+          : 'A payment bot is falling back to another bot\'s token. ') +
+        'A leak of the posting token would also open the paid group.'));
 
   // Apps Script is pasted into each sheet by hand, so the dashboard routinely
   // runs ahead of it and a feature looks broken when a manual step is simply
@@ -273,14 +279,25 @@ function securityChecks(data) {
         'put the same value in <code>.env</code> as <code>SHEET_API_TOKEN</code>, and redeploy a new version.'));
 
   // --- Network exposure ----------------------------------------------------
+  // Only meaningful for a server on a network someone else can be on. A Vercel
+  // deployment binds 0.0.0.0 because the container requires it — there is no
+  // LAN there, and "unset HOST to go back to 127.0.0.1" would stop the
+  // deployment accepting any request at all. Access there is Firebase auth,
+  // which has its own checks above.
   const loopback = data.server.host === '127.0.0.1' || data.server.host === 'localhost' || data.server.host === '::1';
-  checks.push(loopback
-    ? check('pass', 'Server is loopback only',
-        `Bound to <code>${data.server.host}</code>, so only this machine can reach the dashboard. Nothing on your ` +
-        'Wi-Fi network can call the API that posts to Telegram.')
-    : check('warn', 'Server is loopback only',
-        `Bound to <code>${data.server.host}</code>, which exposes the dashboard to your whole network. Unset ` +
-        '<code>HOST</code> in <code>.env</code> to go back to <code>127.0.0.1</code> unless you deliberately need remote access.'));
+  if (data.server.serverless) {
+    checks.push(check('pass', 'Network exposure',
+      `Running on Vercel, bound to <code>${data.server.host}</code> because the container requires it. ` +
+      'There is no local network to expose — every request arrives through Vercel and has to pass sign-in.'));
+  } else {
+    checks.push(loopback
+      ? check('pass', 'Server is loopback only',
+          `Bound to <code>${data.server.host}</code>, so only this machine can reach the dashboard. Nothing on your ` +
+          'Wi-Fi network can call the API that posts to Telegram.')
+      : check('warn', 'Server is loopback only',
+          `Bound to <code>${data.server.host}</code>, which exposes the dashboard to your whole network. Unset ` +
+          '<code>HOST</code> in <code>.env</code> to go back to <code>127.0.0.1</code> unless you deliberately need remote access.'));
+  }
 
   // --- Email verification --------------------------------------------------
   checks.push(data.you.emailVerified
