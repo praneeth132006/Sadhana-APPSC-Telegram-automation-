@@ -87,6 +87,17 @@
           <span class="hint-text">Works across subjects — each question is written to its own sheet tab.</span>
         </div>
 
+        <!-- The same pager as the footer. With 200 rows on a page, reaching
+             the footer control meant scrolling past every row first. -->
+        <div class="pagination pagination-top">
+          <span id="paginationInfoTop" class="pagination-info"></span>
+          <div class="pagination-controls">
+            <button id="prevBtnTop" class="btn btn-ghost btn-sm">← Previous</button>
+            <span id="pageLabelTop" class="hint-text"></span>
+            <button id="nextBtnTop" class="btn btn-ghost btn-sm">Next →</button>
+          </div>
+        </div>
+
         <div class="panel-body tight">
           <div id="tableArea" class="table-wrap"></div>
         </div>
