@@ -27,8 +27,15 @@ import {
 // Firebase configuration
 // ---------------------------------------------------------------------------
 // These values are public identifiers, not secrets — Firebase web apps are
-// designed to ship them. What actually protects the data is the server-side
-// token check plus the CURATOR_EMAILS allowlist in .env.
+// designed to ship them. Every browser that loads this page receives them, so
+// there is nothing here to withhold. What actually protects the data is the
+// server-side token check plus the CURATOR_EMAILS allowlist in .env.
+//
+// GitHub secret scanning opens a "Google API Key" alert on the apiKey below and
+// advises rotating it. Do not: the replacement would be equally public, and
+// rotating means a code change and a redeploy for no gain. SECURITY-REVIEW.md
+// records what this key can actually reach (authorised domains are tight, no
+// billable API is activated) and how that was verified.
 const firebaseConfig = {
   apiKey: 'AIzaSyDlL3dw-FY2bdNQDCm4Rtp0ZhrDTCSJHfQ',
   authDomain: 'ap-gurukul-43050.firebaseapp.com',

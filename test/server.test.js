@@ -1600,3 +1600,69 @@ test('the group picker prices every group from its own config entry', async () =
     }
   }
 });
+
+// ===========================================================================
+// Health checks that were reporting on themselves rather than the system
+// ===========================================================================
+
+test('dedicatedPaymentBot reflects the per-family tokens actually in use', async () => {
+  // The regression: this read paybot.hasDedicatedBot() with no argument, which
+  // looks up process.env[undefined] and is therefore false no matter how the
+  // bots are configured. The Health page showed "One bot is doing both jobs"
+  // permanently, and told the curator to set TELEGRAM_PAYMENT_BOT_TOKEN — the
+  // legacy single-bot fallback, not the token the group actually uses.
+  const groupsModule = require('../src/groups');
+  const before = process.env.TELEGRAM_PAYBOT_NEWS;
+
+  try {
+    process.env.TELEGRAM_PAYBOT_NEWS = '999:DEDICATED';
+    groupsModule.reset();
+
+    const res = await authed('/api/health');
+    const payments = res.json.data.payments;
+
+    assert.equal(payments.dedicatedPaymentBot, true,
+      'a group whose payment bot has its own token still reported as sharing one');
+    assert.deepEqual(payments.sharedPaymentBotGroups, []);
+  } finally {
+    if (before === undefined) delete process.env.TELEGRAM_PAYBOT_NEWS;
+    else process.env.TELEGRAM_PAYBOT_NEWS = before;
+    groupsModule.reset();
+  }
+});
+
+test('a group with no payment-bot token of its own is named, not just counted', async () => {
+  const groupsModule = require('../src/groups');
+  const before = process.env.TELEGRAM_PAYBOT_NEWS;
+
+  try {
+    delete process.env.TELEGRAM_PAYBOT_NEWS;
+    groupsModule.reset();
+
+    const res = await authed('/api/health');
+    const payments = res.json.data.payments;
+
+    assert.equal(payments.dedicatedPaymentBot, false);
+    assert.ok(payments.sharedPaymentBotGroups.length >= 1,
+      'the group falling back to another token was not reported');
+    // The Health page prints this variable, so it has to be the real one.
+    assert.ok(payments.sharedPaymentBotGroups.every((g) => g.env && g.label),
+      'each shared group needs the env var to set and a label to show');
+    assert.ok(payments.sharedPaymentBotGroups.some((g) => g.env === 'TELEGRAM_PAYBOT_NEWS'));
+  } finally {
+    if (before === undefined) delete process.env.TELEGRAM_PAYBOT_NEWS;
+    else process.env.TELEGRAM_PAYBOT_NEWS = before;
+    groupsModule.reset();
+  }
+});
+
+test('health says whether the server is serverless, so 0.0.0.0 can be judged', async () => {
+  // Binding 0.0.0.0 is a real warning on a laptop and correct on Vercel, where
+  // the container requires it and there is no LAN. Without this flag the Health
+  // page warned about network exposure on the deployment and advised unsetting
+  // HOST, which would stop it accepting requests at all.
+  const res = await authed('/api/health');
+  assert.equal(typeof res.json.data.server.serverless, 'boolean');
+  assert.equal(res.json.data.server.serverless, false, 'tests do not run on Vercel');
+  assert.equal(res.json.data.server.host, '127.0.0.1');
+});
