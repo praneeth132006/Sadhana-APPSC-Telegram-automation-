@@ -199,7 +199,56 @@ the canonical column. `test/apps-script.test.js` has a dedicated regression test
 - **The Firebase `apiKey` in `dashboard/shared.js` is public by design.** It is an
   identifier, not a secret. What protects you is the server-side token check plus the
   curator allowlist. Do keep the Firebase console's authorised-domains list tight.
+  GitHub secret scanning flags it anyway — see below before acting on that alert.
 - **The `Anyone` deployment is inherent to Apps Script Web Apps.** The shared token is
   the mitigation; rotate it if you ever paste the `/exec` URL somewhere public.
 - **This is a localhost tool.** If you ever put it on a real host, add TLS and revisit
   the rate limits, which are tuned for a single curator.
+
+## GitHub secret scanning: "Google API Key" on the Firebase `apiKey`
+
+GitHub opens a `google_api_key` alert for `dashboard/shared.js`, tagged **Publicly
+leaked secret**, and offers four steps beginning "Rotate the secret".
+
+**Do not follow those steps here, and do not rotate this key.** The alert is a true
+positive about the *pattern* and a false positive about the *risk*: `AIza…` is the
+format Google uses for both billable server keys and Firebase web-app identifiers, and
+the scanner cannot tell them apart. A Firebase web `apiKey` is shipped to every browser
+that loads the page — it is not withheld from anyone, so it cannot leak. Rotating it
+means editing the code and redeploying, and the replacement is equally public.
+
+This was verified rather than assumed, on 2026-09-09:
+
+```bash
+KEY=...   # the apiKey from dashboard/shared.js
+
+# 1. What the key can reach, called with no referrer at all.
+curl -s "https://identitytoolkit.googleapis.com/v1/projects?key=$KEY"
+
+# 2. Whether any billable API is reachable with it.
+curl -s "https://maps.googleapis.com/maps/api/geocode/json?address=Hyderabad&key=$KEY"
+```
+
+- Authorised domains are already tight: `localhost`,
+  `ap-gurukul-43050.firebaseapp.com`, `ap-gurukul-43050.web.app`,
+  `appscsadhana.vercel.app`. A sign-in popup cannot be driven from anyone else's site.
+- No billable API is activated — the Maps call returns *"This API is not activated on
+  your API project"*. There is no billing to run up.
+- Email/password sign-up **is** enabled, and authorised domains do not gate the REST
+  API, so someone holding this key can call `accounts:signUp` and create an account in
+  the project. That grants nothing: `authorize()` in `src/auth.js` rejects any email
+  outside `CURATOR_EMAILS`, which is a four-address allowlist. The cost of the abuse is
+  junk rows in the Firebase user table, not access.
+
+So the correct response to the alert is to **close it as a false positive** ("used in
+tests" is the closest reason GitHub offers; leave a comment saying it is a public
+Firebase web identifier). If you want defence in depth against the sign-up path, the
+fix is in the Google console, not in this repository: enable **Firebase App Check**, or
+add an HTTP-referrer restriction to the key. Neither requires a code change.
+
+**If you ever want the key out of the repository anyway**, note that it still has to
+reach the browser, so this buys no security — only the ability to point a build at a
+different Firebase project and to keep the scanner quiet. It means serving the config
+from `/api/config` (already fetched during bootstrap) and moving `initializeApp` out of
+module scope in `dashboard/shared.js` into `initDashboard`. That is a change to the
+auth path for every page, so it needs a real sign-in test, not just a page load.
